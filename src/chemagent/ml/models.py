@@ -1,0 +1,155 @@
+"""
+chemagent.ml.models — central catalogue of all supported ML estimators.
+
+This is the **only file you need to edit** to add a new model.
+
+Sections
+--------
+1. Hyperparameter grids  — ``PARAM_GRIDS``
+2. Estimator factories   — ``build_estimator()``
+3. Metadata              — ``MODEL_INFO``
+
+How to add a new model
+----------------------
+Step 1 — import the estimator (add to the sklearn imports block below).
+
+Step 2 — add a param grid::
+
+    PARAM_GRIDS["XGB"] = {
+        "n_estimators": [100, 300],
+        "max_depth":    [3, 6],
+        "learning_rate": [0.05, 0.1],
+    }
+
+Step 3 — add a factory branch inside ``build_estimator()``::
+
+    if algorithm == "XGB":
+        from xgboost import XGBClassifier, XGBRegressor
+        if reg_class == "regression":
+            return XGBRegressor(random_state=random_seed, n_jobs=-1)
+        return XGBClassifier(
+            random_state=random_seed,
+            scale_pos_weight=... if class_weighted else 1,
+            n_jobs=-1,
+        )
+
+Step 4 — add metadata::
+
+    MODEL_INFO["XGB"] = {
+        "description": "XGBoost gradient-boosted trees",
+        "task":        "both",
+        "extra_deps":  ["xgboost"],
+    }
+
+That's it — the new key is automatically available everywhere:
+``train_model``, ``build_model_from_split_file``,
+``get_available_algorithms``, and ``get_param_grid``.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.svm import SVC
+
+
+# ===========================================================================
+# 1. Hyperparameter grids
+# ===========================================================================
+
+PARAM_GRIDS: dict[str, dict[str, list]] = {
+    "RFC": {
+        "n_estimators":      [50, 100, 200],
+        "max_features":      ["sqrt", "log2"],
+        "min_samples_split": [2, 5, 10],
+        "min_samples_leaf":  [1, 2, 4],
+    },
+    "RFR": {
+        "n_estimators":      [50, 100, 200],
+        "max_features":      ["sqrt", "log2"],
+        "min_samples_split": [2, 5, 10],
+        "min_samples_leaf":  [1, 2, 4],
+    },
+    "SVC": {
+        "C":      [0.1, 1, 10],
+        "kernel": ["rbf", "linear"],
+        "gamma":  ["scale", "auto"],
+    },
+    # ── add new grids below ──────────────────────────────────────────────────
+}
+
+
+# ===========================================================================
+# 2. Estimator factories
+# ===========================================================================
+
+def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
+    """Return an unfitted scikit-learn estimator for *algorithm*.
+
+    Parameters
+    ----------
+    algorithm:
+        Registered key, e.g. ``"RFC"``.
+    reg_class:
+        Task type: ``"classification"``, ``"classification-cw"``,
+        or ``"regression"``.
+    random_seed:
+        Forwarded to the estimator's ``random_state`` parameter.
+
+    Raises
+    ------
+    ValueError
+        If *algorithm* is not defined in this function.
+    """
+    class_weighted = reg_class == "classification-cw"
+
+    # ── built-in models ──────────────────────────────────────────────────────
+
+    if algorithm == "RFC":
+        return RandomForestClassifier(
+            random_state=random_seed,
+            class_weight="balanced" if class_weighted else None,
+        )
+
+    if algorithm == "RFR":
+        return RandomForestRegressor(random_state=random_seed)
+
+    if algorithm == "SVC":
+        return SVC(
+            random_state=random_seed,
+            class_weight="balanced" if class_weighted else None,
+            probability=True,
+        )
+
+    # ── add new algorithms below ─────────────────────────────────────────────
+
+    raise ValueError(
+        f"Unknown algorithm {algorithm!r}. "
+        f"Defined models: {list(MODEL_INFO)}. "
+        "Add a new branch in build_estimator() inside models.py."
+    )
+
+
+# ===========================================================================
+# 3. Metadata  (used by get_available_algorithms MCP tool)
+# ===========================================================================
+
+MODEL_INFO: dict[str, dict] = {
+    "RFC": {
+        "description": "Random Forest Classifier",
+        "task":        "classification",
+        "extra_deps":  [],
+    },
+    "RFR": {
+        "description": "Random Forest Regressor",
+        "task":        "regression",
+        "extra_deps":  [],
+    },
+    "SVC": {
+        "description": "Support Vector Classifier",
+        "task":        "classification",
+        "extra_deps":  [],
+    },
+    # ── add new metadata below ───────────────────────────────────────────────
+}

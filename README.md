@@ -1,1 +1,1 @@
-# AI-Agent-for-Compound-Selectivity-Prediction-and-Explainability
+# ChemXAI Agent

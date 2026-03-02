@@ -1,0 +1,17 @@
+[project]
+name = "chemxai-agent"
+version = "0.1.0"
+description = "ChemXAI Agent — an AI agent for cheminformatics, compound selectivity prediction, and explainable AI"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=7.2.0",
+    "marimo>=0.20.2",
+    "mcp[cli]>=1.26.0",
+    "numpy>=2.4.2",
+    "rdkit>=2025.9.4",
+    "scikit-learn>=1.8.0",
+    "seaborn>=0.13.2",
+    "shap>=0.49.1",
+    "torch>=2.10.0",
+]
