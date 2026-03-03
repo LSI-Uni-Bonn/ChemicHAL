@@ -27,23 +27,55 @@ Exposes all agent tools in one process:
 
   Model-builder tools (formerly model_builder_mcp)
   ─────────────────────────────────────────────
-  build_model_from_split_file  full pipeline (tune+train+eval) from split .pkl
+  build_model_from_split_file  full pipeline (tune+train+eval) from split .pkl  [blocking]
+  start_model_training         same pipeline as background job, returns job_id immediately
+  get_training_result          poll a background job started by start_model_training
   build_model_from_arrays      full pipeline from feature arrays
   get_hyperparameter_grids     inspect registered hyperparameter grids
+
+  Dataset plot tools
+  ─────────────────────────────────────────────
+  plot_class_distribution      bar chart of label counts with % annotations
+  plot_split_statistics        stacked bar of train/val/test proportions
+  plot_column_distribution     histogram + KDE of any numeric dataset column
+  plot_class_balance_splits    class share (%) per split — grouped bars
+  plot_dataset_comparison      sample-count comparison across datasets
+
+  Classification plot tools
+  ─────────────────────────────────────────────
+  plot_confusion_matrix        annotated heatmap (binary + multiclass)
+  plot_roc_curve               ROC curve with AUC (binary)
+  plot_pr_curve                Precision-Recall curve with AP (binary)
+  plot_metric_bar              horizontal bar of scalar evaluation metrics
+  plot_feature_importance      top-N Gini importances (tree-based models)
+  plot_threshold_metrics       Precision/Recall/F1 vs threshold (binary)
+
+  Regression plot tools
+  ─────────────────────────────────────────────
+  plot_actual_vs_predicted     scatter with identity line, R² and MAE
+  plot_residuals               residuals vs fitted scatter
+  plot_residual_histogram      histogram + KDE of residuals
+  plot_error_distribution      histogram + KDE of |y_true - y_pred|
 
 Preferred end-to-end workflow (data stays on disk):
     load_dataset(...)
     featurize_dataset(dataset_id, method="ECFP", n_bits=2048, radius=2)
     split_prepared_dataset(dataset_id, train_size=0.7, test_size=0.3)
-    build_model_from_split_file(split_file_path, algorithm="RFC",
-                                task="classification",
-                                opt_metric="balanced_accuracy")
+    job = start_model_training(split_file_path, algorithm="RFC",
+                               task="classification",
+                               opt_metric="balanced_accuracy")
+    # poll until done:
+    result = get_training_result(job["job_id"])
 """
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -74,14 +106,80 @@ from chemagent.datasets import (
 )
 from chemagent.ml import MLModel, Model_Evaluation
 from chemagent.ml.hyperparameter_tuning import HYPERPARAMETERS
+from chemagent.logging import SessionLogger
+
+# Must set backend before any pyplot import (plot modules import pyplot at module level)
+import matplotlib
+matplotlib.use("Agg")
+
+from chemagent.plots.classification import (
+    plot_confusion_matrix as _plot_confusion_matrix,
+    plot_roc_curve        as _plot_roc_curve,
+    plot_pr_curve         as _plot_pr_curve,
+    plot_metric_bar       as _plot_metric_bar,
+    plot_feature_importance as _plot_feature_importance,
+    plot_threshold_metrics  as _plot_threshold_metrics,
+)
+from chemagent.plots.dataset import (
+    plot_class_distribution  as _plot_class_distribution,
+    plot_split_statistics    as _plot_split_statistics,
+    plot_column_distribution as _plot_column_distribution,
+    plot_class_balance_splits as _plot_class_balance_splits,
+    plot_dataset_comparison  as _plot_dataset_comparison,
+)
+from chemagent.plots.regression import (
+    plot_actual_vs_predicted  as _plot_actual_vs_predicted,
+    plot_residuals            as _plot_residuals,
+    plot_residual_histogram   as _plot_residual_histogram,
+    plot_error_distribution   as _plot_error_distribution,
+)
 
 mcp = FastMCP("chemagent")
+
+# ---------------------------------------------------------------------------
+# Session logger — writes data/logs/session_<timestamp>_<id>.txt
+# ---------------------------------------------------------------------------
+_log_dir = Path(__file__).resolve().parents[3] / "data" / "logs"
+session_logger = SessionLogger(_log_dir)
+
+# Patch mcp.tool so EVERY subsequent @mcp.tool() decoration is automatically
+# wrapped with logging — no changes needed on individual tool functions.
+_real_mcp_tool = mcp.tool
+
+def _logging_tool_decorator(*dargs, **dkwargs):
+    """Replacement for mcp.tool() that injects call/result logging."""
+    decorator = _real_mcp_tool(*dargs, **dkwargs)
+
+    def wrap(fn):
+        @functools.wraps(fn)
+        def logged_fn(*args, **kwargs):
+            call_id   = session_logger.start_call(fn.__name__, kwargs)
+            t_start   = time.perf_counter()
+            try:
+                result      = fn(*args, **kwargs)
+                duration_ms = (time.perf_counter() - t_start) * 1000
+                session_logger.end_call(call_id, result=result, duration_ms=duration_ms)
+                # Copy any files produced by this call into the session directory
+                session_logger.copy_artifacts_from_result(result)
+                return result
+            except Exception as exc:
+                duration_ms = (time.perf_counter() - t_start) * 1000
+                session_logger.end_call(call_id, error=exc, duration_ms=duration_ms)
+                raise
+        return decorator(logged_fn)
+
+    return wrap
+
+mcp.tool = _logging_tool_decorator
 
 # ---------------------------------------------------------------------------
 # In-memory state  (ephemeral — lost on server restart)
 # ---------------------------------------------------------------------------
 _loaded_datasets:    dict[str, Any] = {}   # dataset_id → pd.DataFrame
 _processed_datasets: dict[str, dict[str, Any]] = {}
+
+# Background training jobs  {job_id → {status, result, error, started_at, finished_at}}
+_jobs: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +195,13 @@ def _default_model_path(algorithm: str, stem: str = "") -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
     name = f"{stem}_{algorithm}.pkl" if stem else f"trained_model_{algorithm}.pkl"
     return str(out_dir / name)
+
+
+def _default_plot_path(name: str, ext: str = "png") -> str:
+    """Return an auto-generated path inside data/plots/."""
+    out_dir = _workspace_root() / "data" / "plots"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return str(out_dir / f"{name}.{ext}")
 
 
 def _to_serialisable(obj: Any) -> Any:
@@ -133,6 +238,44 @@ def _build_evaluator(labels, predictions, probabilities, reg_class, model_id, mo
         model_type=model_type,
         reg_class=reg_class,
     )
+
+
+def _run_job_in_background(job_id: str, fn, *args, **kwargs) -> None:
+    """Run *fn* in a daemon thread; write result/error into _jobs[job_id]."""
+    def _worker():
+        t_start = time.perf_counter()
+        try:
+            result = fn(*args, **kwargs)
+            _jobs[job_id]["status"]      = "completed"
+            _jobs[job_id]["result"]      = result
+            session_logger.log_event(
+                "background_job_completed",
+                job_id=job_id,
+                duration_ms=round((time.perf_counter() - t_start) * 1000, 2),
+            )
+            # Copy model and any other files produced by the background job
+            session_logger.copy_artifacts_from_result(result)
+        except Exception as exc:  # noqa: BLE001
+            _jobs[job_id]["status"] = "failed"
+            _jobs[job_id]["error"]  = str(exc)
+            session_logger.log_event(
+                "background_job_failed",
+                job_id=job_id,
+                error=f"{type(exc).__name__}: {exc}",
+                duration_ms=round((time.perf_counter() - t_start) * 1000, 2),
+            )
+        finally:
+            _jobs[job_id]["finished_at"] = time.time()
+
+    _jobs[job_id] = {
+        "status":      "running",
+        "result":      None,
+        "error":       None,
+        "started_at":  time.time(),
+        "finished_at": None,
+    }
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
 
 
 def _run_pipeline(
@@ -310,6 +453,8 @@ def load_dataset(
     )
     ds_id = meta["dataset_id"]
     _loaded_datasets[ds_id] = df
+    # Save a CSV copy of the dataset to the session log directory
+    session_logger.save_dataframe(df, ds_id)
     if "_features_arr" in meta:
         features_arr = meta.pop("_features_arr")
         _processed_datasets[ds_id] = build_processed_entry(
@@ -531,9 +676,11 @@ def split_prepared_dataset(
         "seed":       seed,
         "saved_to":   saved_to,
         "next_step": (
-            f"Call build_model_from_split_file(split_file_path='{saved_to}', "
+            f"Call start_model_training(split_file_path='{saved_to}', "
             "algorithm='RFC', task='classification', opt_metric='balanced_accuracy') "
-            "to train. Features are on disk — not returned here."
+            "to train in the background (non-blocking). "
+            "Then poll with get_training_result(job_id) until status='completed'. "
+            "Features are on disk — not returned here."
         ) if saved_to else "No file saved. Pass save_path or use prepare_ml_dataset().",
     }
     if warnings_list:
@@ -976,19 +1123,21 @@ def build_model_from_split_file(
     random_seed: int = 42,
     model_save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Train, tune, and evaluate a full pipeline from a split .pkl file.
+    """[BLOCKING] Train, tune, and evaluate a full pipeline from a split .pkl file.
 
-    Preferred tool for end-to-end model building. Runs:
-      hyperparameter tuning → GridSearchCV → refit → save → evaluate all splits.
+    WARNING: This tool blocks until training finishes. For any representation
+    larger than MACCS (e.g. ECFP, RDKitFP, AtomPairFP) or any large dataset
+    this will time out. Use start_model_training() instead — it is identical
+    but returns immediately and never times out.
 
-    Typical workflow:
-        split_prepared_dataset(dataset_id, ...)
-        build_model_from_split_file(
-            split_file_path="data/splits/my_split.pkl",
-            algorithm="RFC",
-            task="classification",
-            opt_metric="balanced_accuracy",
-        )
+    Runs: hyperparameter tuning → GridSearchCV → refit → save → evaluate all splits.
+
+    PREFERRED alternative (use this):
+        job = start_model_training(split_file_path, algorithm="RFC", ...)
+        result = get_training_result(job["job_id"])  # poll until completed
+
+    Only use build_model_from_split_file for quick smoke-tests with MACCS keys
+    where training is known to complete in a few seconds.
 
     Args:
         split_file_path: Path to .pkl split file from split_prepared_dataset().
@@ -1035,6 +1184,125 @@ def build_model_from_split_file(
         random_seed=random_seed,
         model_save_path=model_save_path,
     )
+
+
+@mcp.tool()
+def start_model_training(
+    split_file_path: str,
+    algorithm: Literal["RFC", "RFR", "SVC"] = "RFC",
+    task: Literal["classification", "classification-cw", "regression"] = "classification",
+    cv_fold: int = 5,
+    opt_metric: Optional[str] = "balanced_accuracy",
+    random_seed: int = 42,
+    model_save_path: Optional[str] = None,
+) -> dict[str, Any]:
+    """PREFERRED tool for end-to-end model training. Non-blocking, works for all
+    molecular representations and dataset sizes (ECFP, MACCS, RDKitFP, etc.).
+
+    Starts training in the background and returns a job_id immediately —
+    the tool call never times out regardless of how long training takes.
+    Poll get_training_result(job_id) every 15-30 s until status='completed'.
+
+    Always use this instead of build_model_from_split_file.
+
+    Workflow:
+        job = start_model_training(split_file_path, algorithm="RFC", ...)
+        result = get_training_result(job["job_id"])   # poll until status='completed'
+
+    Args:
+        split_file_path: Path to .pkl split file from split_prepared_dataset().
+        algorithm: "RFC", "RFR", or "SVC".
+        task: "classification", "classification-cw", or "regression".
+        cv_fold: Number of GridSearchCV folds (default 5).
+        opt_metric: Scoring string for GridSearchCV (default "balanced_accuracy").
+        random_seed: Random seed (default 42).
+        model_save_path: Where to save the model .pkl. Defaults to
+                         data/models/<split_stem>_<algorithm>.pkl.
+
+    Returns:
+        job_id, status="running", message with polling instructions.
+    """
+    split_path = Path(split_file_path)
+    if not split_path.exists():
+        split_path = _workspace_root() / split_file_path
+    if not split_path.exists():
+        raise FileNotFoundError(f"Split file not found: {split_file_path}")
+
+    split   = joblib.load(split_path)
+    X_train = np.array(split["train_features"])
+    y_train = np.array(split["train_labels"])
+    X_test  = np.array(split["test_features"])
+    y_test  = np.array(split["test_labels"])
+    has_val = "val_features" in split and len(split["val_features"]) > 0
+    X_val   = np.array(split["val_features"]) if has_val else None
+    y_val   = np.array(split["val_labels"])   if has_val else None
+
+    if model_save_path is None:
+        model_save_path = _default_model_path(algorithm, stem=split_path.stem)
+
+    job_id = str(uuid.uuid4())
+    _run_job_in_background(
+        job_id,
+        _run_pipeline,
+        X_train=X_train, y_train=y_train,
+        X_test=X_test,   y_test=y_test,
+        X_val=X_val,     y_val=y_val,
+        algorithm=algorithm, task=task,
+        cv_fold=cv_fold, opt_metric=opt_metric,
+        random_seed=random_seed,
+        model_save_path=model_save_path,
+    )
+    return {
+        "job_id":  job_id,
+        "status":  "running",
+        "message": (
+            f"Training started in the background. "
+            f"Call get_training_result('{job_id}') to poll for completion. "
+            "Keep polling every 15-30 seconds until status is 'completed' or 'failed'."
+        ),
+    }
+
+
+@mcp.tool()
+def get_training_result(job_id: str) -> dict[str, Any]:
+    """Poll the status of a background training job started by start_model_training.
+
+    Call this repeatedly (every 15-30 seconds) until status is "completed" or "failed".
+    When completed, the full training result (same as build_model_from_split_file) is
+    returned inside the "result" key.
+
+    Args:
+        job_id: The job_id returned by start_model_training().
+
+    Returns:
+        job_id, status ("running" | "completed" | "failed"),
+        elapsed_seconds, and either result (on success) or error (on failure).
+    """
+    if job_id not in _jobs:
+        raise ValueError(
+            f"Job '{job_id}' not found. "
+            "Job IDs are ephemeral — they are lost if the MCP server restarts. "
+            "Re-run start_model_training() to create a new job."
+        )
+    job = _jobs[job_id]
+    elapsed = round(time.time() - job["started_at"], 1)
+    response: dict[str, Any] = {
+        "job_id":          job_id,
+        "status":          job["status"],
+        "elapsed_seconds": elapsed,
+    }
+    if job["status"] == "running":
+        response["message"] = (
+            f"Still training ({elapsed}s elapsed). "
+            f"Call get_training_result('{job_id}') again in 15-30 seconds."
+        )
+    elif job["status"] == "completed":
+        response["result"]  = job["result"]
+        response["message"] = "Training completed successfully. See 'result' for full evaluation."
+    elif job["status"] == "failed":
+        response["error"]   = job["error"]
+        response["message"] = "Training failed. See 'error' for details."
+    return response
 
 
 @mcp.tool()
@@ -1105,6 +1373,472 @@ def get_hyperparameter_grids() -> dict[str, Any]:
         Dict mapping algorithm keys to their parameter grids.
     """
     return _to_serialisable(HYPERPARAMETERS)
+
+
+# ===========================================================================
+# Plot tools — dataset
+# ===========================================================================
+
+@mcp.tool()
+def plot_class_distribution(
+    labels: list,
+    class_names: Optional[list[str]] = None,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Bar chart of class counts with percentage annotations.
+
+    Saves the figure to disk and returns the file path.  Useful to inspect
+    the label balance of any dataset or split partition.
+
+    Args:
+        labels:      List of class labels (integers or strings).
+        class_names: Display names for each class (must match number of
+                     unique labels).  Omit to auto-generate.
+        title:       Axes title.
+        save_path:   Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("class_distribution")
+    _plot_class_distribution(
+        labels,
+        class_names=class_names,
+        title=title,
+        save_path=path,
+    )
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_split_statistics(
+    split_stats: dict[str, Any],
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Horizontal stacked bar showing train / val / test partition proportions.
+
+    Args:
+        split_stats: Statistics dict as returned by split_prepared_dataset
+                     (keys: "train", "val", "test", each with "count" and
+                     "percentage" sub-keys).
+        title:       Axes title.
+        save_path:   Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("split_statistics")
+    _plot_split_statistics(split_stats, title=title, save_path=path)
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_column_distribution(
+    dataset_id: str,
+    column: str,
+    hue: Optional[str] = None,
+    bins: int = 0,
+    kde: bool = True,
+    reference_line: Optional[float] = None,
+    reference_label: Optional[str] = None,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Histogram + optional KDE of any numeric column in a loaded dataset.
+
+    The dataset must have been loaded first with load_dataset.
+
+    Args:
+        dataset_id:      Dataset key (as returned by load_dataset).
+        column:          Column name to plot.
+        hue:             Optional column name used to colour sub-distributions.
+        bins:            Number of histogram bins.  0 = automatic.
+        kde:             Overlay KDE curve.
+        reference_line:  Optional x-value for a vertical reference line.
+        reference_label: Legend label for the reference line.
+        title:           Axes title.
+        save_path:       Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    if dataset_id not in _loaded_datasets:
+        raise KeyError(f"Dataset '{dataset_id}' not loaded. Call load_dataset first.")
+    df = _loaded_datasets[dataset_id]
+    bins_arg: int | str = bins if bins > 0 else "auto"
+    path = save_path or _default_plot_path(f"col_dist_{column}")
+    _plot_column_distribution(
+        df,
+        column=column,
+        hue=hue,
+        bins=bins_arg,
+        kde=kde,
+        reference_line=reference_line,
+        reference_label=reference_label,
+        title=title,
+        save_path=path,
+    )
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_class_balance_splits(
+    class_dist: dict[str, dict[str, int]],
+    class_names: Optional[list[str]] = None,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Grouped bar chart — class share (%) within each data split.
+
+    Args:
+        class_dist:  Dict mapping partition names ("train", "val", "test")
+                     to {class_label: count} sub-dicts.
+        class_names: Display names for each class.
+        title:       Axes title.
+        save_path:   Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("class_balance_splits")
+    _plot_class_balance_splits(
+        class_dist,
+        class_names=class_names,
+        title=title,
+        save_path=path,
+    )
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_dataset_comparison(
+    counts: dict[str, int],
+    xlabel: str = "Dataset",
+    ylabel: str = "Sample count",
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Bar chart comparing sample counts across multiple datasets or groups.
+
+    Args:
+        counts:    {group_label: count} mapping, e.g.
+                   {"PI3Kd vs PI3Ka": 1277, "PI3Kd vs PI3Kg": 980}.
+        xlabel:    X-axis label (default "Dataset").
+        ylabel:    Y-axis label (default "Sample count").
+        title:     Axes title.
+        save_path: Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("dataset_comparison")
+    _plot_dataset_comparison(
+        counts,
+        xlabel=xlabel,
+        ylabel=ylabel,
+        title=title,
+        save_path=path,
+    )
+    return {"saved_to": path}
+
+
+# ===========================================================================
+# Plot tools — classification
+# ===========================================================================
+
+@mcp.tool()
+def plot_confusion_matrix(
+    y_true: list,
+    y_pred: list,
+    class_names: Optional[list[str]] = None,
+    normalise: bool = False,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Annotated confusion-matrix heatmap.
+
+    Works for binary and multiclass problems.  class_names must match the
+    number of unique labels in y_true; omit to auto-generate from label values.
+
+    Args:
+        y_true:      Ground-truth labels.
+        y_pred:      Predicted labels.
+        class_names: Display labels for each class.  Omit to auto-generate.
+        normalise:   Row-normalise (show rates) instead of raw counts.
+        title:       Axes title.
+        save_path:   Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("confusion_matrix")
+    _plot_confusion_matrix(
+        y_true, y_pred,
+        class_names=class_names,
+        normalise=normalise,
+        title=title,
+        save_path=path,
+    )
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_roc_curve(
+    y_true: list,
+    y_score: list,
+    label: Optional[str] = None,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """ROC curve with AUC annotation (binary classification only).
+
+    Args:
+        y_true:    Binary ground-truth labels (0 / 1).
+        y_score:   Predicted probabilities for the positive class.
+        label:     Legend entry (e.g. model name).
+        title:     Axes title.
+        save_path: Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("roc_curve")
+    _plot_roc_curve(y_true, y_score, label=label, title=title, save_path=path)
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_pr_curve(
+    y_true: list,
+    y_score: list,
+    label: Optional[str] = None,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Precision-Recall curve with Average Precision annotation (binary only).
+
+    Args:
+        y_true:    Binary ground-truth labels (0 / 1).
+        y_score:   Predicted probabilities for the positive class.
+        label:     Legend entry.
+        title:     Axes title.
+        save_path: Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("pr_curve")
+    _plot_pr_curve(y_true, y_score, label=label, title=title, save_path=path)
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_metric_bar(
+    metrics_dict: dict[str, float],
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Horizontal bar chart of scalar evaluation metrics.
+
+    Only scalar metrics in [0, 1] whose names appear in the standard set
+    (MCC, BA, Accuracy, F1, AUC, Precision, Recall, etc.) are plotted;
+    list or dict values are silently skipped.
+
+    For multiclass evaluation dicts that nest metrics under "overall_metrics",
+    pass metrics_dict["overall_metrics"] directly.
+
+    Args:
+        metrics_dict: {metric_name: value} flat mapping of scalar scores.
+        title:        Axes title.
+        save_path:    Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("metric_bar")
+    _plot_metric_bar(metrics_dict, title=title, save_path=path)
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_feature_importance(
+    model_path: str,
+    top_n: int = 20,
+    feature_names: Optional[list[str]] = None,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Top-N feature importances bar chart for tree-based models (e.g. RFC).
+
+    Loads the model from disk.  GridSearchCV wrappers are unwrapped
+    automatically via best_estimator_.
+
+    Args:
+        model_path:    Absolute path to a saved .pkl model file.
+        top_n:         Number of top features to display (default 20).
+        feature_names: Display names for features.  Defaults to f0, f1, ...
+        title:         Axes title.
+        save_path:     Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    model = joblib.load(model_path)
+    path = save_path or _default_plot_path("feature_importance")
+    _plot_feature_importance(
+        model,
+        feature_names=feature_names,
+        top_n=top_n,
+        title=title,
+        save_path=path,
+    )
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_threshold_metrics(
+    y_true: list,
+    y_score: list,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Precision, Recall, and F1 vs decision threshold (binary classification).
+
+    Useful to choose an operating threshold other than 0.5.
+
+    Args:
+        y_true:    Binary ground-truth labels (0 / 1).
+        y_score:   Predicted probabilities for the positive class.
+        title:     Axes title.
+        save_path: Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("threshold_metrics")
+    _plot_threshold_metrics(y_true, y_score, title=title, save_path=path)
+    return {"saved_to": path}
+
+
+# ===========================================================================
+# Plot tools — regression
+# ===========================================================================
+
+@mcp.tool()
+def plot_actual_vs_predicted(
+    y_true: list,
+    y_pred: list,
+    model_id: Optional[str] = None,
+    xlabel: str = "Actual",
+    ylabel: str = "Predicted",
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Scatter of actual vs predicted values with identity line (regression).
+
+    Annotates R² and MAE in the plot.
+
+    Args:
+        y_true:    Ground-truth target values.
+        y_pred:    Model predictions.
+        model_id:  Model name shown in the legend.
+        xlabel:    X-axis label (default "Actual").
+        ylabel:    Y-axis label (default "Predicted").
+        title:     Axes title.
+        save_path: Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("actual_vs_predicted")
+    _plot_actual_vs_predicted(
+        y_true, y_pred,
+        model_id=model_id,
+        xlabel=xlabel,
+        ylabel=ylabel,
+        title=title,
+        save_path=path,
+    )
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_residuals(
+    y_true: list,
+    y_pred: list,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Residuals (y_true − y_pred) vs fitted values scatter (regression).
+
+    A horizontal zero line and a loess-style trend line are drawn.  Systematic
+    curvature indicates model mis-specification.
+
+    Args:
+        y_true:    Ground-truth values.
+        y_pred:    Model predictions.
+        title:     Axes title.
+        save_path: Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("residuals")
+    _plot_residuals(y_true, y_pred, title=title, save_path=path)
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_residual_histogram(
+    y_true: list,
+    y_pred: list,
+    bins: int = 0,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Histogram + KDE of prediction residuals (y_true − y_pred) (regression).
+
+    Args:
+        y_true:    Ground-truth values.
+        y_pred:    Model predictions.
+        bins:      Number of histogram bins.  0 = automatic.
+        title:     Axes title.
+        save_path: Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    bins_arg: int | str = bins if bins > 0 else "auto"
+    path = save_path or _default_plot_path("residual_histogram")
+    _plot_residual_histogram(y_true, y_pred, bins=bins_arg, title=title, save_path=path)
+    return {"saved_to": path}
+
+
+@mcp.tool()
+def plot_error_distribution(
+    y_true: list,
+    y_pred: list,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+) -> dict[str, str]:
+    """Histogram + KDE of absolute prediction errors |y_true − y_pred| (regression).
+
+    Marks the MAE with a vertical dashed line.
+
+    Args:
+        y_true:    Ground-truth values.
+        y_pred:    Model predictions.
+        title:     Axes title.
+        save_path: Where to write the PNG.  Auto-generated if omitted.
+
+    Returns:
+        {"saved_to": <absolute path to PNG>}
+    """
+    path = save_path or _default_plot_path("error_distribution")
+    _plot_error_distribution(y_true, y_pred, title=title, save_path=path)
+    return {"saved_to": path}
 
 
 # ===========================================================================
