@@ -49,13 +49,15 @@ import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     import pandas as pd
 
 # ── tuneable constants ──────────────────────────────────────────────────────
-MAX_ARRAY_ROWS = 20   # lists with more rows → shape summary
+MAX_ARRAY_ROWS        = 20    # lists with more rows → shape summary
+SESSION_TIMEOUT_MINS  = 60    # minutes of inactivity before a new session starts
+_CURRENT_SESSION_FILE = ".current_session.json"  # marker file inside log_dir
 
 # Result dict keys whose values are file paths → copied into the session dir.
 _PATH_KEY_SUBDIR: dict[str, str] = {
@@ -158,45 +160,81 @@ class SessionLogger:
     (``session_<id>.txt``) and sub-folders for each artifact category
     (``datasets/``, ``splits/``, ``models/``, ``plots/``, ``results/``).
 
+    **Session continuity** — the active session ID is persisted in
+    ``<log_dir>/.current_session.json``.  When the MCP server is restarted
+    (e.g. between prompts in the same LM Studio chat) the same session is
+    reused as long as the last activity was within *session_timeout_mins*
+    minutes.  A new session is only started after that timeout expires or
+    when no marker file exists.
+
     Thread-safe: all writes and copies are serialised through a Lock.
 
     Parameters
     ----------
     log_dir:
         Root directory for all session subdirectories.  Created automatically.
+    session_timeout_mins:
+        Minutes of inactivity before a new session is started (default 60).
     """
 
-    def __init__(self, log_dir: Path | str) -> None:
+    def __init__(
+        self,
+        log_dir: Path | str,
+        session_timeout_mins: int = SESSION_TIMEOUT_MINS,
+    ) -> None:
+        import time as _time
         import uuid as _uuid
 
         log_root = Path(log_dir)
         log_root.mkdir(parents=True, exist_ok=True)
 
-        ts              = datetime.now().strftime("%Y%m%d_%H%M%S")
-        short_id        = _uuid.uuid4().hex[:6]
-        self.username   = _get_git_username()
-        self.session_id = f"{self.username}_{ts}_{short_id}"
+        self.username    = _get_git_username()
+        marker_file      = log_root / _CURRENT_SESSION_FILE
+        resumed          = False
 
-        # Session subdirectory — everything for this session lives here
-        self._session_dir = log_root / f"session_{self.session_id}"
-        self._session_dir.mkdir(parents=True, exist_ok=True)
+        # ── Try to resume an existing session ──────────────────────────────
+        if marker_file.exists():
+            try:
+                marker = json.loads(marker_file.read_text(encoding="utf-8"))
+                last_seen   = float(marker.get("last_seen", 0))
+                age_minutes = (_time.time() - last_seen) / 60
+                if age_minutes < session_timeout_mins:
+                    candidate_dir = log_root / f"session_{marker['session_id']}"
+                    if candidate_dir.exists():
+                        self.session_id   = marker["session_id"]
+                        self._session_dir = candidate_dir
+                        resumed           = True
+            except Exception:  # noqa: BLE001 — corrupt marker → start fresh
+                pass
 
-        # Pre-create artifact subdirectories
-        for subdir in ("datasets", "splits", "models", "plots", "results"):
-            (self._session_dir / subdir).mkdir(exist_ok=True)
+        # ── Start a fresh session if not resumed ───────────────────────────
+        if not resumed:
+            ts              = datetime.now().strftime("%Y%m%d_%H%M%S")
+            short_id        = _uuid.uuid4().hex[:6]
+            self.session_id = f"{self.username}_{ts}_{short_id}"
+            self._session_dir = log_root / f"session_{self.session_id}"
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+            for subdir in ("datasets", "splits", "models", "plots", "results"):
+                (self._session_dir / subdir).mkdir(exist_ok=True)
 
         self._log_file = self._session_dir / f"session_{self.session_id}.txt"
         self._lock     = threading.Lock()
         self._counter  = 0
 
-        self._write({
+        # ── Persist / refresh the marker ───────────────────────────────────
+        self._marker_file = marker_file
+        self._touch_marker()
+
+        # ── Write open / resume event ──────────────────────────────────────
+        event: dict[str, Any] = {
             "session_id":  self.session_id,
-            "type":        "session_open",
+            "type":        "session_resumed" if resumed else "session_open",
             "timestamp":   self._now(),
             "username":    self.username,
             "session_dir": str(self._session_dir),
             "log_file":    str(self._log_file),
-        })
+        }
+        self._write(event)
 
     # ── properties ──────────────────────────────────────────────────────────
 
@@ -205,7 +243,70 @@ class SessionLogger:
         """Root of this session's artifact directory."""
         return self._session_dir
 
+    def force_new_session(self) -> str:
+        """Discard the current session and start a brand-new one immediately.
+
+        Deletes the ``.current_session.json`` marker, re-initialises all
+        internal state, and writes a ``session_open`` entry to the new log.
+        Returns the new session_id.
+        """
+        import uuid as _uuid
+        import time as _time
+
+        # Invalidate marker so __init__ logic won't resume it
+        try:
+            self._marker_file.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+        log_root = self._marker_file.parent
+        ts              = datetime.now().strftime("%Y%m%d_%H%M%S")
+        short_id        = _uuid.uuid4().hex[:6]
+        self.session_id = f"{self.username}_{ts}_{short_id}"
+        self._session_dir = log_root / f"session_{self.session_id}"
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+        for subdir in ("datasets", "splits", "models", "plots", "results"):
+            (self._session_dir / subdir).mkdir(exist_ok=True)
+        self._log_file  = self._session_dir / f"session_{self.session_id}.txt"
+        self._counter   = 0
+
+        self._touch_marker()
+        self._write({
+            "session_id":  self.session_id,
+            "type":        "session_open",
+            "timestamp":   self._now(),
+            "username":    self.username,
+            "session_dir": str(self._session_dir),
+            "log_file":    str(self._log_file),
+        })
+        return self.session_id
+
     # ── logging API ─────────────────────────────────────────────────────────
+
+    def log_thought(
+        self,
+        thought: str,
+        step: Optional[str] = None,
+    ) -> None:
+        """Record a free-form LLM reasoning step.
+
+        Parameters
+        ----------
+        thought:
+            The LLM's reasoning text (chain-of-thought, plan, observation, …).
+        step:
+            Optional label for the reasoning phase, e.g. ``"plan"``,
+            ``"observation"``, ``"decision"``.
+        """
+        entry: dict[str, Any] = {
+            "session_id": self.session_id,
+            "type":       "llm_thought",
+            "timestamp":  self._now(),
+            "thought":    thought,
+        }
+        if step:
+            entry["step"] = step
+        self._write(entry)
 
     def start_call(self, tool_name: str, kwargs: dict[str, Any]) -> str:
         """Record the start of a tool call; return a unique *call_id*."""
@@ -275,8 +376,25 @@ class SessionLogger:
         dest_dir = self._session_dir / subdir
         dest_dir.mkdir(exist_ok=True)
         dest = dest_dir / src.name
+        copy_error: Exception | None = None
         with self._lock:
-            shutil.copy2(src, dest)
+            try:
+                shutil.copy2(src, dest)
+            except PermissionError as exc:
+                copy_error = exc
+
+        if copy_error is not None:
+            # Windows: file locked by another process (e.g. joblib mmap).
+            # Skip the copy — the original file remains accessible.
+            self._write({
+                "session_id": self.session_id,
+                "type":       "artifact_copy_skipped",
+                "timestamp":  self._now(),
+                "reason":     "PermissionError — file locked by another process",
+                "source":     str(src),
+            })
+            return None
+
         self._write({
             "session_id": self.session_id,
             "type":       "artifact_saved",
@@ -345,8 +463,27 @@ class SessionLogger:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
+    def _touch_marker(self) -> None:
+        """Refresh the .current_session.json marker with the current timestamp.
+
+        Called on init and on every write so the marker always reflects the
+        time of the most recent activity.
+        """
+        import time as _time
+        marker = {
+            "session_id": self.session_id,
+            "username":   self.username,
+            "last_seen":  _time.time(),
+        }
+        # Write outside the main lock to avoid deadlock (called from _write)
+        self._marker_file.write_text(
+            json.dumps(marker, indent=2), encoding="utf-8"
+        )
+
     def _write(self, entry: dict[str, Any]) -> None:
         line = json.dumps(entry, default=str)
         with self._lock:
             with self._log_file.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
+        # Keep marker fresh so inactivity timeout resets on every event
+        self._touch_marker()

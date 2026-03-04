@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal, Optional
 
+import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import seaborn as sns
 
@@ -108,3 +109,4 @@ def save_figure(
     if tight:
         fig.tight_layout()
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)  # prevent figure accumulation in long-running servers

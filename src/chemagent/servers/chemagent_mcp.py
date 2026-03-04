@@ -1,71 +1,46 @@
-"""chemagent_mcp.py — single consolidated FastMCP server.
+"""chemagent_mcp.py — single consolidated FastMCP server (17 tools).
 
-Exposes all agent tools in one process:
+STANDARD WORKFLOW (data stays on disk — preferred):
+    find_datasets()                                          # discover CSVs
+    load_dataset("data/datasets/chembl_activity_data_O00329_P42336.csv")
+    compute_features(dataset_id, method="ECFP", n_bits=2048)
+    split_dataset(dataset_id, train_size=0.7, test_size=0.3, stratified=True)
+    job = train_model(split_file_path, algorithm="RFC",
+                      task="classification", opt_metric="balanced_accuracy")
+    result = check_training(job["job_id"])   # poll every 60 s
+    plot_classification_results(result["model_path"], split_file_path)
 
-  Dataset tools (formerly dataset_loader_mcp)
-  ─────────────────────────────────────────────
-  list_available_datasets      list CSV files in a directory
-  list_loaded_datasets         inspect in-memory state
-  list_featurizers             discover available fingerprint methods
-  load_dataset                 load any CSV for ML
-  get_dataset_smiles           retrieve SMILES for external featurization
-  featurize_dataset            compute fingerprints server-side (preferred)
-  prepare_ml_dataset           pair a dataset with externally computed features
-  split_prepared_dataset       create train/val/test splits and save .pkl
-  load_split                   reload a saved split .pkl
-  get_ml_ready_data            return feature matrix + labels (explicit flow)
-  get_dataset_info             inspect a dataset's status
+SHORTCUT (load+featurize+split synchronously, then trains in background):
+    job = run_pipeline("data/datasets/chembl_activity_data_O00329_P42336.csv",
+                       algorithm="RFC", task="classification")
+    result = check_training(job["job_id"])   # poll every 60 s
 
-  ML model tools (formerly ml_models_mcp)
-  ─────────────────────────────────────────────
-  train_model                  train + tune from raw arrays
-  predict                      inference from a saved .pkl model
-  evaluate_classification      classification metrics (binary + multi-class)
-  evaluate_regression          regression metrics
-  get_available_algorithms     discover algorithm info and hyperparameter grids
-  get_recommended_metrics      metric guidance per task type
+TOOLS
+─────────────────────────────────────────────
+Dataset
+  find_datasets          list CSV files in a directory
+  list_loaded_datasets   inspect in-memory state
+  list_featurizers       discover available fingerprint methods
+  load_dataset           load a CSV for ML
+  compute_features       compute molecular fingerprints server-side
+  split_dataset          create train/test splits, save .pkl
+  dataset_status         inspect a dataset's current load/prepare state
 
-  Model-builder tools (formerly model_builder_mcp)
-  ─────────────────────────────────────────────
-  build_model_from_split_file  full pipeline (tune+train+eval) from split .pkl  [blocking]
-  start_model_training         same pipeline as background job, returns job_id immediately
-  get_training_result          poll a background job started by start_model_training
-  build_model_from_arrays      full pipeline from feature arrays
-  get_hyperparameter_grids     inspect registered hyperparameter grids
+ML
+  get_ml_info            algorithms, hyperparameter grids, recommended metrics
+  train_model            non-blocking train+tune pipeline from split .pkl
+  check_training         poll a background training job
+  export_predictions     run inference on a split .pkl, save predictions CSV
 
-  Dataset plot tools
-  ─────────────────────────────────────────────
-  plot_class_distribution      bar chart of label counts with % annotations
-  plot_split_statistics        stacked bar of train/val/test proportions
-  plot_column_distribution     histogram + KDE of any numeric dataset column
-  plot_class_balance_splits    class share (%) per split — grouped bars
-  plot_dataset_comparison      sample-count comparison across datasets
+Plots
+  plot_dataset_info           class distribution, column histograms, split stats
+  plot_classification_results confusion matrix, ROC, PR, metric bar, importances
+  plot_regression_results     actual vs predicted, residuals, error distribution
 
-  Classification plot tools
-  ─────────────────────────────────────────────
-  plot_confusion_matrix        annotated heatmap (binary + multiclass)
-  plot_roc_curve               ROC curve with AUC (binary)
-  plot_pr_curve                Precision-Recall curve with AP (binary)
-  plot_metric_bar              horizontal bar of scalar evaluation metrics
-  plot_feature_importance      top-N Gini importances (tree-based models)
-  plot_threshold_metrics       Precision/Recall/F1 vs threshold (binary)
-
-  Regression plot tools
-  ─────────────────────────────────────────────
-  plot_actual_vs_predicted     scatter with identity line, R² and MAE
-  plot_residuals               residuals vs fitted scatter
-  plot_residual_histogram      histogram + KDE of residuals
-  plot_error_distribution      histogram + KDE of |y_true - y_pred|
-
-Preferred end-to-end workflow (data stays on disk):
-    load_dataset(...)
-    featurize_dataset(dataset_id, method="ECFP", n_bits=2048, radius=2)
-    split_prepared_dataset(dataset_id, train_size=0.7, test_size=0.3)
-    job = start_model_training(split_file_path, algorithm="RFC",
-                               task="classification",
-                               opt_metric="balanced_accuracy")
-    # poll until done:
-    result = get_training_result(job["job_id"])
+Utilities
+  log_thought            record reasoning in the session log
+  start_new_session      start a fresh session directory
+  run_pipeline           non-blocking shortcut: load → featurize → split → train
 """
 
 from __future__ import annotations
@@ -142,35 +117,25 @@ mcp = FastMCP("chemagent")
 _log_dir = Path(__file__).resolve().parents[3] / "data" / "logs"
 session_logger = SessionLogger(_log_dir)
 
-# Patch mcp.tool so EVERY subsequent @mcp.tool() decoration is automatically
-# wrapped with logging — no changes needed on individual tool functions.
-_real_mcp_tool = mcp.tool
-
-def _logging_tool_decorator(*dargs, **dkwargs):
-    """Replacement for mcp.tool() that injects call/result logging."""
-    decorator = _real_mcp_tool(*dargs, **dkwargs)
-
-    def wrap(fn):
-        @functools.wraps(fn)
-        def logged_fn(*args, **kwargs):
-            call_id   = session_logger.start_call(fn.__name__, kwargs)
-            t_start   = time.perf_counter()
-            try:
-                result      = fn(*args, **kwargs)
-                duration_ms = (time.perf_counter() - t_start) * 1000
-                session_logger.end_call(call_id, result=result, duration_ms=duration_ms)
-                # Copy any files produced by this call into the session directory
-                session_logger.copy_artifacts_from_result(result)
-                return result
-            except Exception as exc:
-                duration_ms = (time.perf_counter() - t_start) * 1000
-                session_logger.end_call(call_id, error=exc, duration_ms=duration_ms)
-                raise
-        return decorator(logged_fn)
-
-    return wrap
-
-mcp.tool = _logging_tool_decorator
+def _register(fn):
+    """Wrap *fn* with call/result logging and register it as an MCP tool."""
+    @functools.wraps(fn)
+    def logged_fn(*args, **kwargs):
+        call_id   = session_logger.start_call(fn.__name__, kwargs)
+        t_start   = time.perf_counter()
+        try:
+            result      = fn(*args, **kwargs)
+            duration_ms = (time.perf_counter() - t_start) * 1000
+            session_logger.end_call(call_id, result=result, duration_ms=duration_ms)
+            # Copy any files produced by this call into the session directory
+            session_logger.copy_artifacts_from_result(result)
+            return result
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - t_start) * 1000
+            session_logger.end_call(call_id, error=exc, duration_ms=duration_ms)
+            raise
+    mcp.add_tool(logged_fn)
+    return logged_fn
 
 # ---------------------------------------------------------------------------
 # In-memory state  (ephemeral — lost on server restart)
@@ -190,16 +155,29 @@ def _workspace_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _resolve_path(p: str) -> str:
+    """Resolve *p* against workspace root when it is a relative path.
+
+    This prevents files from being written into the server's cwd
+    (src/chemagent/servers/) when the server is launched via ``uv --directory``.
+    """
+    path = Path(p)
+    if not path.is_absolute():
+        path = _workspace_root() / path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def _default_model_path(algorithm: str, stem: str = "") -> str:
-    out_dir = _workspace_root() / "data" / "models"
+    out_dir = session_logger.session_dir / "models"
     out_dir.mkdir(parents=True, exist_ok=True)
     name = f"{stem}_{algorithm}.pkl" if stem else f"trained_model_{algorithm}.pkl"
     return str(out_dir / name)
 
 
 def _default_plot_path(name: str, ext: str = "png") -> str:
-    """Return an auto-generated path inside data/plots/."""
-    out_dir = _workspace_root() / "data" / "plots"
+    """Return an auto-generated path inside the session plots/ directory."""
+    out_dir = session_logger.session_dir / "plots"
     out_dir.mkdir(parents=True, exist_ok=True)
     return str(out_dir / f"{name}.{ext}")
 
@@ -240,44 +218,6 @@ def _build_evaluator(labels, predictions, probabilities, reg_class, model_id, mo
     )
 
 
-def _run_job_in_background(job_id: str, fn, *args, **kwargs) -> None:
-    """Run *fn* in a daemon thread; write result/error into _jobs[job_id]."""
-    def _worker():
-        t_start = time.perf_counter()
-        try:
-            result = fn(*args, **kwargs)
-            _jobs[job_id]["status"]      = "completed"
-            _jobs[job_id]["result"]      = result
-            session_logger.log_event(
-                "background_job_completed",
-                job_id=job_id,
-                duration_ms=round((time.perf_counter() - t_start) * 1000, 2),
-            )
-            # Copy model and any other files produced by the background job
-            session_logger.copy_artifacts_from_result(result)
-        except Exception as exc:  # noqa: BLE001
-            _jobs[job_id]["status"] = "failed"
-            _jobs[job_id]["error"]  = str(exc)
-            session_logger.log_event(
-                "background_job_failed",
-                job_id=job_id,
-                error=f"{type(exc).__name__}: {exc}",
-                duration_ms=round((time.perf_counter() - t_start) * 1000, 2),
-            )
-        finally:
-            _jobs[job_id]["finished_at"] = time.time()
-
-    _jobs[job_id] = {
-        "status":      "running",
-        "result":      None,
-        "error":       None,
-        "started_at":  time.time(),
-        "finished_at": None,
-    }
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-
-
 def _run_pipeline(
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -303,7 +243,7 @@ def _run_pipeline(
         random_seed=random_seed,
     )
 
-    model_save_path = str(Path(model_save_path).resolve())
+    model_save_path = _resolve_path(model_save_path)
     joblib.dump(ml_model.model, model_save_path)
 
     is_regression = task == "regression"
@@ -337,7 +277,6 @@ def _run_pipeline(
         "hyperparameters_searched": _to_serialisable(HYPERPARAMETERS.get(algorithm, {})),
         "train_evaluation":         _evaluate(X_train, y_train, "train"),
         "test_evaluation":          _evaluate(X_test,  y_test,  "test"),
-        "val_evaluation":           _evaluate(X_val, y_val, "val") if X_val is not None else None,
         "n_train":                  int(len(y_train)),
         "n_test":                   int(len(y_test)),
         "n_val":                    int(len(y_val)) if y_val is not None else 0,
@@ -345,37 +284,69 @@ def _run_pipeline(
     }
 
 
+def _run_job_in_background(job_id: str, fn, *args, **kwargs) -> None:
+    """Run *fn* in a daemon thread; write result/error into _jobs[job_id]."""
+    def _worker():
+        t_start = time.perf_counter()
+        try:
+            result = fn(*args, **kwargs)
+            _jobs[job_id]["status"] = "completed"
+            _jobs[job_id]["result"] = result
+            session_logger.log_event(
+                "background_job_completed",
+                job_id=job_id,
+                duration_ms=round((time.perf_counter() - t_start) * 1000, 2),
+            )
+            session_logger.copy_artifacts_from_result(result)
+        except Exception as exc:  # noqa: BLE001
+            _jobs[job_id]["status"] = "failed"
+            _jobs[job_id]["error"]  = str(exc)
+            session_logger.log_event(
+                "background_job_failed",
+                job_id=job_id,
+                error=f"{type(exc).__name__}: {exc}",
+                duration_ms=round((time.perf_counter() - t_start) * 1000, 2),
+            )
+        finally:
+            _jobs[job_id]["finished_at"] = time.time()
+
+    _jobs[job_id] = {
+        "status":      "running",
+        "result":      None,
+        "error":       None,
+        "started_at":  time.time(),
+        "finished_at": None,
+    }
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 # ===========================================================================
 # DATASET TOOLS
 # ===========================================================================
 
-@mcp.tool()
-def list_available_datasets(directory: str = "data/datasets") -> dict[str, Any]:
-    """List CSV files in any workspace-relative or absolute directory.
+@_register
+def find_datasets(directory: str = "data/datasets") -> dict[str, Any]:
+    """List CSV files available for ML in a directory.
+
+    Workflow: THIS TOOL → load_dataset(file_path)
 
     Args:
-        directory: Path to search for CSV files. May be absolute or relative
-                   to the workspace root (default: "data/datasets").
+        directory: Workspace-relative or absolute path to search (default: "data/datasets").
 
     Returns:
-        - datasets: List of CSV filenames found
-        - count: Number of files
-        - directory: Resolved absolute path searched
+        datasets (list of filenames), count, directory (resolved path).
     """
     return list_csv_files(directory)
 
 
-@mcp.tool()
+@_register
 def list_loaded_datasets() -> dict[str, Any]:
-    """List all datasets currently in server memory.
+    """List datasets currently in server memory (state is ephemeral — lost on restart).
 
-    IMPORTANT — state is ephemeral. All data is lost when the MCP server
-    restarts. If lists are empty, re-run load_dataset() and (if needed)
-    featurize_dataset() before continuing.
+    If lists are empty, re-run load_dataset() and compute_features() before continuing.
 
     Returns:
-        - loaded: dataset_ids in raw memory
-        - prepared: dataset_ids ready for splitting
+        loaded (raw), prepared (featurized + ready to split), totals, note.
     """
     return {
         "loaded":         list(_loaded_datasets.keys()),
@@ -386,18 +357,17 @@ def list_loaded_datasets() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_register
 def list_featurizers() -> dict[str, Any]:
     """List all available molecular featurization methods.
 
-    Returns name, parameters, and one-line description for every public
-    featurizer in chemagent.featurization. Use the method name directly as the
-    `method` argument to featurize_dataset().
+    Returns name, parameters, and description for each method.
+    Use the name directly as the `method` argument to compute_features().
     """
     return _list_featurizers_impl()
 
 
-@mcp.tool()
+@_register
 def load_dataset(
     file_path: str,
     label_col: str = "class_label",
@@ -407,40 +377,24 @@ def load_dataset(
     dataset_id: Optional[str] = None,
     directory: str = "",
 ) -> dict[str, Any]:
-    """Load any CSV dataset for machine learning.
+    """Load a CSV dataset into server memory for ML.
 
-    Supports three dataset types:
-      1. Molecular datasets with SMILES (featurize later with featurize_dataset)
-      2. Tabular datasets with named numeric feature columns (feature_cols)
-      3. Tabular datasets where all numeric columns except label/id are features
-         (auto-detection when feature_cols=None and smiles_col=None)
+    Workflow: find_datasets → THIS TOOL → compute_features
 
-    Examples:
-        # Molecular dataset — featurize server-side afterwards:
-        load_dataset("data/datasets/chembl_activity_data_O00329_P42336.csv",
-                     label_col="class_label", smiles_col="smiles", id_col="cid")
-
-        # Tabular, explicit feature columns:
-        load_dataset("data/my_data.csv", label_col="target",
-                     smiles_col=None, feature_cols=["f1", "f2", "f3"])
-
-        # Tabular, auto-detect numeric features:
-        load_dataset("data/my_data.csv", label_col="target", smiles_col=None)
+    Supports: (1) molecular datasets with SMILES, (2) tabular datasets with
+    explicit feature_cols, (3) tabular datasets with auto-detected numeric features.
 
     Args:
-        file_path: Absolute path OR filename within `directory` OR workspace-relative path.
-        label_col: Column to use as ML target (default: "class_label").
-        smiles_col: Column containing SMILES strings, or None if not present.
-        id_col: Column containing compound / sample IDs (optional).
-        feature_cols: Explicit list of numeric feature column names. Ignored if
-                      smiles_col is set.
-        dataset_id: Key for in-memory caching (default: stem of file_path).
-        directory: Directory prefix applied when file_path is not absolute.
+        file_path: Absolute, workspace-relative, or filename within `directory`.
+        label_col: Target column (default "class_label").
+        smiles_col: SMILES column, or None for non-molecular datasets.
+        id_col: Compound/sample ID column (optional).
+        feature_cols: Explicit feature column list (ignored when smiles_col is set).
+        dataset_id: In-memory cache key (default: CSV filename stem).
+        directory: Directory prefix when file_path is a bare filename.
 
     Returns:
-        dataset_id, n_samples, columns, label_col, label_stats, has_smiles,
-        has_precomputed_features, n_features (if pre-computed), smiles_sample,
-        next_step.
+        dataset_id, n_samples, label_col, label_stats, has_smiles, next_step.
     """
     df, meta = load_csv(
         file_path=file_path,
@@ -464,20 +418,12 @@ def load_dataset(
     return {k: v for k, v in meta.items() if not k.startswith("_")}
 
 
-@mcp.tool()
+# ---------------------------------------------------------------------------
+# Internal helpers — not registered as MCP tools
+# ---------------------------------------------------------------------------
+
 def get_dataset_smiles(dataset_id: str) -> dict[str, Any]:
-    """Retrieve SMILES strings from a loaded dataset.
-
-    Use this when featurizing externally. The returned list can be passed to
-    any featurizer, then features passed to prepare_ml_dataset().
-
-    Args:
-        dataset_id: ID from load_dataset().
-
-    Returns:
-        - smiles: Full list of SMILES strings
-        - n_samples: Number of molecules
-    """
+    """Retrieve SMILES strings from a loaded dataset (internal helper)."""
     if dataset_id not in _loaded_datasets:
         raise ValueError(f"Dataset '{dataset_id}' not loaded. Call load_dataset() first.")
     df = _loaded_datasets[dataset_id]
@@ -490,32 +436,25 @@ def get_dataset_smiles(dataset_id: str) -> dict[str, Any]:
     return {"dataset_id": dataset_id, "smiles": df[smiles_col].tolist(), "n_samples": len(df)}
 
 
-@mcp.tool()
-def featurize_dataset(
+@_register
+def compute_features(
     dataset_id: str,
     method: str = "ECFP",
     n_bits: int = 2048,
     radius: int = 2,
     label_col: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compute molecular fingerprints server-side and prepare dataset for ML.
+    """Compute molecular fingerprints server-side for a loaded dataset.
 
-    Requires the dataset to have a SMILES column. Features are stored
-    server-side — nothing large is returned to the LLM context.
-
-    Any public UpperCase function in chemagent/featurization/fingerprints.py
-    is automatically available as a method. Call list_featurizers() to see options.
-
-    Common methods:
-        "ECFP"  — Morgan circular fingerprints (ECFP4: radius=2, n_bits=2048)
-        "MACCS" — 166-bit structural MACCS keys
+    Features stay on disk — nothing large is returned to the LLM context.
+    Workflow: load_dataset → THIS TOOL → split_dataset
 
     Args:
         dataset_id: ID from load_dataset().
-        method: Featurizer name (default: "ECFP"). See list_featurizers().
-        n_bits: Passed to featurizer if accepted (default: 2048).
-        radius: Passed to featurizer if accepted (default: 2).
-        label_col: Override label column. Defaults to the column set in load_dataset().
+        method: Fingerprint method (default: "ECFP"). Call list_featurizers() to see all.
+        n_bits: Bit vector size (default: 2048).
+        radius: Morgan radius (default: 2, i.e. ECFP4).
+        label_col: Override label column from load_dataset().
 
     Returns:
         dataset_id, method, n_samples, n_features, label_stats, prepared=True, next_step.
@@ -536,31 +475,18 @@ def featurize_dataset(
         "label_stats": _label_stats(df[lc].values),
         "prepared":   True,
         "next_step": (
-            f"Call split_prepared_dataset('{dataset_id}', train_size=0.7, "
+            f"Call split_dataset('{dataset_id}', train_size=0.7, "
             "val_size=0.0, test_size=0.3, stratified=True) to create splits."
         ),
     }
 
 
-@mcp.tool()
 def prepare_ml_dataset(
     dataset_id: str,
     features: list[list[float]],
     label_col: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Pair a loaded dataset with externally computed features.
-
-    Use this when featurization was done outside the server (e.g. via a
-    separate tool) and you want to store the result server-side before splitting.
-
-    Args:
-        dataset_id: ID from load_dataset().
-        features: 2D feature matrix, shape (n_samples, n_features).
-        label_col: Override label column (defaults to what was set in load_dataset()).
-
-    Returns:
-        dataset_id, n_samples, n_features, label_stats, prepared=True.
-    """
+    """Pair external features with a loaded dataset (internal helper)."""
     if dataset_id not in _loaded_datasets:
         raise ValueError(f"Dataset '{dataset_id}' not loaded. Call load_dataset() first.")
     df  = _loaded_datasets[dataset_id]
@@ -580,8 +506,8 @@ def prepare_ml_dataset(
     }
 
 
-@mcp.tool()
-def split_prepared_dataset(
+@_register
+def split_dataset(
     dataset_id: str,
     split_type: Literal["random", "scaffold"] = "random",
     train_size: float = 0.8,
@@ -591,43 +517,27 @@ def split_prepared_dataset(
     stratified: bool = False,
     save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Split a prepared dataset into train / val / test sets and save to disk.
+    """Split a featurized dataset into train/val/test partitions and save to .pkl.
 
-    Splits are saved as a .pkl file so train_on_split_file and
-    build_model_from_split_file can load them without transferring feature
-    arrays through the LLM context.
-
-    Examples:
-        # Stratified 70/30 train/test (no validation):
-        split_prepared_dataset(dataset_id, train_size=0.7, val_size=0.0,
-                               test_size=0.3, stratified=True)
-
-        # Scaffold split with validation:
-        split_prepared_dataset(dataset_id, split_type="scaffold",
-                               train_size=0.8, val_size=0.1, test_size=0.1)
-
-        # Skip saving:
-        split_prepared_dataset(dataset_id, save_path="")
+    Workflow: compute_features → THIS TOOL → train_model(split_file_path)
 
     Args:
-        dataset_id: ID of the prepared dataset.
-        split_type: "random" or "scaffold".
-        train_size: Fraction for training (default 0.8).
-        val_size: Fraction for validation (default 0.1). Set to 0.0 for a
-                  two-way train/test split.
-        test_size: Fraction for test (default 0.1).
+        dataset_id: ID of a featurized dataset (from compute_features).
+        split_type: "random" (default) or "scaffold".
+        train_size: Training fraction (default 0.8).
+        val_size: Validation fraction (default 0.1). Use 0.0 for two-way split.
+        test_size: Test fraction (default 0.1).
         seed: Random seed (default 42).
-        stratified: Preserve class proportions (random splits only).
-        save_path: Where to save the .pkl. Defaults to
-                   "data/splits/<dataset_id>_<split_type>.pkl". Pass "" to skip.
+        stratified: Preserve class proportions — random splits only.
+        save_path: Output .pkl path. Defaults to session splits/ dir. Pass "" to skip.
 
     Returns:
         train/val/test metadata, statistics, saved_to path, next_step hint.
     """
     if dataset_id not in _processed_datasets:
         raise ValueError(
-            f"Dataset '{dataset_id}' not prepared. "
-            "Call featurize_dataset() or prepare_ml_dataset() first."
+            f"Dataset '{dataset_id}' not featurized. "
+            "Call compute_features() first."
         )
     processed    = _processed_datasets[dataset_id]
     split_result = split_processed(
@@ -642,6 +552,12 @@ def split_prepared_dataset(
 
     saved_to = None
     if save_path != "":
+        if save_path is None:
+            out_dir = session_logger.session_dir / "splits"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            save_path = str(out_dir / f"{dataset_id}_{split_type}.pkl")
+        else:
+            save_path = _resolve_path(save_path)
         saved_to = _save_split(
             save_dict=split_result["save_dict"],
             dataset_id=dataset_id,
@@ -676,54 +592,29 @@ def split_prepared_dataset(
         "seed":       seed,
         "saved_to":   saved_to,
         "next_step": (
-            f"Call start_model_training(split_file_path='{saved_to}', "
+            f"Call train_model(split_file_path='{saved_to}', "
             "algorithm='RFC', task='classification', opt_metric='balanced_accuracy') "
             "to train in the background (non-blocking). "
-            "Then poll with get_training_result(job_id) until status='completed'. "
+            "Then poll with check_training(job_id) until status='completed'. "
             "Features are on disk — not returned here."
-        ) if saved_to else "No file saved. Pass save_path or use prepare_ml_dataset().",
+        ) if saved_to else "No file saved. Pass save_path.",
     }
     if warnings_list:
         result["warnings"] = warnings_list
     return result
 
 
-@mcp.tool()
 def load_split(file_path: str) -> dict[str, Any]:
-    """Load a previously saved train/val/test split from a .pkl file.
-
-    Args:
-        file_path: Absolute or workspace-relative path to a .pkl file produced
-                   by split_prepared_dataset().
-
-    Returns:
-        'train', 'val', 'test' keys each containing features, labels, n_samples
-        (and smiles / cid if available). Plus 'file_path'.
-    """
+    """Load a saved train/val/test split .pkl (internal helper)."""
     return load_split_file(file_path)
 
 
-@mcp.tool()
 def get_ml_ready_data(dataset_id: str, as_lists: bool = True) -> dict[str, Any]:
-    """Return the processed feature matrix and labels for a prepared dataset.
-
-    Use this only when features must be passed explicitly through the LLM
-    context. For the standard workflow prefer split_prepared_dataset() →
-    build_model_from_split_file() to keep data on disk.
-
-    Args:
-        dataset_id: ID of a featurized / prepared dataset.
-        as_lists: True (default) — return features and labels as JSON lists.
-                  False — return shape/metadata only.
-
-    Returns:
-        dataset_id, shape, label_column, and (if as_lists) features, labels,
-        smiles, cid.
-    """
+    """Return the processed feature matrix and labels (internal helper)."""
     if dataset_id not in _processed_datasets:
         raise ValueError(
             f"Dataset '{dataset_id}' not prepared. "
-            "Call featurize_dataset() or prepare_ml_dataset() first."
+            "Call compute_features() first."
         )
     return _get_ml_ready_data_impl(
         processed=_processed_datasets[dataset_id],
@@ -732,9 +623,9 @@ def get_ml_ready_data(dataset_id: str, as_lists: bool = True) -> dict[str, Any]:
     )
 
 
-@mcp.tool()
-def get_dataset_info(dataset_id: str) -> dict[str, Any]:
-    """Get status and metadata for a loaded or prepared dataset.
+@_register
+def dataset_status(dataset_id: str) -> dict[str, Any]:
+    """Return load/prepare status and metadata for a dataset.
 
     Args:
         dataset_id: Dataset ID to inspect.
@@ -753,8 +644,11 @@ def get_dataset_info(dataset_id: str) -> dict[str, Any]:
 # ML MODEL TOOLS
 # ===========================================================================
 
-@mcp.tool()
-def train_model(
+# ---------------------------------------------------------------------------
+# Low-level array helpers — not registered as MCP tools
+# ---------------------------------------------------------------------------
+
+def _train_model_arrays(
     features: list[list[float]],
     labels: list[float],
     ml_algorithm: Literal["RFR", "RFC", "SVC"],
@@ -765,33 +659,7 @@ def train_model(
     model_save_path: Optional[str] = None,
     use_default_params: bool = False,
 ) -> dict[str, Any]:
-    """Train a machine learning model with hyperparameter optimization via GridSearchCV.
-
-    Supported algorithms:
-        RFC — Random Forest Classifier
-        RFR — Random Forest Regressor
-        SVC — Support Vector Classifier
-
-    Standard vs optimized:
-        use_default_params=True  → fast single fit ("standard hyperparameters")
-        use_default_params=False → GridSearchCV tuning ("optimized hyperparameters")
-
-    Args:
-        features: 2D array of features, shape (n_samples, n_features).
-        labels: Target values or class labels.
-        ml_algorithm: "RFC", "RFR", or "SVC".
-        reg_class: "regression", "classification", or "classification-cw".
-        opt_metric: GridSearchCV scoring metric (e.g. "f1", "roc_auc").
-        cv_fold: Number of CV folds (default 3).
-        random_seed: Random seed (default 42).
-        model_save_path: Where to save the .pkl. Defaults to
-                         "data/models/trained_model_<algorithm>.pkl".
-        use_default_params: Skip GridSearchCV when True (faster).
-
-    Returns:
-        best_params, cv_best_score, algorithm, model_trained, n_samples,
-        n_features, model_path, hyperparameters_mode.
-    """
+    """Train from raw arrays (internal helper)."""
     data     = _DataContainer(np.array(features), np.array(labels))
     ml_model = MLModel(
         data=data,
@@ -804,10 +672,8 @@ def train_model(
     )
 
     if model_save_path is None:
-        out_dir = _workspace_root() / "data" / "models"
-        out_dir.mkdir(exist_ok=True)
-        model_save_path = str(out_dir / f"trained_model_{ml_algorithm}.pkl")
-    model_save_path = str(Path(model_save_path).resolve())
+        model_save_path = _default_model_path(ml_algorithm)
+    model_save_path = _resolve_path(model_save_path)
     joblib.dump(ml_model.model, model_save_path)
 
     return {
@@ -823,23 +689,12 @@ def train_model(
     }
 
 
-@mcp.tool()
-def predict(
+def _predict(
     model_path: str,
     features: list[list[float]],
     reg_class: Literal["regression", "classification", "classification-cw"],
 ) -> dict[str, Any]:
-    """Generate predictions from a saved model.
-
-    Args:
-        model_path: Absolute path to a .pkl model produced by train_model().
-        features: 2D list of input features, shape (n_samples, n_features).
-        reg_class: Task type of the loaded model.
-
-    Returns:
-        predictions, probabilities (classification only), n_samples, model_path,
-        reg_class.
-    """
+    """Run inference from a saved model (internal helper)."""
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
     model = joblib.load(model_path)
@@ -857,7 +712,6 @@ def predict(
     }
 
 
-@mcp.tool()
 def evaluate_classification(
     labels: list[int],
     predictions: list[int],
@@ -865,19 +719,7 @@ def evaluate_classification(
     model_id: str = "Model",
     model_type: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Evaluate classification performance (binary and multi-class).
-
-    Binary: MCC, F1, AUC, Balanced Accuracy, Precision, Recall, TP/TN/FP/FN.
-    Multi-class: overall metrics + per-class breakdown + confusion matrix.
-
-    Args:
-        labels: Ground-truth class labels.
-        predictions: Predicted class labels.
-        probabilities: Class probabilities (n_samples, n_classes) — optional,
-                       used for AUC in binary tasks.
-        model_id: Label for the model (default "Model").
-        model_type: Optional type identifier.
-    """
+    """Classification metrics — binary and multi-class (internal helper)."""
     if len(predictions) != len(labels):
         raise ValueError(
             f"predictions ({len(predictions)}) and labels ({len(labels)}) length mismatch"
@@ -893,23 +735,13 @@ def evaluate_classification(
     return evaluator.prediction_performance_multiclass()
 
 
-@mcp.tool()
 def evaluate_regression(
     labels: list[float],
     predictions: list[float],
     model_id: str = "Model",
     model_type: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Evaluate regression model performance.
-
-    Returns MAE, MSE, RMSE, R², Pearson r.
-
-    Args:
-        labels: Ground-truth values.
-        predictions: Model predictions.
-        model_id: Label for the model (default "Model").
-        model_type: Optional type identifier.
-    """
+    """Regression metrics: MAE, MSE, RMSE, R², Pearson r (internal helper)."""
     if len(predictions) != len(labels):
         raise ValueError(
             f"predictions ({len(predictions)}) and labels ({len(labels)}) length mismatch"
@@ -918,72 +750,60 @@ def evaluate_regression(
                             ).prediction_performance_regression()
 
 
-@mcp.tool()
-def get_available_algorithms() -> dict[str, dict[str, Any]]:
-    """Get information about available ML algorithms and their hyperparameter grids.
+@_register
+def get_ml_info() -> dict[str, Any]:
+    """Return all ML reference information in one call: algorithms, hyperparameter grids, and recommended metrics.
+
+    Call once before choosing an algorithm or opt_metric for train_model().
 
     Returns:
-        Dict mapping algorithm codes to name, task_type, hyperparameters,
-        supports_multiclass, supports_class_weight, description.
+        algorithms: dict of algorithm code → name, task_type, hyperparameter grid,
+                    supports_multiclass, description.
+        recommended_metrics: dict of task type → optimization and evaluation metric lists.
     """
-    return {
+    algorithms = {
         "RFR": {
             "name": "Random Forest Regressor",
             "task_type": "regression",
-            "hyperparameters": HYPERPARAMETERS.get("RFR", {}),
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("RFR", {})),
             "supports_multiclass": False,
-            "supports_class_weight": False,
             "description": "Ensemble of decision trees for regression tasks",
         },
         "RFC": {
             "name": "Random Forest Classifier",
             "task_type": "classification",
-            "hyperparameters": HYPERPARAMETERS.get("RFC", {}),
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("RFC", {})),
             "supports_multiclass": True,
-            "supports_class_weight": True,
             "description": "Ensemble of decision trees for classification, handles multi-class",
         },
         "SVC": {
             "name": "Support Vector Classifier",
             "task_type": "classification",
-            "hyperparameters": HYPERPARAMETERS.get("SVC", {}),
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("SVC", {})),
             "supports_multiclass": True,
-            "supports_class_weight": True,
             "description": "SVM classifier with RBF/linear kernels, probability estimates enabled",
         },
     }
-
-
-@mcp.tool()
-def get_recommended_metrics() -> dict[str, Any]:
-    """Get recommended evaluation metrics per task type.
-
-    Returns:
-        Dict mapping task types to optimization and evaluation metric lists.
-        Covers binary_classification, binary_imbalanced, multiclass, regression.
-    """
-    return {
+    recommended_metrics = {
         "binary_classification": {
-            "optimization": ["f1", "roc_auc", "average_precision", "accuracy"],
-            "evaluation":   ["MCC", "F1", "Precision", "Recall", "AUC",
-                             "Average Precision", "Balanced Accuracy"],
+            "optimization": ["f1", "roc_auc", "average_precision", "balanced_accuracy"],
+            "evaluation":   ["MCC", "F1", "Precision", "Recall", "AUC", "Balanced Accuracy"],
         },
         "binary_imbalanced": {
             "optimization": ["f1", "average_precision", "roc_auc"],
             "evaluation":   ["MCC", "F1", "Precision", "Recall", "Balanced Accuracy"],
-            "note":         "Use reg_class='classification-cw' for automatic class weighting",
+            "note":         "Pass task='classification-cw' to train_model() for auto class-weighting",
         },
         "multiclass": {
-            "optimization": ["f1_macro", "f1_weighted", "balanced_accuracy", "accuracy"],
-            "evaluation":   ["MCC", "Balanced Accuracy", "F1_macro", "F1_weighted",
-                             "Precision_macro", "Recall_macro", "Accuracy"],
+            "optimization": ["f1_macro", "f1_weighted", "balanced_accuracy"],
+            "evaluation":   ["MCC", "Balanced Accuracy", "F1_macro", "F1_weighted", "Accuracy"],
         },
         "regression": {
-            "optimization": ["neg_mean_squared_error", "neg_root_mean_squared_error",
-                             "neg_mean_absolute_error", "r2"],
-            "evaluation":   ["RMSE", "MAE", "MSE", "R2", "Pearson r"],
+            "optimization": ["neg_mean_squared_error", "neg_mean_absolute_error", "r2"],
+            "evaluation":   ["RMSE", "MAE", "R2", "Pearson r"],
         },
     }
+    return {"algorithms": algorithms, "recommended_metrics": recommended_metrics}
 
 
 def train_on_split_file(
@@ -1020,8 +840,8 @@ def train_on_split_file(
         opt_metric: GridSearchCV scoring metric.
         cv_fold: Number of CV folds (default 5).
         random_seed: Random seed (default 42).
-        model_save_path: Where to save the model. Defaults to
-                         "data/models/<split_stem>_<algorithm>.pkl".
+        model_save_path: Where to save the model. Defaults to the session
+                         models/ directory.
         use_default_params: Skip GridSearchCV when True.
 
     Returns:
@@ -1032,7 +852,7 @@ def train_on_split_file(
         out_dir = _workspace_root() / "data" / "models"
         out_dir.mkdir(exist_ok=True)
         model_save_path = str(out_dir / f"{Path(split_file_path).stem}_{ml_algorithm}.pkl")
-    return train_model(
+    return _train_model_arrays(
         features=data[f"{split}_features"].tolist(),
         labels=data[f"{split}_labels"].tolist(),
         ml_algorithm=ml_algorithm,
@@ -1045,40 +865,121 @@ def train_on_split_file(
     )
 
 
+@_register
+def export_predictions(
+    model_path: str,
+    split_file_path: str,
+    task: Literal["regression", "classification", "classification-cw"] = "classification",
+    split: Literal["train", "val", "test"] = "test",
+    save_path: Optional[str] = None,
+) -> dict[str, Any]:
+    """Run inference on a split .pkl and export per-sample predictions to a CSV.
+
+    Loads the model and split from disk, predicts on the chosen partition, and
+    writes a CSV with columns: cid (if available), smiles (if available),
+    true_label, predicted_label, prob_class_0, prob_class_1 (classification)
+    or predicted_value (regression). Also saves aggregated metrics.
+
+    Workflow: check_training → THIS TOOL → plot_classification_results
+
+    Args:
+        model_path: Path to .pkl model from train_model() / check_training().
+        split_file_path: Path to the .pkl split file from split_dataset().
+        task: "classification" (default), "classification-cw", or "regression".
+        split: Partition to predict on — "test" (default), "train", or "val".
+        save_path: Output CSV path. Defaults to <session>/results/<stem>_<split>_predictions.csv.
+
+    Returns:
+        csv_path, metrics_path, metrics dict, n_samples, columns.
+    """
+    import pandas as pd
+
+    data   = joblib.load(split_file_path)
+    labels = data[f"{split}_labels"].tolist()
+    result = _predict(model_path=model_path,
+                      features=data[f"{split}_features"].tolist(),
+                      reg_class=task)
+
+    model_stem    = Path(model_path).stem
+    is_regression = task == "regression"
+
+    # Optional metadata columns stored by split_dataset()
+    cid_key    = f"{split}_cid"
+    smiles_key = f"{split}_smiles"
+    cid_col    = data[cid_key].tolist()    if cid_key    in data else None
+    smiles_col = data[smiles_key].tolist() if smiles_key in data else None
+
+    # Build per-sample DataFrame
+    if is_regression:
+        df_out = pd.DataFrame({
+            "true_label":      labels,
+            "predicted_value": result["predictions"],
+        })
+    else:
+        proba = result.get("probabilities") or []
+        n_classes = len(proba[0]) if proba else 0
+        df_out = pd.DataFrame({"true_label": labels, "predicted_label": result["predictions"]})
+        for c in range(n_classes):
+            df_out[f"prob_class_{c}"] = [p[c] for p in proba]
+
+    # Prepend compound metadata columns when present in the split file
+    if smiles_col is not None:
+        df_out.insert(0, "smiles", smiles_col)
+    if cid_col is not None:
+        df_out.insert(0, "cid", cid_col)
+
+    # Metrics
+    metrics_dict = (
+        evaluate_regression(labels=labels, predictions=result["predictions"],
+                            model_id=model_stem)
+        if is_regression
+        else evaluate_classification(labels=labels, predictions=result["predictions"],
+                                     probabilities=result.get("probabilities"),
+                                     model_id=model_stem)
+    )
+
+    # Save paths — use model_stem only (it already encodes the split file name)
+    # to keep filenames short enough for Windows' 260-char path limit.
+    if save_path is None:
+        out_dir = session_logger.session_dir / "results"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base     = f"{model_stem}_{split}"
+        save_path     = str(out_dir / f"{base}_predictions.csv")
+        metrics_path  = str(out_dir / f"{base}_metrics.pkl")
+    else:
+        save_path    = str(Path(save_path).resolve())
+        metrics_path = str(Path(save_path).with_suffix("").as_posix() + "_metrics.pkl")
+
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    df_out.to_csv(save_path, index=False)
+    joblib.dump(metrics_dict, metrics_path)
+
+    return {
+        "csv_path":     save_path,
+        "metrics_path": metrics_path,
+        "metrics":      metrics_dict,
+        "n_samples":    len(labels),
+        "columns":      list(df_out.columns),
+    }
+
+
 def predict_from_split_file(
     model_path: str,
     split_file_path: str,
-    reg_class: Literal["regression", "classification", "classification-cw"],
+    reg_class: Literal["regression", "classification", "classification-cw"] = "classification",
     split: Literal["train", "val", "test"] = "test",
     results_save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Run inference on a split .pkl, auto-evaluate, and save results to disk.
-
-    Preferred over predict() when features were saved by split_prepared_dataset().
-    Results and metrics are automatically saved to data/results/.
-
-    Args:
-        model_path: Path to .pkl model produced by train_model() or
-                    train_on_split_file().
-        split_file_path: Path to the .pkl split file.
-        reg_class: Task type.
-        split: Which partition to predict on (default: "test").
-        results_save_path: Where to save predictions. Defaults to
-                           "data/results/<split_stem>_<model_stem>_<split>_predictions.pkl".
-                           Metrics are saved alongside with "_metrics.pkl" suffix.
-
-    Returns:
-        All fields from predict() plus: labels, metrics, results_path, metrics_path.
-    """
+    """Internal helper — raw predictions + pkl dump. Use export_predictions() for the MCP tool."""
     data   = joblib.load(split_file_path)
     labels = data[f"{split}_labels"].tolist()
-    result = predict(model_path=model_path,
+    result = _predict(model_path=model_path,
                      features=data[f"{split}_features"].tolist(),
                      reg_class=reg_class)
     result["labels"] = labels
 
-    model_stem       = Path(model_path).stem
-    is_regression    = reg_class == "regression"
+    model_stem    = Path(model_path).stem
+    is_regression = reg_class == "regression"
     metrics_dict = (
         evaluate_regression(labels=labels, predictions=result["predictions"],
                             model_id=model_stem)
@@ -1090,9 +991,9 @@ def predict_from_split_file(
     result["metrics"] = metrics_dict
 
     if results_save_path is None:
-        out_dir = _workspace_root() / "data" / "results"
+        out_dir = session_logger.session_dir / "results"
         out_dir.mkdir(parents=True, exist_ok=True)
-        base      = f"{Path(split_file_path).stem}_{model_stem}_{split}"
+        base      = f"{model_stem}_{split}"
         results_save_path = str(out_dir / f"{base}_predictions.pkl")
         metrics_save_path = str(out_dir / f"{base}_metrics.pkl")
     else:
@@ -1102,7 +1003,7 @@ def predict_from_split_file(
         ))
 
     Path(results_save_path).parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(result,      results_save_path)
+    joblib.dump(result,       results_save_path)
     joblib.dump(metrics_dict, metrics_save_path)
     result["results_path"] = results_save_path
     result["metrics_path"] = metrics_save_path
@@ -1110,10 +1011,9 @@ def predict_from_split_file(
 
 
 # ===========================================================================
-# MODEL BUILDER TOOLS
+# MODEL TRAINING TOOLS
 # ===========================================================================
 
-@mcp.tool()
 def build_model_from_split_file(
     split_file_path: str,
     algorithm: Literal["RFC", "RFR", "SVC"] = "RFC",
@@ -1123,40 +1023,7 @@ def build_model_from_split_file(
     random_seed: int = 42,
     model_save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """[BLOCKING] Train, tune, and evaluate a full pipeline from a split .pkl file.
-
-    WARNING: This tool blocks until training finishes. For any representation
-    larger than MACCS (e.g. ECFP, RDKitFP, AtomPairFP) or any large dataset
-    this will time out. Use start_model_training() instead — it is identical
-    but returns immediately and never times out.
-
-    Runs: hyperparameter tuning → GridSearchCV → refit → save → evaluate all splits.
-
-    PREFERRED alternative (use this):
-        job = start_model_training(split_file_path, algorithm="RFC", ...)
-        result = get_training_result(job["job_id"])  # poll until completed
-
-    Only use build_model_from_split_file for quick smoke-tests with MACCS keys
-    where training is known to complete in a few seconds.
-
-    Args:
-        split_file_path: Path to .pkl split file from split_prepared_dataset().
-                         Must contain train_features, train_labels,
-                         test_features, test_labels. Optional val_*.
-        algorithm: "RFC", "RFR", or "SVC".
-        task: "classification", "classification-cw", or "regression".
-        cv_fold: Number of GridSearchCV folds (default 5).
-        opt_metric: Scoring string for GridSearchCV (default "balanced_accuracy").
-                    Use None for estimator default.
-        random_seed: Random seed (default 42).
-        model_save_path: Where to save the model .pkl. Defaults to
-                         "data/models/<split_stem>_<algorithm>.pkl".
-
-    Returns:
-        algorithm, task, cv_fold, opt_metric, best_params, cv_best_score,
-        model_path, hyperparameters_searched, train_evaluation, test_evaluation,
-        val_evaluation (or None), n_train, n_test, n_val, n_features.
-    """
+    """Blocking pipeline: tune+train+eval from a split .pkl (internal helper used by run_pipeline)."""
     split_path = Path(split_file_path)
     if not split_path.exists():
         split_path = _workspace_root() / split_file_path
@@ -1186,8 +1053,8 @@ def build_model_from_split_file(
     )
 
 
-@mcp.tool()
-def start_model_training(
+@_register
+def train_model(
     split_file_path: str,
     algorithm: Literal["RFC", "RFR", "SVC"] = "RFC",
     task: Literal["classification", "classification-cw", "regression"] = "classification",
@@ -1196,31 +1063,25 @@ def start_model_training(
     random_seed: int = 42,
     model_save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """PREFERRED tool for end-to-end model training. Non-blocking, works for all
-    molecular representations and dataset sizes (ECFP, MACCS, RDKitFP, etc.).
+    """Train and tune a model from a split .pkl file. Non-blocking — returns a job_id immediately.
 
-    Starts training in the background and returns a job_id immediately —
-    the tool call never times out regardless of how long training takes.
-    Poll get_training_result(job_id) every 15-30 s until status='completed'.
+    Workflow: split_dataset → THIS TOOL → check_training(job_id)
 
-    Always use this instead of build_model_from_split_file.
-
-    Workflow:
-        job = start_model_training(split_file_path, algorithm="RFC", ...)
-        result = get_training_result(job["job_id"])   # poll until status='completed'
+    Poll check_training(job_id) every 60 s until status='completed' or 'failed'.
+    The full evaluation result is in check_training(...)[\"result\"] when done.
 
     Args:
-        split_file_path: Path to .pkl split file from split_prepared_dataset().
-        algorithm: "RFC", "RFR", or "SVC".
-        task: "classification", "classification-cw", or "regression".
-        cv_fold: Number of GridSearchCV folds (default 5).
-        opt_metric: Scoring string for GridSearchCV (default "balanced_accuracy").
+        split_file_path: Path to .pkl produced by split_dataset(). Must contain
+                         train_features, train_labels, test_features, test_labels.
+        algorithm: "RFC", "RFR", or "SVC" (default "RFC"). See get_ml_info().
+        task: "classification" (default), "classification-cw", or "regression".
+        cv_fold: GridSearchCV folds (default 5).
+        opt_metric: Scoring metric for GridSearchCV (default "balanced_accuracy").
         random_seed: Random seed (default 42).
-        model_save_path: Where to save the model .pkl. Defaults to
-                         data/models/<split_stem>_<algorithm>.pkl.
+        model_save_path: Output .pkl path. Defaults to session models/ dir.
 
     Returns:
-        job_id, status="running", message with polling instructions.
+        job_id, status="running", message with polling instruction.
     """
     split_path = Path(split_file_path)
     if not split_path.exists():
@@ -1242,8 +1103,7 @@ def start_model_training(
 
     job_id = str(uuid.uuid4())
     _run_job_in_background(
-        job_id,
-        _run_pipeline,
+        job_id, _run_pipeline,
         X_train=X_train, y_train=y_train,
         X_test=X_test,   y_test=y_test,
         X_val=X_val,     y_val=y_val,
@@ -1257,32 +1117,34 @@ def start_model_training(
         "status":  "running",
         "message": (
             f"Training started in the background. "
-            f"Call get_training_result('{job_id}') to poll for completion. "
-            "Keep polling every 15-30 seconds until status is 'completed' or 'failed'."
+            f"Call check_training('{job_id}') to poll for completion. "
+            "Poll every 60 seconds until status is 'completed' or 'failed'."
         ),
     }
 
 
-@mcp.tool()
-def get_training_result(job_id: str) -> dict[str, Any]:
-    """Poll the status of a background training job started by start_model_training.
+@_register
+def check_training(job_id: str) -> dict[str, Any]:
+    """Poll a background training job started by train_model().
 
-    Call this repeatedly (every 15-30 seconds) until status is "completed" or "failed".
-    When completed, the full training result (same as build_model_from_split_file) is
-    returned inside the "result" key.
+    Workflow: train_model → THIS TOOL (poll until done) → plot_classification_results
+
+    Call repeatedly every 60 seconds until status is 'completed' or 'failed'.
+    The full pipeline result (best_params, train/test metrics, model_path) is in
+    the 'result' key when completed.
 
     Args:
-        job_id: The job_id returned by start_model_training().
+        job_id: The job_id returned by train_model().
 
     Returns:
-        job_id, status ("running" | "completed" | "failed"),
-        elapsed_seconds, and either result (on success) or error (on failure).
+        job_id, status ("running" | "completed" | "failed"), elapsed_seconds,
+        and either result (on success) or error (on failure).
     """
     if job_id not in _jobs:
         raise ValueError(
             f"Job '{job_id}' not found. "
-            "Job IDs are ephemeral — they are lost if the MCP server restarts. "
-            "Re-run start_model_training() to create a new job."
+            "Job IDs are ephemeral — lost if the MCP server restarts. "
+            "Re-run train_model() to create a new job."
         )
     job = _jobs[job_id]
     elapsed = round(time.time() - job["started_at"], 1)
@@ -1294,7 +1156,7 @@ def get_training_result(job_id: str) -> dict[str, Any]:
     if job["status"] == "running":
         response["message"] = (
             f"Still training ({elapsed}s elapsed). "
-            f"Call get_training_result('{job_id}') again in 15-30 seconds."
+            f"Call check_training('{job_id}') again in 60 seconds."
         )
     elif job["status"] == "completed":
         response["result"]  = job["result"]
@@ -1305,7 +1167,6 @@ def get_training_result(job_id: str) -> dict[str, Any]:
     return response
 
 
-@mcp.tool()
 def build_model_from_arrays(
     train_features: list[list[float]],
     train_labels: list[float],
@@ -1320,26 +1181,7 @@ def build_model_from_arrays(
     val_features: Optional[list[list[float]]] = None,
     val_labels: Optional[list[float]] = None,
 ) -> dict[str, Any]:
-    """Train, tune, and evaluate a full pipeline from feature arrays.
-
-    Use only when a split file is not available. For larger datasets prefer
-    build_model_from_split_file to avoid bloating the LLM context.
-
-    Runs the same full pipeline as build_model_from_split_file.
-
-    Args:
-        train_features, train_labels, test_features, test_labels: Data arrays.
-        algorithm: "RFC", "RFR", or "SVC".
-        task: "classification", "classification-cw", or "regression".
-        cv_fold: Number of CV folds (default 5).
-        opt_metric: GridSearchCV scoring string.
-        random_seed: Random seed (default 42).
-        model_save_path: Where to save the model .pkl.
-        val_features, val_labels: Optional validation set.
-
-    Returns:
-        Same structure as build_model_from_split_file.
-    """
+    """Train pipeline from raw arrays (internal helper — use train_model when possible)."""
     if len(train_features) != len(train_labels):
         raise ValueError("train_features and train_labels length mismatch")
     if len(test_features) != len(test_labels):
@@ -1362,483 +1204,431 @@ def build_model_from_arrays(
     )
 
 
-@mcp.tool()
 def get_hyperparameter_grids() -> dict[str, Any]:
-    """Return all registered hyperparameter grids for RFC, RFR, and SVC.
-
-    Useful to verify what parameter ranges will be searched during
-    build_model_from_split_file before running the full pipeline.
-
-    Returns:
-        Dict mapping algorithm keys to their parameter grids.
-    """
+    """Return all registered hyperparameter grids (internal helper)."""
     return _to_serialisable(HYPERPARAMETERS)
 
 
 # ===========================================================================
-# Plot tools — dataset
+# Plot tools
 # ===========================================================================
 
-@mcp.tool()
-def plot_class_distribution(
-    labels: list,
-    class_names: Optional[list[str]] = None,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Bar chart of class counts with percentage annotations.
-
-    Saves the figure to disk and returns the file path.  Useful to inspect
-    the label balance of any dataset or split partition.
-
-    Args:
-        labels:      List of class labels (integers or strings).
-        class_names: Display names for each class (must match number of
-                     unique labels).  Omit to auto-generate.
-        title:       Axes title.
-        save_path:   Where to write the PNG.  Auto-generated if omitted.
-
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    path = save_path or _default_plot_path("class_distribution")
-    _plot_class_distribution(
-        labels,
-        class_names=class_names,
-        title=title,
-        save_path=path,
-    )
-    return {"saved_to": path}
-
-
-@mcp.tool()
-def plot_split_statistics(
-    split_stats: dict[str, Any],
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Horizontal stacked bar showing train / val / test partition proportions.
-
-    Args:
-        split_stats: Statistics dict as returned by split_prepared_dataset
-                     (keys: "train", "val", "test", each with "count" and
-                     "percentage" sub-keys).
-        title:       Axes title.
-        save_path:   Where to write the PNG.  Auto-generated if omitted.
-
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    path = save_path or _default_plot_path("split_statistics")
-    _plot_split_statistics(split_stats, title=title, save_path=path)
-    return {"saved_to": path}
-
-
-@mcp.tool()
-def plot_column_distribution(
+@_register
+def plot_dataset_info(
     dataset_id: str,
-    column: str,
-    hue: Optional[str] = None,
-    bins: int = 0,
-    kde: bool = True,
-    reference_line: Optional[float] = None,
-    reference_label: Optional[str] = None,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Histogram + optional KDE of any numeric column in a loaded dataset.
+    split_file_path: Optional[str] = None,
+    column: Optional[str] = None,
+    plots: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Generate exploratory plots for a loaded dataset.
 
-    The dataset must have been loaded first with load_dataset.
+    Workflow: load_dataset → compute_features → split_dataset → THIS TOOL
+
+    Available plots (pass in `plots` list, or omit/use ["all"] for everything):
+        "class_distribution"  — bar chart of label counts (always generated)
+        "column_distribution" — histogram+KDE for `column` (or all numeric cols if column=None)
+        "split_statistics"    — train/val/test proportions (requires split_file_path)
+        "class_balance_splits"— class % per split (requires split_file_path)
 
     Args:
-        dataset_id:      Dataset key (as returned by load_dataset).
-        column:          Column name to plot.
-        hue:             Optional column name used to colour sub-distributions.
-        bins:            Number of histogram bins.  0 = automatic.
-        kde:             Overlay KDE curve.
-        reference_line:  Optional x-value for a vertical reference line.
-        reference_label: Legend label for the reference line.
-        title:           Axes title.
-        save_path:       Where to write the PNG.  Auto-generated if omitted.
+        dataset_id: ID from load_dataset().
+        split_file_path: Path to a .pkl from split_dataset() — required for split plots.
+        column: Specific column for column_distribution. Omit to plot all numeric cols.
+        plots: List of plot names to generate, or ["all"] / None for all available.
 
     Returns:
-        {"saved_to": <absolute path to PNG>}
+        Dict mapping plot name → saved PNG path for each generated figure.
     """
     if dataset_id not in _loaded_datasets:
-        raise KeyError(f"Dataset '{dataset_id}' not loaded. Call load_dataset first.")
-    df = _loaded_datasets[dataset_id]
-    bins_arg: int | str = bins if bins > 0 else "auto"
-    path = save_path or _default_plot_path(f"col_dist_{column}")
-    _plot_column_distribution(
-        df,
-        column=column,
-        hue=hue,
-        bins=bins_arg,
-        kde=kde,
-        reference_line=reference_line,
-        reference_label=reference_label,
-        title=title,
-        save_path=path,
-    )
-    return {"saved_to": path}
+        raise KeyError(f"Dataset '{dataset_id}' not loaded. Call load_dataset() first.")
+
+    df        = _loaded_datasets[dataset_id]
+    label_col = df.attrs.get("label_col", "class_label")
+    want_all  = not plots or plots == ["all"]
+    results: dict[str, Any] = {}
+
+    # --- class_distribution (always included) ---
+    if want_all or "class_distribution" in plots:
+        path = _default_plot_path(f"{dataset_id}_class_distribution")
+        _plot_class_distribution(df[label_col].tolist(), title=f"{dataset_id} — class distribution", save_path=path)
+        results["class_distribution"] = path
+
+    # --- column_distribution ---
+    if want_all or "column_distribution" in plots:
+        cols = [column] if column else [c for c in df.columns if df[c].dtype.kind in "iufc" and c != label_col]
+        for col in cols:
+            p = _default_plot_path(f"{dataset_id}_col_dist_{col}")
+            _plot_column_distribution(df, column=col, title=f"{dataset_id} — {col}", save_path=p)
+            results[f"column_distribution_{col}"] = p
+
+    # --- split_statistics and class_balance_splits ---
+    if split_file_path and (want_all or "split_statistics" in plots or "class_balance_splits" in plots):
+        split_path = Path(split_file_path)
+        if not split_path.exists():
+            split_path = _workspace_root() / split_file_path
+        if split_path.exists():
+            split_data = joblib.load(split_path)
+            # Build statistics dict expected by _plot_split_statistics
+            split_stats: dict[str, dict] = {}
+            for part in ("train", "val", "test"):
+                lbl_key = f"{part}_labels"
+                if lbl_key in split_data and len(split_data[lbl_key]) > 0:
+                    split_stats[part] = {"count": len(split_data[lbl_key])}
+            total = sum(v["count"] for v in split_stats.values()) or 1
+            for v in split_stats.values():
+                v["percentage"] = round(v["count"] / total * 100, 1)
+
+            if want_all or "split_statistics" in plots:
+                p = _default_plot_path(f"{dataset_id}_split_statistics")
+                _plot_split_statistics(split_stats, title=f"{dataset_id} — split sizes", save_path=p)
+                results["split_statistics"] = p
+
+            if want_all or "class_balance_splits" in plots:
+                import collections
+                class_dist: dict[str, dict] = {}
+                for part in ("train", "val", "test"):
+                    lbl_key = f"{part}_labels"
+                    if lbl_key in split_data and len(split_data[lbl_key]) > 0:
+                        counts = collections.Counter(split_data[lbl_key].tolist())
+                        class_dist[part] = dict(counts)
+                if class_dist:
+                    p = _default_plot_path(f"{dataset_id}_class_balance_splits")
+                    _plot_class_balance_splits(class_dist, title=f"{dataset_id} — class balance per split", save_path=p)
+                    results["class_balance_splits"] = p
+
+    results["generated"] = list(results.keys())
+    return results
 
 
-@mcp.tool()
-def plot_class_balance_splits(
-    class_dist: dict[str, dict[str, int]],
-    class_names: Optional[list[str]] = None,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Grouped bar chart — class share (%) within each data split.
-
-    Args:
-        class_dist:  Dict mapping partition names ("train", "val", "test")
-                     to {class_label: count} sub-dicts.
-        class_names: Display names for each class.
-        title:       Axes title.
-        save_path:   Where to write the PNG.  Auto-generated if omitted.
-
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    path = save_path or _default_plot_path("class_balance_splits")
-    _plot_class_balance_splits(
-        class_dist,
-        class_names=class_names,
-        title=title,
-        save_path=path,
-    )
-    return {"saved_to": path}
-
-
-@mcp.tool()
-def plot_dataset_comparison(
-    counts: dict[str, int],
-    xlabel: str = "Dataset",
-    ylabel: str = "Sample count",
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Bar chart comparing sample counts across multiple datasets or groups.
-
-    Args:
-        counts:    {group_label: count} mapping, e.g.
-                   {"PI3Kd vs PI3Ka": 1277, "PI3Kd vs PI3Kg": 980}.
-        xlabel:    X-axis label (default "Dataset").
-        ylabel:    Y-axis label (default "Sample count").
-        title:     Axes title.
-        save_path: Where to write the PNG.  Auto-generated if omitted.
-
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    path = save_path or _default_plot_path("dataset_comparison")
-    _plot_dataset_comparison(
-        counts,
-        xlabel=xlabel,
-        ylabel=ylabel,
-        title=title,
-        save_path=path,
-    )
-    return {"saved_to": path}
-
-
-# ===========================================================================
-# Plot tools — classification
-# ===========================================================================
-
-@mcp.tool()
-def plot_confusion_matrix(
-    y_true: list,
-    y_pred: list,
-    class_names: Optional[list[str]] = None,
-    normalise: bool = False,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Annotated confusion-matrix heatmap.
-
-    Works for binary and multiclass problems.  class_names must match the
-    number of unique labels in y_true; omit to auto-generate from label values.
-
-    Args:
-        y_true:      Ground-truth labels.
-        y_pred:      Predicted labels.
-        class_names: Display labels for each class.  Omit to auto-generate.
-        normalise:   Row-normalise (show rates) instead of raw counts.
-        title:       Axes title.
-        save_path:   Where to write the PNG.  Auto-generated if omitted.
-
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    path = save_path or _default_plot_path("confusion_matrix")
-    _plot_confusion_matrix(
-        y_true, y_pred,
-        class_names=class_names,
-        normalise=normalise,
-        title=title,
-        save_path=path,
-    )
-    return {"saved_to": path}
-
-
-@mcp.tool()
-def plot_roc_curve(
-    y_true: list,
-    y_score: list,
-    label: Optional[str] = None,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """ROC curve with AUC annotation (binary classification only).
-
-    Args:
-        y_true:    Binary ground-truth labels (0 / 1).
-        y_score:   Predicted probabilities for the positive class.
-        label:     Legend entry (e.g. model name).
-        title:     Axes title.
-        save_path: Where to write the PNG.  Auto-generated if omitted.
-
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    path = save_path or _default_plot_path("roc_curve")
-    _plot_roc_curve(y_true, y_score, label=label, title=title, save_path=path)
-    return {"saved_to": path}
-
-
-@mcp.tool()
-def plot_pr_curve(
-    y_true: list,
-    y_score: list,
-    label: Optional[str] = None,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Precision-Recall curve with Average Precision annotation (binary only).
-
-    Args:
-        y_true:    Binary ground-truth labels (0 / 1).
-        y_score:   Predicted probabilities for the positive class.
-        label:     Legend entry.
-        title:     Axes title.
-        save_path: Where to write the PNG.  Auto-generated if omitted.
-
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    path = save_path or _default_plot_path("pr_curve")
-    _plot_pr_curve(y_true, y_score, label=label, title=title, save_path=path)
-    return {"saved_to": path}
-
-
-@mcp.tool()
-def plot_metric_bar(
-    metrics_dict: dict[str, float],
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Horizontal bar chart of scalar evaluation metrics.
-
-    Only scalar metrics in [0, 1] whose names appear in the standard set
-    (MCC, BA, Accuracy, F1, AUC, Precision, Recall, etc.) are plotted;
-    list or dict values are silently skipped.
-
-    For multiclass evaluation dicts that nest metrics under "overall_metrics",
-    pass metrics_dict["overall_metrics"] directly.
-
-    Args:
-        metrics_dict: {metric_name: value} flat mapping of scalar scores.
-        title:        Axes title.
-        save_path:    Where to write the PNG.  Auto-generated if omitted.
-
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    path = save_path or _default_plot_path("metric_bar")
-    _plot_metric_bar(metrics_dict, title=title, save_path=path)
-    return {"saved_to": path}
-
-
-@mcp.tool()
-def plot_feature_importance(
+@_register
+def plot_classification_results(
     model_path: str,
-    top_n: int = 20,
-    feature_names: Optional[list[str]] = None,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Top-N feature importances bar chart for tree-based models (e.g. RFC).
+    split_file_path: str,
+    split: Literal["train", "val", "test"] = "test",
+    plots: Optional[list[str]] = None,
+    top_n_features: int = 20,
+) -> dict[str, Any]:
+    """Generate classification evaluation plots from a model and split file.
 
-    Loads the model from disk.  GridSearchCV wrappers are unwrapped
-    automatically via best_estimator_.
+    Workflow: check_training → THIS TOOL
 
-    Args:
-        model_path:    Absolute path to a saved .pkl model file.
-        top_n:         Number of top features to display (default 20).
-        feature_names: Display names for features.  Defaults to f0, f1, ...
-        title:         Axes title.
-        save_path:     Where to write the PNG.  Auto-generated if omitted.
+    Loads the model and split data from disk, runs predictions internally,
+    and produces all requested figures without passing arrays through the LLM.
 
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    model = joblib.load(model_path)
-    path = save_path or _default_plot_path("feature_importance")
-    _plot_feature_importance(
-        model,
-        feature_names=feature_names,
-        top_n=top_n,
-        title=title,
-        save_path=path,
-    )
-    return {"saved_to": path}
-
-
-@mcp.tool()
-def plot_threshold_metrics(
-    y_true: list,
-    y_score: list,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Precision, Recall, and F1 vs decision threshold (binary classification).
-
-    Useful to choose an operating threshold other than 0.5.
+    Available plots (use ["all"] or omit for all):
+        "confusion_matrix"   — annotated heatmap (binary + multiclass)
+        "roc_curve"          — ROC curve with AUC (binary only)
+        "pr_curve"           — Precision-Recall curve with AP (binary only)
+        "metric_bar"         — horizontal bar of scalar metrics
+        "feature_importance" — top-N Gini importances (tree models only)
+        "threshold_metrics"  — Precision/Recall/F1 vs threshold (binary only)
 
     Args:
-        y_true:    Binary ground-truth labels (0 / 1).
-        y_score:   Predicted probabilities for the positive class.
-        title:     Axes title.
-        save_path: Where to write the PNG.  Auto-generated if omitted.
+        model_path: Absolute path to a saved .pkl model file.
+        split_file_path: Path to .pkl split file from split_dataset().
+        split: Which partition to evaluate (default "test").
+        plots: Plot names to generate, or ["all"] / None for all.
+        top_n_features: N features for the importance plot (default 20).
 
     Returns:
-        {"saved_to": <absolute path to PNG>}
+        Dict mapping plot name → saved PNG path for each generated figure.
     """
-    path = save_path or _default_plot_path("threshold_metrics")
-    _plot_threshold_metrics(y_true, y_score, title=title, save_path=path)
-    return {"saved_to": path}
+    model_path_r = Path(model_path)
+    if not model_path_r.exists():
+        raise FileNotFoundError(f"Model not found: {model_path}")
+    split_path = Path(split_file_path)
+    if not split_path.exists():
+        split_path = _workspace_root() / split_file_path
+    if not split_path.exists():
+        raise FileNotFoundError(f"Split file not found: {split_file_path}")
+
+    model      = joblib.load(model_path_r)
+    split_data = joblib.load(split_path)
+    X          = np.array(split_data[f"{split}_features"])
+    y_true     = split_data[f"{split}_labels"].tolist()
+
+    y_pred  = model.predict(X).tolist()
+    y_proba = model.predict_proba(X) if hasattr(model, "predict_proba") else None
+    is_binary = len(set(y_true)) == 2
+    y_score   = y_proba[:, 1].tolist() if (y_proba is not None and is_binary) else None
+
+    want_all = not plots or plots == ["all"]
+    stem     = f"{split_path.stem}_{Path(model_path).stem}_{split}"
+    results: dict[str, Any] = {}
+
+    if want_all or "confusion_matrix" in plots:
+        p = _default_plot_path(f"{stem}_confusion_matrix")
+        _plot_confusion_matrix(y_true, y_pred, title=f"Confusion matrix — {split}", save_path=p)
+        results["confusion_matrix"] = p
+
+    if (want_all or "roc_curve" in plots) and is_binary and y_score is not None:
+        p = _default_plot_path(f"{stem}_roc_curve")
+        _plot_roc_curve(y_true, y_score, title=f"ROC curve — {split}", save_path=p)
+        results["roc_curve"] = p
+
+    if (want_all or "pr_curve" in plots) and is_binary and y_score is not None:
+        p = _default_plot_path(f"{stem}_pr_curve")
+        _plot_pr_curve(y_true, y_score, title=f"PR curve — {split}", save_path=p)
+        results["pr_curve"] = p
+
+    if want_all or "metric_bar" in plots:
+        metrics = evaluate_classification(labels=y_true, predictions=y_pred,
+                                          probabilities=y_proba.tolist() if y_proba is not None else None)
+        p = _default_plot_path(f"{stem}_metric_bar")
+        scalar_metrics = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+        _plot_metric_bar(scalar_metrics, title=f"Metrics — {split}", save_path=p)
+        results["metric_bar"] = p
+        results["metrics"] = scalar_metrics
+
+    if want_all or "feature_importance" in plots:
+        try:
+            p = _default_plot_path(f"{stem}_feature_importance")
+            _plot_feature_importance(model, top_n=top_n_features,
+                                      title=f"Feature importance (top {top_n_features})", save_path=p)
+            results["feature_importance"] = p
+        except (AttributeError, ValueError):
+            results["feature_importance"] = "skipped (model does not expose feature_importances_)"
+
+    if (want_all or "threshold_metrics" in plots) and is_binary and y_score is not None:
+        p = _default_plot_path(f"{stem}_threshold_metrics")
+        _plot_threshold_metrics(y_true, y_score, title=f"Threshold metrics — {split}", save_path=p)
+        results["threshold_metrics"] = p
+
+    results["generated"] = [k for k in results if k != "metrics"]
+    return results
+
+
+@_register
+def plot_regression_results(
+    model_path: str,
+    split_file_path: str,
+    split: Literal["train", "val", "test"] = "test",
+    plots: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Generate regression evaluation plots from a model and split file.
+
+    Workflow: check_training → THIS TOOL
+
+    Loads model and split data from disk; runs predictions internally.
+
+    Available plots (use ["all"] or omit for all):
+        "actual_vs_predicted" — scatter with identity line, R² and MAE
+        "residuals"           — residuals vs fitted scatter
+        "residual_histogram"  — histogram + KDE of residuals
+        "error_distribution"  — histogram + KDE of |y_true − y_pred|
+
+    Args:
+        model_path: Absolute path to a saved .pkl model file.
+        split_file_path: Path to .pkl split file from split_dataset().
+        split: Which partition to evaluate (default "test").
+        plots: Plot names to generate, or ["all"] / None for all.
+
+    Returns:
+        Dict mapping plot name → saved PNG path for each generated figure.
+    """
+    model_path_r = Path(model_path)
+    if not model_path_r.exists():
+        raise FileNotFoundError(f"Model not found: {model_path}")
+    split_path = Path(split_file_path)
+    if not split_path.exists():
+        split_path = _workspace_root() / split_file_path
+    if not split_path.exists():
+        raise FileNotFoundError(f"Split file not found: {split_file_path}")
+
+    model      = joblib.load(model_path_r)
+    split_data = joblib.load(split_path)
+    X          = np.array(split_data[f"{split}_features"])
+    y_true     = split_data[f"{split}_labels"].tolist()
+    y_pred     = model.predict(X).tolist()
+
+    want_all = not plots or plots == ["all"]
+    stem     = f"{split_path.stem}_{Path(model_path).stem}_{split}"
+    results: dict[str, Any] = {}
+
+    if want_all or "actual_vs_predicted" in plots:
+        p = _default_plot_path(f"{stem}_actual_vs_predicted")
+        _plot_actual_vs_predicted(y_true, y_pred, title=f"Actual vs Predicted — {split}", save_path=p)
+        results["actual_vs_predicted"] = p
+
+    if want_all or "residuals" in plots:
+        p = _default_plot_path(f"{stem}_residuals")
+        _plot_residuals(y_true, y_pred, title=f"Residuals — {split}", save_path=p)
+        results["residuals"] = p
+
+    if want_all or "residual_histogram" in plots:
+        p = _default_plot_path(f"{stem}_residual_histogram")
+        _plot_residual_histogram(y_true, y_pred, title=f"Residual histogram — {split}", save_path=p)
+        results["residual_histogram"] = p
+
+    if want_all or "error_distribution" in plots:
+        p = _default_plot_path(f"{stem}_error_distribution")
+        _plot_error_distribution(y_true, y_pred, title=f"Error distribution — {split}", save_path=p)
+        results["error_distribution"] = p
+
+    results["generated"] = list(results.keys())
+    return results
 
 
 # ===========================================================================
-# Plot tools — regression
+# Shortcut tool
 # ===========================================================================
 
-@mcp.tool()
-def plot_actual_vs_predicted(
-    y_true: list,
-    y_pred: list,
-    model_id: Optional[str] = None,
-    xlabel: str = "Actual",
-    ylabel: str = "Predicted",
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Scatter of actual vs predicted values with identity line (regression).
+@_register
+def run_pipeline(
+    file_path: str,
+    algorithm: Literal["RFC", "RFR", "SVC"] = "RFC",
+    task: Literal["classification", "classification-cw", "regression"] = "classification",
+    method: str = "ECFP",
+    n_bits: int = 2048,
+    radius: int = 2,
+    train_size: float = 0.7,
+    test_size: float = 0.3,
+    stratified: bool = True,
+    cv_fold: int = 5,
+    opt_metric: Optional[str] = "balanced_accuracy",
+    random_seed: int = 42,
+    label_col: str = "class_label",
+    smiles_col: str = "smiles",
+    id_col: Optional[str] = None,
+) -> dict[str, Any]:
+    """One-call shortcut: load → featurize → split → train+evaluate (non-blocking).
 
-    Annotates R² and MAE in the plot.
+    Steps 1-3 (load, featurize, split) run immediately; training is submitted as a
+    background job. Poll with check_training(job_id) every 60 s until done.
 
     Args:
-        y_true:    Ground-truth target values.
-        y_pred:    Model predictions.
-        model_id:  Model name shown in the legend.
-        xlabel:    X-axis label (default "Actual").
-        ylabel:    Y-axis label (default "Predicted").
-        title:     Axes title.
-        save_path: Where to write the PNG.  Auto-generated if omitted.
+        file_path: CSV dataset path (workspace-relative or absolute).
+        algorithm: "RFC" (default), "RFR", or "SVC". See get_ml_info().
+        task: "classification" (default), "classification-cw", or "regression".
+        method: Featurization method (default "ECFP"). See list_featurizers().
+        n_bits: Fingerprint bit vector size (default 2048).
+        radius: Morgan radius (default 2).
+        train_size: Training fraction (default 0.7).
+        test_size: Test fraction (default 0.3).
+        stratified: Stratify the split (default True).
+        cv_fold: GridSearchCV folds (default 5).
+        opt_metric: Scoring metric for GridSearchCV (default "balanced_accuracy").
+        random_seed: Random seed (default 42).
+        label_col: Target column in the CSV (default "class_label").
+        smiles_col: SMILES column in the CSV (default "smiles").
+        id_col: Compound ID column (optional).
 
     Returns:
-        {"saved_to": <absolute path to PNG>}
+        job_id, status="running", split_file_path, dataset_id, n_samples, n_features.
+        Poll check_training(job_id) for the final result (best_params, metrics, model_path).
     """
-    path = save_path or _default_plot_path("actual_vs_predicted")
-    _plot_actual_vs_predicted(
-        y_true, y_pred,
-        model_id=model_id,
-        xlabel=xlabel,
-        ylabel=ylabel,
-        title=title,
-        save_path=path,
+    # 1. Load
+    df, meta = load_csv(
+        file_path=file_path, label_col=label_col, smiles_col=smiles_col,
+        id_col=id_col, directory="",
     )
-    return {"saved_to": path}
+    ds_id = meta["dataset_id"]
+    _loaded_datasets[ds_id] = df
+    session_logger.save_dataframe(df, ds_id)
+
+    # 2. Featurize
+    features = featurize_df(df, method=method, n_bits=n_bits, radius=radius)
+    _processed_datasets[ds_id] = build_processed_entry(
+        df=df, features=features, label_col=label_col
+    )
+
+    # 3. Split
+    split_result = split_processed(
+        processed=_processed_datasets[ds_id],
+        split_type="random",
+        train_size=train_size,
+        val_size=0.0,
+        test_size=test_size,
+        seed=random_seed,
+        stratified=stratified,
+    )
+    out_dir = session_logger.session_dir / "splits"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    split_path = str(out_dir / f"{ds_id}_random.pkl")
+    _save_split(
+        save_dict=split_result["save_dict"],
+        dataset_id=ds_id,
+        split_type="random",
+        save_path=split_path,
+    )
+
+    # 4. Train — submit as background job (non-blocking)
+    split   = joblib.load(split_path)
+    X_train = np.array(split["train_features"])
+    y_train = np.array(split["train_labels"])
+    X_test  = np.array(split["test_features"])
+    y_test  = np.array(split["test_labels"])
+
+    model_save_path = _default_model_path(algorithm, stem=Path(split_path).stem)
+    job_id = str(uuid.uuid4())
+    _run_job_in_background(
+        job_id, _run_pipeline,
+        X_train=X_train, y_train=y_train,
+        X_test=X_test,   y_test=y_test,
+        X_val=None,      y_val=None,
+        algorithm=algorithm, task=task,
+        cv_fold=cv_fold, opt_metric=opt_metric,
+        random_seed=random_seed,
+        model_save_path=model_save_path,
+    )
+
+    return {
+        "job_id":          job_id,
+        "status":          "running",
+        "dataset_id":      ds_id,
+        "n_samples":       int(features.shape[0]),
+        "n_features":      int(features.shape[1]),
+        "split_file_path": split_path,
+        "message": (
+            f"Load/featurize/split completed. Training started in the background. "
+            f"Call check_training('{job_id}') to poll for completion. "
+            "Poll every 60 seconds until status is 'completed' or 'failed'."
+        ),
+    }
 
 
-@mcp.tool()
-def plot_residuals(
-    y_true: list,
-    y_pred: list,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
+# ===========================================================================
+# Session / utility tools
+# ===========================================================================
+
+@_register
+def log_thought(
+    thought: str,
+    step: Optional[str] = None,
 ) -> dict[str, str]:
-    """Residuals (y_true − y_pred) vs fitted values scatter (regression).
+    """Record a reasoning or planning step in the session log.
 
-    A horizontal zero line and a loess-style trend line are drawn.  Systematic
-    curvature indicates model mis-specification.
+    Call this to capture chain-of-thought, observations, or decisions in the
+    session log. This is the only way the LLM's reasoning reaches the log.
 
     Args:
-        y_true:    Ground-truth values.
-        y_pred:    Model predictions.
-        title:     Axes title.
-        save_path: Where to write the PNG.  Auto-generated if omitted.
+        thought: Reasoning, plan, observation, or decision text.
+        step: Optional phase label ("plan", "observation", "decision", "summary").
 
     Returns:
-        {"saved_to": <absolute path to PNG>}
+        {"logged": "ok", "session_id": <id>}
     """
-    path = save_path or _default_plot_path("residuals")
-    _plot_residuals(y_true, y_pred, title=title, save_path=path)
-    return {"saved_to": path}
+    session_logger.log_thought(thought, step=step)
+    return {"logged": "ok", "session_id": session_logger.session_id}
 
 
-@mcp.tool()
-def plot_residual_histogram(
-    y_true: list,
-    y_pred: list,
-    bins: int = 0,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Histogram + KDE of prediction residuals (y_true − y_pred) (regression).
+@_register
+def start_new_session() -> dict[str, str]:
+    """Start a fresh logging session, ending the current one immediately.
 
-    Args:
-        y_true:    Ground-truth values.
-        y_pred:    Model predictions.
-        bins:      Number of histogram bins.  0 = automatic.
-        title:     Axes title.
-        save_path: Where to write the PNG.  Auto-generated if omitted.
+    Use this at the beginning of a new chat or experiment to ensure
+    artifacts and logs are not mixed with a previous session.
+    Without calling this, sessions are automatically continued as long as
+    the last activity was within the session timeout window (default 60 min).
 
     Returns:
-        {"saved_to": <absolute path to PNG>}
+        {"new_session_id": <id>, "session_dir": <path>}
     """
-    bins_arg: int | str = bins if bins > 0 else "auto"
-    path = save_path or _default_plot_path("residual_histogram")
-    _plot_residual_histogram(y_true, y_pred, bins=bins_arg, title=title, save_path=path)
-    return {"saved_to": path}
-
-
-@mcp.tool()
-def plot_error_distribution(
-    y_true: list,
-    y_pred: list,
-    title: Optional[str] = None,
-    save_path: Optional[str] = None,
-) -> dict[str, str]:
-    """Histogram + KDE of absolute prediction errors |y_true − y_pred| (regression).
-
-    Marks the MAE with a vertical dashed line.
-
-    Args:
-        y_true:    Ground-truth values.
-        y_pred:    Model predictions.
-        title:     Axes title.
-        save_path: Where to write the PNG.  Auto-generated if omitted.
-
-    Returns:
-        {"saved_to": <absolute path to PNG>}
-    """
-    path = save_path or _default_plot_path("error_distribution")
-    _plot_error_distribution(y_true, y_pred, title=title, save_path=path)
-    return {"saved_to": path}
+    new_id = session_logger.force_new_session()
+    return {
+        "new_session_id": new_id,
+        "session_dir":    str(session_logger.session_dir),
+    }
 
 
 # ===========================================================================
