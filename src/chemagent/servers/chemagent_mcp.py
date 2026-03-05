@@ -7,13 +7,14 @@ STANDARD WORKFLOW (data stays on disk — preferred):
     split_dataset(dataset_id, train_size=0.7, test_size=0.3, stratified=True)
     job = train_model(split_file_path, algorithm="RFC",
                       task="classification", opt_metric="balanced_accuracy")
-    result = check_training(job["job_id"])   # poll every 60 s
+    result = check_training(job["job_id"], model_save_path=job["model_save_path"])  # poll every 30 s
     plot_classification_results(result["model_path"], split_file_path)
 
 SHORTCUT (load+featurize+split synchronously, then trains in background):
     job = run_pipeline("data/datasets/chembl_activity_data_O00329_P42336.csv",
-                       algorithm="RFC", task="classification")
-    result = check_training(job["job_id"])   # poll every 60 s
+                       algorithm="RFC", task="classification",
+                       featurizer_kwargs={"n_bits": 2048, "radius": 2})
+    result = check_training(job["job_id"], model_save_path=job["model_save_path"])  # poll every 30 s
 
 TOOLS
 ─────────────────────────────────────────────
@@ -108,6 +109,19 @@ from chemagent.plots.regression import (
     plot_residual_histogram   as _plot_residual_histogram,
     plot_error_distribution   as _plot_error_distribution,
 )
+from chemagent.servers.server_helpers import (
+    _workspace_root,
+    _resolve_path,
+    _to_serialisable,
+    _DataContainer,
+    _build_evaluator,
+    _run_pipeline,
+    _predict,
+    evaluate_classification,
+    evaluate_regression,
+    get_hyperparameter_grids,
+    train_on_split_file,
+)
 
 mcp = FastMCP("chemagent")
 
@@ -148,25 +162,8 @@ _jobs: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
-# Shared internal helpers
+# Shared internal helpers  (pure helpers live in server_helpers.py)
 # ---------------------------------------------------------------------------
-
-def _workspace_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
-def _resolve_path(p: str) -> str:
-    """Resolve *p* against workspace root when it is a relative path.
-
-    This prevents files from being written into the server's cwd
-    (src/chemagent/servers/) when the server is launched via ``uv --directory``.
-    """
-    path = Path(p)
-    if not path.is_absolute():
-        path = _workspace_root() / path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return str(path)
-
 
 def _default_model_path(algorithm: str, stem: str = "") -> str:
     out_dir = session_logger.session_dir / "models"
@@ -180,108 +177,6 @@ def _default_plot_path(name: str, ext: str = "png") -> str:
     out_dir = session_logger.session_dir / "plots"
     out_dir.mkdir(parents=True, exist_ok=True)
     return str(out_dir / f"{name}.{ext}")
-
-
-def _to_serialisable(obj: Any) -> Any:
-    """Recursively convert numpy scalars / arrays to plain Python types."""
-    if isinstance(obj, dict):
-        return {k: _to_serialisable(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_to_serialisable(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, np.floating):
-        return float(obj)
-    return obj
-
-
-class _DataContainer:
-    """Minimal data container accepted by :class:`chemagent.ml.training.MLModel`."""
-    def __init__(self, features: np.ndarray, labels: np.ndarray) -> None:
-        self.features     = features
-        self.labels       = labels
-        self.class_labels = labels
-
-
-def _build_evaluator(labels, predictions, probabilities, reg_class, model_id, model_type):
-    is_regression = reg_class == "regression"
-    return Model_Evaluation(
-        labels=labels,
-        y_pred=None if is_regression else predictions,
-        y_proba=probabilities,
-        y_pred_reg=predictions if is_regression else None,
-        model_id=model_id,
-        model_type=model_type,
-        reg_class=reg_class,
-    )
-
-
-def _run_pipeline(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test:  np.ndarray,
-    y_test:  np.ndarray,
-    X_val:   np.ndarray | None,
-    y_val:   np.ndarray | None,
-    algorithm: str,
-    task: str,
-    cv_fold: int,
-    opt_metric: str | None,
-    random_seed: int,
-    model_save_path: str,
-) -> dict[str, Any]:
-    """Core pipeline: tune → train → save → evaluate (used by build_model_* tools)."""
-    data = _DataContainer(X_train, y_train)
-    ml_model = MLModel(
-        data=data,
-        ml_algorithm=algorithm,
-        opt_metric=opt_metric,
-        reg_class=task,
-        cv_fold=cv_fold,
-        random_seed=random_seed,
-    )
-
-    model_save_path = _resolve_path(model_save_path)
-    joblib.dump(ml_model.model, model_save_path)
-
-    is_regression = task == "regression"
-
-    def _evaluate(X: np.ndarray, y: np.ndarray, split_name: str) -> dict:
-        y_pred  = ml_model.model.predict(X)
-        y_proba = (
-            ml_model.model.predict_proba(X)
-            if not is_regression and hasattr(ml_model.model, "predict_proba")
-            else None
-        )
-        ev = _build_evaluator(y, y_pred, y_proba, task, algorithm, split_name)
-        if is_regression:
-            return _to_serialisable(ev.prediction_performance_regression())
-        n_classes = len(np.unique(y))
-        if n_classes == 2:
-            df = ev.pred_performance_class
-            return _to_serialisable(
-                {row["Metric"]: row["Value"] for _, row in df.iterrows()}
-            )
-        return _to_serialisable(ev.prediction_performance_multiclass())
-
-    return {
-        "algorithm":                algorithm,
-        "task":                     task,
-        "cv_fold":                  cv_fold,
-        "opt_metric":               opt_metric,
-        "best_params":              _to_serialisable(ml_model.best_params),
-        "cv_best_score":            float(ml_model.cv_results.best_score_) if ml_model.cv_results is not None else None,
-        "model_path":               model_save_path,
-        "hyperparameters_searched": _to_serialisable(HYPERPARAMETERS.get(algorithm, {})),
-        "train_evaluation":         _evaluate(X_train, y_train, "train"),
-        "test_evaluation":          _evaluate(X_test,  y_test,  "test"),
-        "n_train":                  int(len(y_train)),
-        "n_test":                   int(len(y_test)),
-        "n_val":                    int(len(y_val)) if y_val is not None else 0,
-        "n_features":               int(X_train.shape[1]),
-    }
 
 
 def _run_job_in_background(job_id: str, fn, *args, **kwargs) -> None:
@@ -689,67 +584,6 @@ def _train_model_arrays(
     }
 
 
-def _predict(
-    model_path: str,
-    features: list[list[float]],
-    reg_class: Literal["regression", "classification", "classification-cw"],
-) -> dict[str, Any]:
-    """Run inference from a saved model (internal helper)."""
-    if not os.path.isfile(model_path):
-        raise FileNotFoundError(f"Model file not found: {model_path}")
-    model = joblib.load(model_path)
-    X     = np.array(features)
-    preds = model.predict(X).tolist()
-    proba: Optional[list[list[float]]] = None
-    if reg_class in ("classification", "classification-cw") and hasattr(model, "predict_proba"):
-        proba = model.predict_proba(X).tolist()
-    return {
-        "predictions":  preds,
-        "probabilities": proba,
-        "n_samples":    len(preds),
-        "model_path":   model_path,
-        "reg_class":    reg_class,
-    }
-
-
-def evaluate_classification(
-    labels: list[int],
-    predictions: list[int],
-    probabilities: Optional[list[list[float]]] = None,
-    model_id: str = "Model",
-    model_type: Optional[str] = None,
-) -> dict[str, Any]:
-    """Classification metrics — binary and multi-class (internal helper)."""
-    if len(predictions) != len(labels):
-        raise ValueError(
-            f"predictions ({len(predictions)}) and labels ({len(labels)}) length mismatch"
-        )
-    evaluator = _build_evaluator(labels, predictions, probabilities,
-                                 "classification", model_id, model_type)
-    is_binary = len(np.unique(labels)) == 2
-    if is_binary:
-        df    = evaluator.pred_performance_class
-        result: dict[str, Any] = {row["Metric"]: row["Value"] for _, row in df.iterrows()}
-        result["is_binary"] = True
-        return result
-    return evaluator.prediction_performance_multiclass()
-
-
-def evaluate_regression(
-    labels: list[float],
-    predictions: list[float],
-    model_id: str = "Model",
-    model_type: Optional[str] = None,
-) -> dict[str, Any]:
-    """Regression metrics: MAE, MSE, RMSE, R², Pearson r (internal helper)."""
-    if len(predictions) != len(labels):
-        raise ValueError(
-            f"predictions ({len(predictions)}) and labels ({len(labels)}) length mismatch"
-        )
-    return _build_evaluator(labels, predictions, None, "regression", model_id, model_type
-                            ).prediction_performance_regression()
-
-
 @_register
 def get_ml_info() -> dict[str, Any]:
     """Return all ML reference information in one call: algorithms, hyperparameter grids, and recommended metrics.
@@ -804,65 +638,6 @@ def get_ml_info() -> dict[str, Any]:
         },
     }
     return {"algorithms": algorithms, "recommended_metrics": recommended_metrics}
-
-
-def train_on_split_file(
-    split_file_path: str,
-    ml_algorithm: Literal["RFR", "RFC", "SVC"],
-    reg_class: Literal["regression", "classification", "classification-cw"],
-    split: Literal["train", "val", "test"] = "train",
-    opt_metric: Optional[str] = None,
-    cv_fold: int = 5,
-    random_seed: int = 42,
-    model_save_path: Optional[str] = None,
-    use_default_params: bool = False,
-) -> dict[str, Any]:
-    """Train a model directly from a saved .pkl split file.
-
-    Preferred over train_model() when a split file exists. Features are
-    loaded from disk and never transferred through the LLM context.
-
-    Typical workflow:
-        featurize_dataset(dataset_id, method="ECFP", n_bits=2048, radius=2)
-        splits = split_prepared_dataset(dataset_id, train_size=0.7,
-                                        val_size=0.0, test_size=0.3,
-                                        stratified=True)
-        result = train_on_split_file(splits["saved_to"], "RFC",
-                                     "classification", opt_metric="f1")
-        preds  = predict_from_split_file(result["model_path"], splits["saved_to"],
-                                         "classification")
-
-    Args:
-        split_file_path: Path to .pkl produced by split_prepared_dataset().
-        ml_algorithm: "RFR", "RFC", or "SVC".
-        reg_class: "regression", "classification", or "classification-cw".
-        split: Which partition to train on (default: "train").
-        opt_metric: GridSearchCV scoring metric.
-        cv_fold: Number of CV folds (default 5).
-        random_seed: Random seed (default 42).
-        model_save_path: Where to save the model. Defaults to the session
-                         models/ directory.
-        use_default_params: Skip GridSearchCV when True.
-
-    Returns:
-        Same as train_model().
-    """
-    data = joblib.load(split_file_path)
-    if model_save_path is None:
-        out_dir = _workspace_root() / "data" / "models"
-        out_dir.mkdir(exist_ok=True)
-        model_save_path = str(out_dir / f"{Path(split_file_path).stem}_{ml_algorithm}.pkl")
-    return _train_model_arrays(
-        features=data[f"{split}_features"].tolist(),
-        labels=data[f"{split}_labels"].tolist(),
-        ml_algorithm=ml_algorithm,
-        reg_class=reg_class,
-        opt_metric=opt_metric,
-        cv_fold=cv_fold,
-        random_seed=random_seed,
-        model_save_path=model_save_path,
-        use_default_params=use_default_params,
-    )
 
 
 @_register
@@ -1065,9 +840,11 @@ def train_model(
 ) -> dict[str, Any]:
     """Train and tune a model from a split .pkl file. Non-blocking — returns a job_id immediately.
 
-    Workflow: split_dataset → THIS TOOL → check_training(job_id)
+    Workflow: split_dataset → THIS TOOL → check_training(job_id, model_save_path=model_save_path)
 
-    Poll check_training(job_id) every 60 s until status='completed' or 'failed'.
+    Poll check_training(job_id, model_save_path=model_save_path) every 30 s until
+    status='completed' or 'failed'. Always pass model_save_path — it enables on-disk
+    fallback detection if the MCP server restarts and in-memory job state is lost.
     The full evaluation result is in check_training(...)[\"result\"] when done.
 
     Args:
@@ -1081,7 +858,7 @@ def train_model(
         model_save_path: Output .pkl path. Defaults to session models/ dir.
 
     Returns:
-        job_id, status="running", message with polling instruction.
+        job_id, status="running", model_save_path, message with polling instruction.
     """
     split_path = Path(split_file_path)
     if not split_path.exists():
@@ -1113,38 +890,59 @@ def train_model(
         model_save_path=model_save_path,
     )
     return {
-        "job_id":  job_id,
-        "status":  "running",
+        "job_id":          job_id,
+        "status":          "running",
+        "model_save_path": model_save_path,
         "message": (
             f"Training started in the background. "
-            f"Call check_training('{job_id}') to poll for completion. "
-            "Poll every 60 seconds until status is 'completed' or 'failed'."
+            f"Call check_training('{job_id}', model_save_path='{model_save_path}') to poll for completion. "
+            "Poll every 30 seconds until status is 'completed' or 'failed'."
         ),
     }
 
 
 @_register
-def check_training(job_id: str) -> dict[str, Any]:
+def check_training(job_id: str, model_save_path: Optional[str] = None) -> dict[str, Any]:
     """Poll a background training job started by train_model().
 
     Workflow: train_model → THIS TOOL (poll until done) → plot_classification_results
 
-    Call repeatedly every 60 seconds until status is 'completed' or 'failed'.
+    Call repeatedly every 30 seconds until status is 'completed' or 'failed'.
     The full pipeline result (best_params, train/test metrics, model_path) is in
     the 'result' key when completed.
 
+    Always pass the model_save_path returned by train_model() so that if the MCP
+    server restarts (clearing in-memory job state), this tool can detect the saved
+    model on disk and return status='completed' instead of raising an error.
+
     Args:
         job_id: The job_id returned by train_model().
+        model_save_path: Path to the expected .pkl model file (returned by train_model()).
+                         Used as a fallback when the job is no longer in memory.
 
     Returns:
         job_id, status ("running" | "completed" | "failed"), elapsed_seconds,
         and either result (on success) or error (on failure).
     """
     if job_id not in _jobs:
+        # --- Fallback: job state was lost (server restart). Check disk instead. ---
+        if model_save_path and Path(model_save_path).exists():
+            return {
+                "job_id":  job_id,
+                "status":  "completed",
+                "message": (
+                    "Job state was lost (MCP server restarted), but the model file "
+                    f"already exists on disk at '{model_save_path}'. "
+                    "Training had completed successfully before the restart. "
+                    "You can proceed with plot_classification_results or export_predictions."
+                ),
+                "model_path": model_save_path,
+            }
         raise ValueError(
             f"Job '{job_id}' not found. "
             "Job IDs are ephemeral — lost if the MCP server restarts. "
-            "Re-run train_model() to create a new job."
+            "If you have the model_save_path, pass it to check_training() to detect the "
+            "saved model on disk. Otherwise re-run train_model() to create a new job."
         )
     job = _jobs[job_id]
     elapsed = round(time.time() - job["started_at"], 1)
@@ -1156,7 +954,7 @@ def check_training(job_id: str) -> dict[str, Any]:
     if job["status"] == "running":
         response["message"] = (
             f"Still training ({elapsed}s elapsed). "
-            f"Call check_training('{job_id}') again in 60 seconds."
+            f"Call check_training('{job_id}', model_save_path='{model_save_path}') again in 30 seconds."
         )
     elif job["status"] == "completed":
         response["result"]  = job["result"]
@@ -1202,11 +1000,6 @@ def build_model_from_arrays(
         random_seed=random_seed,
         model_save_path=model_save_path,
     )
-
-
-def get_hyperparameter_grids() -> dict[str, Any]:
-    """Return all registered hyperparameter grids (internal helper)."""
-    return _to_serialisable(HYPERPARAMETERS)
 
 
 # ===========================================================================
@@ -1479,8 +1272,7 @@ def run_pipeline(
     algorithm: Literal["RFC", "RFR", "SVC"] = "RFC",
     task: Literal["classification", "classification-cw", "regression"] = "classification",
     method: str = "ECFP",
-    n_bits: int = 2048,
-    radius: int = 2,
+    featurizer_kwargs: Optional[dict] = None,
     train_size: float = 0.7,
     test_size: float = 0.3,
     stratified: bool = True,
@@ -1494,15 +1286,15 @@ def run_pipeline(
     """One-call shortcut: load → featurize → split → train+evaluate (non-blocking).
 
     Steps 1-3 (load, featurize, split) run immediately; training is submitted as a
-    background job. Poll with check_training(job_id) every 60 s until done.
+    background job. Poll with check_training(job_id, model_save_path=model_save_path) every 30 s until done.
 
     Args:
         file_path: CSV dataset path (workspace-relative or absolute).
         algorithm: "RFC" (default), "RFR", or "SVC". See get_ml_info().
         task: "classification" (default), "classification-cw", or "regression".
         method: Featurization method (default "ECFP"). See list_featurizers().
-        n_bits: Fingerprint bit vector size (default 2048).
-        radius: Morgan radius (default 2).
+        featurizer_kwargs: Method-specific parameters forwarded to the featurizer,
+            e.g. {"n_bits": 2048, "radius": 2} for ECFP. Defaults to None (method defaults).
         train_size: Training fraction (default 0.7).
         test_size: Test fraction (default 0.3).
         stratified: Stratify the split (default True).
@@ -1514,8 +1306,10 @@ def run_pipeline(
         id_col: Compound ID column (optional).
 
     Returns:
-        job_id, status="running", split_file_path, dataset_id, n_samples, n_features.
-        Poll check_training(job_id) for the final result (best_params, metrics, model_path).
+        job_id, status="running", split_file_path, dataset_id, n_samples, n_features, model_save_path.
+        Poll check_training(job_id, model_save_path=model_save_path) for the final result.
+        Always pass model_save_path to check_training — it enables on-disk fallback if the
+        server restarts and the in-memory job state is lost.
     """
     # 1. Load
     df, meta = load_csv(
@@ -1527,7 +1321,7 @@ def run_pipeline(
     session_logger.save_dataframe(df, ds_id)
 
     # 2. Featurize
-    features = featurize_df(df, method=method, n_bits=n_bits, radius=radius)
+    features = featurize_df(df, method=method, **(featurizer_kwargs or {}))
     _processed_datasets[ds_id] = build_processed_entry(
         df=df, features=features, label_col=label_col
     )
@@ -1579,10 +1373,11 @@ def run_pipeline(
         "n_samples":       int(features.shape[0]),
         "n_features":      int(features.shape[1]),
         "split_file_path": split_path,
+        "model_save_path": model_save_path,
         "message": (
             f"Load/featurize/split completed. Training started in the background. "
-            f"Call check_training('{job_id}') to poll for completion. "
-            "Poll every 60 seconds until status is 'completed' or 'failed'."
+            f"Call check_training('{job_id}', model_save_path='{model_save_path}') to poll for completion. "
+            "Poll every 30 seconds until status is 'completed' or 'failed'."
         ),
     }
 

@@ -33,8 +33,8 @@ load_dataset("data/datasets/chembl_activity_data_O00329_P42336.csv")
   → get_ml_info()                                               # discover algorithms + metrics
   → train_model(split_file_path, algorithm="RFC",
                 task="classification",
-                opt_metric="balanced_accuracy")                  # non-blocking, returns job_id
-  → check_training(job_id)                                      # poll every 60 s
+                opt_metric="balanced_accuracy")                  # non-blocking, returns job_id + model_save_path
+  → check_training(job_id, model_save_path=model_save_path)     # poll every 60 s; pass model_save_path for disk fallback
   → export_predictions(model_path, split_file_path)             # optional: export CSV
   → plot_classification_results(model_path, split_file_path)    # all plots in one call
 ```
@@ -43,7 +43,7 @@ load_dataset("data/datasets/chembl_activity_data_O00329_P42336.csv")
 ```
 job = run_pipeline("data/datasets/chembl_activity_data_O00329_P42336.csv",
                    algorithm="RFC", task="classification")
-result = check_training(job["job_id"])   # poll every 60 s
+result = check_training(job["job_id"], model_save_path=job["model_save_path"])   # poll every 60 s
 ```
 Steps 1–3 (load → featurize → split) run synchronously; training is submitted as a background job. Returns `job_id` immediately — poll with `check_training()` like `train_model`. Use for quick experiments; use individual steps when intermediate outputs are needed.
 
