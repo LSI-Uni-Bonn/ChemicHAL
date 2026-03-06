@@ -9,6 +9,7 @@ dependencies = [
     "marimo>=0.20.2",
     "mcp[cli]>=1.26.0",
     "numpy>=2.4.2",
+    "ollama>=0.6.1",
     "rdkit>=2025.9.4",
     "scikit-learn>=1.8.0",
     "seaborn>=0.13.2",

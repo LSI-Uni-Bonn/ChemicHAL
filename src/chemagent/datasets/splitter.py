@@ -82,6 +82,7 @@ def split_processed(
             test_size=test_size,
             seed=seed,
             labels=labels.tolist() if stratified else None,
+            stratify=stratified,
         )
     elif split_type == "scaffold":
         if "smiles" not in processed:
@@ -95,6 +96,8 @@ def split_processed(
             val_size=val_size,
             test_size=test_size,
             seed=seed,
+            labels=labels.tolist() if stratified else None,
+            stratify=stratified,
         )
     else:
         raise ValueError(f"Unknown split_type: {split_type!r}")

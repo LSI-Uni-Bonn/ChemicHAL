@@ -23,10 +23,6 @@ from .hyperparameter_tuning import get_param_grid
 from .cross_validation import run_cross_validation, get_cv_best_params
 
 
-# Backward-compatible alias so any code still calling _build_estimator() works.
-_build_estimator = build_estimator
-
-
 class MLModel:
     """Train a scikit-learn model with GridSearchCV hyperparameter tuning.
 

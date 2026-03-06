@@ -77,29 +77,3 @@ def class_distribution(
         result[name] = {str(c): int(np.sum(subset == c)) for c in classes}
 
     return result
-
-
-def check_leakage(split_dict: Dict[str, List[int]]) -> Dict[str, int]:
-    """Check for index overlap (data leakage) between all partition pairs.
-
-    Parameters
-    ----------
-    split_dict:
-        Dict mapping partition names to index lists.
-
-    Returns
-    -------
-    Dict[str, int]
-        ``{"train_val_overlap": n, "train_test_overlap": n, ...}`` —
-        zero means no leakage for that pair.
-    """
-    keys = list(split_dict.keys())
-    result: Dict[str, int] = {}
-
-    for i in range(len(keys)):
-        for j in range(i + 1, len(keys)):
-            a, b = keys[i], keys[j]
-            overlap = len(set(split_dict[a]) & set(split_dict[b]))
-            result[f"{a}_{b}_overlap"] = overlap
-
-    return result

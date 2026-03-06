@@ -16,15 +16,13 @@ Usage
     # {"train": [...], "val": [...], "test": [...]}
 
     # Stratified (preserves class proportions):
-    indices = random_split(1000, 0.8, 0.1, 0.1, seed=42, labels=y)
+    indices = random_split(1000, 0.8, 0.1, 0.1, seed=42, labels=y, stratify=True)
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Dict, List, Optional
 
-import numpy as np
 from sklearn.model_selection import train_test_split
 
 from .utils import validate_split_sizes, set_random_seed
@@ -37,11 +35,12 @@ def random_split(
     test_size: float = 0.1,
     seed: Optional[int] = None,
     labels: Optional[List[int]] = None,
+    stratify: bool = False,
 ) -> Dict[str, List[int]]:
     """Randomly split *n_samples* indices into train / val / test sets.
 
-    When *labels* are provided each class is split proportionally
-    (stratified split) using sklearn's ``train_test_split``.
+    When *stratify* is ``True`` and *labels* are supplied, each class is
+    split proportionally using sklearn's ``train_test_split``.
 
     Parameters
     ----------
@@ -57,8 +56,11 @@ def random_split(
     seed:
         Random seed for reproducibility.
     labels:
-        Optional 1-D array-like of class labels. When supplied, both the
-        train/test split and the optional val/test split are stratified.
+        Optional 1-D array-like of class labels. Required when
+        *stratify* is ``True``.
+    stratify:
+        If ``True``, both the train/test and val/test splits are
+        stratified to preserve class proportions. Requires *labels*.
 
     Returns
     -------
@@ -69,10 +71,14 @@ def random_split(
     Raises
     ------
     ValueError
-        If sizes are invalid, or *labels* length mismatches *n_samples*.
+        If sizes are invalid, *labels* length mismatches *n_samples*, or
+        *stratify* is ``True`` but *labels* is ``None``.
     """
     validate_split_sizes(train_size, val_size, test_size)
     set_random_seed(seed)
+
+    if stratify and labels is None:
+        raise ValueError("stratify=True requires labels to be provided.")
 
     if labels is not None and len(labels) != n_samples:
         raise ValueError(
@@ -80,7 +86,7 @@ def random_split(
         )
 
     all_indices = list(range(n_samples))
-    stratify = list(labels) if labels is not None else None
+    stratify_arr = list(labels) if (stratify and labels is not None) else None
 
     # --- split off test first -------------------------------------------
     if test_size > 0:
@@ -88,15 +94,17 @@ def random_split(
             all_indices,
             test_size=test_size,
             random_state=seed,
-            stratify=stratify,
+            stratify=stratify_arr,
         )
         stratify_tv = (
-            [labels[i] for i in train_val_idx] if labels is not None else None
+            [labels[i] for i in train_val_idx]
+            if (stratify and labels is not None)
+            else None
         )
     else:
         train_val_idx = all_indices
         test_idx = []
-        stratify_tv = stratify
+        stratify_tv = stratify_arr
 
     # --- split val from remaining ----------------------------------------
     if val_size > 0 and len(train_val_idx) > 0:

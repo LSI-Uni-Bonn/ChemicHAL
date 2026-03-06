@@ -8,7 +8,8 @@ STANDARD WORKFLOW (data stays on disk — preferred):
     job = train_model(split_file_path, algorithm="RFC",
                       task="classification", opt_metric="balanced_accuracy")
     result = check_training(job["job_id"], model_save_path=job["model_save_path"])  # poll every 30 s
-    plot_classification_results(result["model_path"], split_file_path)
+    export_predictions(result["model_path"], split_file_path)
+    plot_classification_results(predictions_path)
 
 SHORTCUT (load+featurize+split synchronously, then trains in background):
     job = run_pipeline("data/datasets/chembl_activity_data_O00329_P42336.csv",
@@ -34,14 +35,14 @@ ML
   export_predictions     run inference on a split .pkl, save predictions CSV
 
 Plots
-  plot_dataset_info           class distribution, column histograms, split stats
-  plot_classification_results confusion matrix, ROC, PR, metric bar, importances
-  plot_regression_results     actual vs predicted, residuals, error distribution
+  plot_classification_results confusion matrix, ROC, PR, metric bar, threshold (from predictions CSV)
+  plot_regression_results     actual vs predicted, residuals, error distribution (from predictions CSV)
 
 Utilities
   log_thought            record reasoning in the session log
   start_new_session      start a fresh session directory
   run_pipeline           non-blocking shortcut: load → featurize → split → train
+  generate_report        write a Markdown summary of the current session
 """
 
 from __future__ import annotations
@@ -70,17 +71,15 @@ from chemagent.datasets import (
     load_csv,
     featurize_df,
     build_processed_entry,
-    prepare_from_external_features,
     list_csv_files,
     list_featurizers as _list_featurizers_impl,
     split_processed,
     save_split as _save_split,
-    load_split_file,
     get_ml_ready_data as _get_ml_ready_data_impl,
     get_dataset_info as _get_dataset_info_impl,
     label_stats as _label_stats,
 )
-from chemagent.ml import MLModel, Model_Evaluation
+
 from chemagent.ml.hyperparameter_tuning import HYPERPARAMETERS
 from chemagent.logging import SessionLogger
 
@@ -93,15 +92,7 @@ from chemagent.plots.classification import (
     plot_roc_curve        as _plot_roc_curve,
     plot_pr_curve         as _plot_pr_curve,
     plot_metric_bar       as _plot_metric_bar,
-    plot_feature_importance as _plot_feature_importance,
     plot_threshold_metrics  as _plot_threshold_metrics,
-)
-from chemagent.plots.dataset import (
-    plot_class_distribution  as _plot_class_distribution,
-    plot_split_statistics    as _plot_split_statistics,
-    plot_column_distribution as _plot_column_distribution,
-    plot_class_balance_splits as _plot_class_balance_splits,
-    plot_dataset_comparison  as _plot_dataset_comparison,
 )
 from chemagent.plots.regression import (
     plot_actual_vs_predicted  as _plot_actual_vs_predicted,
@@ -119,7 +110,6 @@ from chemagent.servers.server_helpers import (
     _predict,
     evaluate_classification,
     evaluate_regression,
-    get_hyperparameter_grids,
     train_on_split_file,
 )
 
@@ -313,24 +303,6 @@ def load_dataset(
     return {k: v for k, v in meta.items() if not k.startswith("_")}
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers — not registered as MCP tools
-# ---------------------------------------------------------------------------
-
-def get_dataset_smiles(dataset_id: str) -> dict[str, Any]:
-    """Retrieve SMILES strings from a loaded dataset (internal helper)."""
-    if dataset_id not in _loaded_datasets:
-        raise ValueError(f"Dataset '{dataset_id}' not loaded. Call load_dataset() first.")
-    df = _loaded_datasets[dataset_id]
-    smiles_col = df.attrs.get("smiles_col", "smiles")
-    if not smiles_col or smiles_col not in df.columns:
-        raise ValueError(
-            f"No SMILES column configured for '{dataset_id}'. "
-            "Pass smiles_col when calling load_dataset()."
-        )
-    return {"dataset_id": dataset_id, "smiles": df[smiles_col].tolist(), "n_samples": len(df)}
-
-
 @_register
 def compute_features(
     dataset_id: str,
@@ -376,37 +348,12 @@ def compute_features(
     }
 
 
-def prepare_ml_dataset(
-    dataset_id: str,
-    features: list[list[float]],
-    label_col: Optional[str] = None,
-) -> dict[str, Any]:
-    """Pair external features with a loaded dataset (internal helper)."""
-    if dataset_id not in _loaded_datasets:
-        raise ValueError(f"Dataset '{dataset_id}' not loaded. Call load_dataset() first.")
-    df  = _loaded_datasets[dataset_id]
-    lc  = label_col or df.attrs.get("label_col", "class_label")
-    if lc not in df.columns:
-        raise ValueError(f"Label column '{lc}' not found. Available: {df.columns.tolist()}")
-    _processed_datasets[dataset_id] = prepare_from_external_features(
-        df=df, features=features, label_col=lc
-    )
-    features_arr = np.array(features)
-    return {
-        "dataset_id": dataset_id,
-        "n_samples":  int(features_arr.shape[0]),
-        "n_features": int(features_arr.shape[1]),
-        "label_stats": _label_stats(df[lc].values),
-        "prepared":   True,
-    }
-
-
 @_register
 def split_dataset(
     dataset_id: str,
     split_type: Literal["random", "scaffold"] = "random",
     train_size: float = 0.8,
-    val_size: float = 0.1,
+    val_size: float = 0.0,
     test_size: float = 0.1,
     seed: Optional[int] = 42,
     stratified: bool = False,
@@ -420,7 +367,7 @@ def split_dataset(
         dataset_id: ID of a featurized dataset (from compute_features).
         split_type: "random" (default) or "scaffold".
         train_size: Training fraction (default 0.8).
-        val_size: Validation fraction (default 0.1). Use 0.0 for two-way split.
+        val_size: Validation fraction (default 0.0). Use 0.0 for two-way split.
         test_size: Test fraction (default 0.1).
         seed: Random seed (default 42).
         stratified: Preserve class proportions — random splits only.
@@ -499,11 +446,6 @@ def split_dataset(
     return result
 
 
-def load_split(file_path: str) -> dict[str, Any]:
-    """Load a saved train/val/test split .pkl (internal helper)."""
-    return load_split_file(file_path)
-
-
 def get_ml_ready_data(dataset_id: str, as_lists: bool = True) -> dict[str, Any]:
     """Return the processed feature matrix and labels (internal helper)."""
     if dataset_id not in _processed_datasets:
@@ -538,51 +480,6 @@ def dataset_status(dataset_id: str) -> dict[str, Any]:
 # ===========================================================================
 # ML MODEL TOOLS
 # ===========================================================================
-
-# ---------------------------------------------------------------------------
-# Low-level array helpers — not registered as MCP tools
-# ---------------------------------------------------------------------------
-
-def _train_model_arrays(
-    features: list[list[float]],
-    labels: list[float],
-    ml_algorithm: Literal["RFR", "RFC", "SVC"],
-    reg_class: Literal["regression", "classification", "classification-cw"],
-    opt_metric: Optional[str] = None,
-    cv_fold: int = 3,
-    random_seed: int = 42,
-    model_save_path: Optional[str] = None,
-    use_default_params: bool = False,
-) -> dict[str, Any]:
-    """Train from raw arrays (internal helper)."""
-    data     = _DataContainer(np.array(features), np.array(labels))
-    ml_model = MLModel(
-        data=data,
-        ml_algorithm=ml_algorithm,
-        opt_metric=opt_metric,
-        reg_class=reg_class,
-        parameters="default" if use_default_params else "grid",
-        cv_fold=cv_fold,
-        random_seed=random_seed,
-    )
-
-    if model_save_path is None:
-        model_save_path = _default_model_path(ml_algorithm)
-    model_save_path = _resolve_path(model_save_path)
-    joblib.dump(ml_model.model, model_save_path)
-
-    return {
-        "best_params":              ml_model.best_params,
-        "cv_best_score":            float(ml_model.cv_results.best_score_) if ml_model.cv_results is not None else None,
-        "algorithm":                ml_algorithm,
-        "model_trained":            True,
-        "n_samples":                len(labels),
-        "n_features":               len(features[0]) if features else 0,
-        "hyperparameters_searched": ml_model.h_parameters,
-        "hyperparameters_mode":     "default" if use_default_params else "grid_search",
-        "model_path":               model_save_path,
-    }
-
 
 @_register
 def get_ml_info() -> dict[str, Any]:
@@ -841,7 +738,7 @@ def train_model(
     """Train and tune a model from a split .pkl file. Non-blocking — returns a job_id immediately.
 
     Workflow: split_dataset → THIS TOOL → check_training(job_id, model_save_path=model_save_path)
-
+ 
     Poll check_training(job_id, model_save_path=model_save_path) every 30 s until
     status='completed' or 'failed'. Always pass model_save_path — it enables on-disk
     fallback detection if the MCP server restarts and in-memory job state is lost.
@@ -1007,184 +904,87 @@ def build_model_from_arrays(
 # ===========================================================================
 
 @_register
-def plot_dataset_info(
-    dataset_id: str,
-    split_file_path: Optional[str] = None,
-    column: Optional[str] = None,
-    plots: Optional[list[str]] = None,
-) -> dict[str, Any]:
-    """Generate exploratory plots for a loaded dataset.
-
-    Workflow: load_dataset → compute_features → split_dataset → THIS TOOL
-
-    Available plots (pass in `plots` list, or omit/use ["all"] for everything):
-        "class_distribution"  — bar chart of label counts (always generated)
-        "column_distribution" — histogram+KDE for `column` (or all numeric cols if column=None)
-        "split_statistics"    — train/val/test proportions (requires split_file_path)
-        "class_balance_splits"— class % per split (requires split_file_path)
-
-    Args:
-        dataset_id: ID from load_dataset().
-        split_file_path: Path to a .pkl from split_dataset() — required for split plots.
-        column: Specific column for column_distribution. Omit to plot all numeric cols.
-        plots: List of plot names to generate, or ["all"] / None for all available.
-
-    Returns:
-        Dict mapping plot name → saved PNG path for each generated figure.
-    """
-    if dataset_id not in _loaded_datasets:
-        raise KeyError(f"Dataset '{dataset_id}' not loaded. Call load_dataset() first.")
-
-    df        = _loaded_datasets[dataset_id]
-    label_col = df.attrs.get("label_col", "class_label")
-    want_all  = not plots or plots == ["all"]
-    results: dict[str, Any] = {}
-
-    # --- class_distribution (always included) ---
-    if want_all or "class_distribution" in plots:
-        path = _default_plot_path(f"{dataset_id}_class_distribution")
-        _plot_class_distribution(df[label_col].tolist(), title=f"{dataset_id} — class distribution", save_path=path)
-        results["class_distribution"] = path
-
-    # --- column_distribution ---
-    if want_all or "column_distribution" in plots:
-        cols = [column] if column else [c for c in df.columns if df[c].dtype.kind in "iufc" and c != label_col]
-        for col in cols:
-            p = _default_plot_path(f"{dataset_id}_col_dist_{col}")
-            _plot_column_distribution(df, column=col, title=f"{dataset_id} — {col}", save_path=p)
-            results[f"column_distribution_{col}"] = p
-
-    # --- split_statistics and class_balance_splits ---
-    if split_file_path and (want_all or "split_statistics" in plots or "class_balance_splits" in plots):
-        split_path = Path(split_file_path)
-        if not split_path.exists():
-            split_path = _workspace_root() / split_file_path
-        if split_path.exists():
-            split_data = joblib.load(split_path)
-            # Build statistics dict expected by _plot_split_statistics
-            split_stats: dict[str, dict] = {}
-            for part in ("train", "val", "test"):
-                lbl_key = f"{part}_labels"
-                if lbl_key in split_data and len(split_data[lbl_key]) > 0:
-                    split_stats[part] = {"count": len(split_data[lbl_key])}
-            total = sum(v["count"] for v in split_stats.values()) or 1
-            for v in split_stats.values():
-                v["percentage"] = round(v["count"] / total * 100, 1)
-
-            if want_all or "split_statistics" in plots:
-                p = _default_plot_path(f"{dataset_id}_split_statistics")
-                _plot_split_statistics(split_stats, title=f"{dataset_id} — split sizes", save_path=p)
-                results["split_statistics"] = p
-
-            if want_all or "class_balance_splits" in plots:
-                import collections
-                class_dist: dict[str, dict] = {}
-                for part in ("train", "val", "test"):
-                    lbl_key = f"{part}_labels"
-                    if lbl_key in split_data and len(split_data[lbl_key]) > 0:
-                        counts = collections.Counter(split_data[lbl_key].tolist())
-                        class_dist[part] = dict(counts)
-                if class_dist:
-                    p = _default_plot_path(f"{dataset_id}_class_balance_splits")
-                    _plot_class_balance_splits(class_dist, title=f"{dataset_id} — class balance per split", save_path=p)
-                    results["class_balance_splits"] = p
-
-    results["generated"] = list(results.keys())
-    return results
-
-
-@_register
 def plot_classification_results(
-    model_path: str,
-    split_file_path: str,
-    split: Literal["train", "val", "test"] = "test",
+    predictions_path: str,
     plots: Optional[list[str]] = None,
-    top_n_features: int = 20,
 ) -> dict[str, Any]:
-    """Generate classification evaluation plots from a model and split file.
+    """Generate classification evaluation plots from a predictions CSV.
 
-    Workflow: check_training → THIS TOOL
+    Workflow: export_predictions → THIS TOOL
 
-    Loads the model and split data from disk, runs predictions internally,
-    and produces all requested figures without passing arrays through the LLM.
+    Reads the CSV produced by export_predictions() — no model or split file needed.
 
     Available plots (use ["all"] or omit for all):
         "confusion_matrix"   — annotated heatmap (binary + multiclass)
         "roc_curve"          — ROC curve with AUC (binary only)
         "pr_curve"           — Precision-Recall curve with AP (binary only)
         "metric_bar"         — horizontal bar of scalar metrics
-        "feature_importance" — top-N Gini importances (tree models only)
         "threshold_metrics"  — Precision/Recall/F1 vs threshold (binary only)
 
     Args:
-        model_path: Absolute path to a saved .pkl model file.
-        split_file_path: Path to .pkl split file from split_dataset().
-        split: Which partition to evaluate (default "test").
+        predictions_path: Path to the predictions CSV from export_predictions().
+                          Must contain columns: true_label, predicted_label,
+                          and optionally prob_class_0, prob_class_1.
         plots: Plot names to generate, or ["all"] / None for all.
-        top_n_features: N features for the importance plot (default 20).
 
     Returns:
         Dict mapping plot name → saved PNG path for each generated figure.
     """
-    model_path_r = Path(model_path)
-    if not model_path_r.exists():
-        raise FileNotFoundError(f"Model not found: {model_path}")
-    split_path = Path(split_file_path)
-    if not split_path.exists():
-        split_path = _workspace_root() / split_file_path
-    if not split_path.exists():
-        raise FileNotFoundError(f"Split file not found: {split_file_path}")
+    import pandas as pd
 
-    model      = joblib.load(model_path_r)
-    split_data = joblib.load(split_path)
-    X          = np.array(split_data[f"{split}_features"])
-    y_true     = split_data[f"{split}_labels"].tolist()
+    pred_path = Path(predictions_path)
+    if not pred_path.exists():
+        pred_path = _workspace_root() / predictions_path
+    if not pred_path.exists():
+        raise FileNotFoundError(f"Predictions file not found: {predictions_path}")
 
-    y_pred  = model.predict(X).tolist()
-    y_proba = model.predict_proba(X) if hasattr(model, "predict_proba") else None
+    df     = pd.read_csv(pred_path)
+    y_true = df["true_label"].tolist()
+    y_pred = df["predicted_label"].tolist()
+
+    # Reconstruct probability matrix from prob_class_* columns if present
+    prob_cols = sorted([c for c in df.columns if c.startswith("prob_class_")])
+    y_proba   = df[prob_cols].values if prob_cols else None
     is_binary = len(set(y_true)) == 2
-    y_score   = y_proba[:, 1].tolist() if (y_proba is not None and is_binary) else None
+    y_score   = df["prob_class_1"].tolist() if ("prob_class_1" in df.columns and is_binary) else None
 
     want_all = not plots or plots == ["all"]
-    stem     = f"{split_path.stem}_{Path(model_path).stem}_{split}"
+    stem     = pred_path.stem
     results: dict[str, Any] = {}
 
     if want_all or "confusion_matrix" in plots:
         p = _default_plot_path(f"{stem}_confusion_matrix")
-        _plot_confusion_matrix(y_true, y_pred, title=f"Confusion matrix — {split}", save_path=p)
+        _plot_confusion_matrix(y_true, y_pred, title="Confusion matrix", save_path=p)
         results["confusion_matrix"] = p
 
     if (want_all or "roc_curve" in plots) and is_binary and y_score is not None:
         p = _default_plot_path(f"{stem}_roc_curve")
-        _plot_roc_curve(y_true, y_score, title=f"ROC curve — {split}", save_path=p)
+        _plot_roc_curve(y_true, y_score, title="ROC curve", save_path=p)
         results["roc_curve"] = p
 
     if (want_all or "pr_curve" in plots) and is_binary and y_score is not None:
         p = _default_plot_path(f"{stem}_pr_curve")
-        _plot_pr_curve(y_true, y_score, title=f"PR curve — {split}", save_path=p)
+        _plot_pr_curve(y_true, y_score, title="PR curve", save_path=p)
         results["pr_curve"] = p
 
     if want_all or "metric_bar" in plots:
-        metrics = evaluate_classification(labels=y_true, predictions=y_pred,
-                                          probabilities=y_proba.tolist() if y_proba is not None else None)
+        metrics = evaluate_classification(
+            labels=y_true, predictions=y_pred,
+            probabilities=y_proba.tolist() if y_proba is not None else None,
+        )
         p = _default_plot_path(f"{stem}_metric_bar")
-        scalar_metrics = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
-        _plot_metric_bar(scalar_metrics, title=f"Metrics — {split}", save_path=p)
+        # Binary: flat dict of scalars. Multiclass: scalars are nested under "overall_metrics".
+        if "overall_metrics" in metrics:
+            scalar_metrics = {k: v for k, v in metrics["overall_metrics"].items() if isinstance(v, (int, float))}
+        else:
+            scalar_metrics = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+        _plot_metric_bar(scalar_metrics, title="Metrics", save_path=p)
         results["metric_bar"] = p
         results["metrics"] = scalar_metrics
 
-    if want_all or "feature_importance" in plots:
-        try:
-            p = _default_plot_path(f"{stem}_feature_importance")
-            _plot_feature_importance(model, top_n=top_n_features,
-                                      title=f"Feature importance (top {top_n_features})", save_path=p)
-            results["feature_importance"] = p
-        except (AttributeError, ValueError):
-            results["feature_importance"] = "skipped (model does not expose feature_importances_)"
-
     if (want_all or "threshold_metrics" in plots) and is_binary and y_score is not None:
         p = _default_plot_path(f"{stem}_threshold_metrics")
-        _plot_threshold_metrics(y_true, y_score, title=f"Threshold metrics — {split}", save_path=p)
+        _plot_threshold_metrics(y_true, y_score, title="Threshold metrics", save_path=p)
         results["threshold_metrics"] = p
 
     results["generated"] = [k for k in results if k != "metrics"]
@@ -1193,16 +993,15 @@ def plot_classification_results(
 
 @_register
 def plot_regression_results(
-    model_path: str,
-    split_file_path: str,
-    split: Literal["train", "val", "test"] = "test",
+    predictions_path: str,
     plots: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Generate regression evaluation plots from a model and split file.
+    """Generate regression evaluation plots from a predictions CSV.
 
-    Workflow: check_training → THIS TOOL
+    Workflow: export_predictions → THIS TOOL
 
-    Loads model and split data from disk; runs predictions internally.
+    Reads the CSV produced by export_predictions() — no model or split
+    file needed.
 
     Available plots (use ["all"] or omit for all):
         "actual_vs_predicted" — scatter with identity line, R² and MAE
@@ -1211,51 +1010,47 @@ def plot_regression_results(
         "error_distribution"  — histogram + KDE of |y_true − y_pred|
 
     Args:
-        model_path: Absolute path to a saved .pkl model file.
-        split_file_path: Path to .pkl split file from split_dataset().
-        split: Which partition to evaluate (default "test").
+        predictions_path: Path to the predictions CSV from export_predictions().
+                          Must contain columns: true_label, predicted_value.
         plots: Plot names to generate, or ["all"] / None for all.
 
     Returns:
         Dict mapping plot name → saved PNG path for each generated figure.
     """
-    model_path_r = Path(model_path)
-    if not model_path_r.exists():
-        raise FileNotFoundError(f"Model not found: {model_path}")
-    split_path = Path(split_file_path)
-    if not split_path.exists():
-        split_path = _workspace_root() / split_file_path
-    if not split_path.exists():
-        raise FileNotFoundError(f"Split file not found: {split_file_path}")
+    import pandas as pd
 
-    model      = joblib.load(model_path_r)
-    split_data = joblib.load(split_path)
-    X          = np.array(split_data[f"{split}_features"])
-    y_true     = split_data[f"{split}_labels"].tolist()
-    y_pred     = model.predict(X).tolist()
+    pred_path = Path(predictions_path)
+    if not pred_path.exists():
+        pred_path = _workspace_root() / predictions_path
+    if not pred_path.exists():
+        raise FileNotFoundError(f"Predictions file not found: {predictions_path}")
+
+    df     = pd.read_csv(pred_path)
+    y_true = df["true_label"].tolist()
+    y_pred = df["predicted_value"].tolist()
 
     want_all = not plots or plots == ["all"]
-    stem     = f"{split_path.stem}_{Path(model_path).stem}_{split}"
+    stem     = pred_path.stem
     results: dict[str, Any] = {}
 
     if want_all or "actual_vs_predicted" in plots:
         p = _default_plot_path(f"{stem}_actual_vs_predicted")
-        _plot_actual_vs_predicted(y_true, y_pred, title=f"Actual vs Predicted — {split}", save_path=p)
+        _plot_actual_vs_predicted(y_true, y_pred, title="Actual vs Predicted", save_path=p)
         results["actual_vs_predicted"] = p
 
     if want_all or "residuals" in plots:
         p = _default_plot_path(f"{stem}_residuals")
-        _plot_residuals(y_true, y_pred, title=f"Residuals — {split}", save_path=p)
+        _plot_residuals(y_true, y_pred, title="Residuals", save_path=p)
         results["residuals"] = p
 
     if want_all or "residual_histogram" in plots:
         p = _default_plot_path(f"{stem}_residual_histogram")
-        _plot_residual_histogram(y_true, y_pred, title=f"Residual histogram — {split}", save_path=p)
+        _plot_residual_histogram(y_true, y_pred, title="Residual histogram", save_path=p)
         results["residual_histogram"] = p
 
     if want_all or "error_distribution" in plots:
         p = _default_plot_path(f"{stem}_error_distribution")
-        _plot_error_distribution(y_true, y_pred, title=f"Error distribution — {split}", save_path=p)
+        _plot_error_distribution(y_true, y_pred, title="Error distribution", save_path=p)
         results["error_distribution"] = p
 
     results["generated"] = list(results.keys())
@@ -1405,6 +1200,184 @@ def log_thought(
     """
     session_logger.log_thought(thought, step=step)
     return {"logged": "ok", "session_id": session_logger.session_id}
+
+
+@_register
+def generate_report(
+    title: Optional[str] = None,
+) -> dict[str, str]:
+    """Write a Markdown summary report of the current session to disk.
+
+    Reads the current session's JSON-lines log, groups events into tool
+    calls, agent reasoning (``log_thought``), and saved artifacts, then
+    writes a single ``report_<timestamp>.md`` file inside
+    ``<session_dir>/reports/``.
+
+    Call this at the **end** of a workflow — after the last
+    ``plot_*`` or ``export_predictions`` call — so the report captures
+    the complete session. Always includes agent reasoning and tool arguments.
+
+    Args:
+        title: Optional headline for the report. Defaults to "Session Report: <session_id>".
+
+    Returns:
+        {"report_path": <absolute path>, "session_id": <id>}
+    """
+    include_thoughts = True
+    include_args = True
+    import json as _json
+    from datetime import timezone as _tz
+    from datetime import datetime as _dt
+
+    log_file = session_logger.log_file
+    session_id = session_logger.session_id
+    session_dir = session_logger.session_dir
+
+    # ── Parse the JSON-lines log ──────────────────────────────────────────
+    events: list[dict] = []
+    if log_file.exists():
+        for raw in log_file.read_text(encoding="utf-8").splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                events.append(_json.loads(raw))
+            except _json.JSONDecodeError:
+                pass
+
+    # Group call_start + call_end pairs by call_id
+    starts:   dict[str, dict] = {}
+    calls:    list[dict] = []       # merged call records
+    thoughts: list[dict] = []
+    artifacts: list[dict] = []
+
+    for ev in events:
+        etype = ev.get("type", "")
+        if etype == "call_start":
+            starts[ev["call_id"]] = ev
+        elif etype == "call_end":
+            cid = ev.get("call_id")
+            start = starts.pop(cid, {})
+            calls.append({
+                "call_id":    cid,
+                "tool":       start.get("tool", "?"),
+                "args":       start.get("args", {}),
+                "status":     ev.get("status", "?"),
+                "duration_ms": ev.get("duration_ms", 0),
+                "result":     ev.get("result"),
+                "error":      ev.get("error"),
+                "timestamp":  start.get("timestamp", ev.get("timestamp", "")),
+            })
+        elif etype == "thought":
+            thoughts.append(ev)
+        elif etype == "artifact_saved":
+            artifacts.append(ev)
+
+    # ── Build the Markdown ────────────────────────────────────────────────
+    now_str = _dt.now(_tz.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    headline = title or f"Session Report: {session_id}"
+
+    n_success = sum(1 for c in calls if c["status"] == "success")
+    n_error   = sum(1 for c in calls if c["status"] == "error")
+    total_ms  = sum(c["duration_ms"] for c in calls)
+
+    lines: list[str] = [
+        f"# {headline}",
+        "",
+        f"| | |",
+        f"|---|---|",
+        f"| **Generated** | {now_str} |",
+        f"| **Session ID** | `{session_id}` |",
+        f"| **Session directory** | `{session_dir}` |",
+        "",
+        "## Summary",
+        "",
+        f"| Metric | Value |",
+        f"|---|---|",
+        f"| Tool calls | {len(calls)} |",
+        f"| Successful | {n_success} |",
+        f"| Failed | {n_error} |",
+        f"| Total tool time | {total_ms/1000:.1f} s |",
+        f"| Agent thoughts logged | {len(thoughts)} |",
+        f"| Artifacts saved | {len(artifacts)} |",
+        "",
+    ]
+
+    # ── Agent reasoning ────────────────────────────────────────────────────
+    if include_thoughts and thoughts:
+        lines += ["## Agent Reasoning", ""]
+        for th in thoughts:
+            step_label = th.get("step") or "thought"
+            ts = th.get("timestamp", "")[:19].replace("T", " ")
+            lines += [
+                f"### `{step_label}`  <sub>{ts}</sub>",
+                "",
+                f"> {th.get('thought', '').replace(chr(10), '  \n> ')}",
+                "",
+            ]
+
+    # ── Tool calls ─────────────────────────────────────────────────────────
+    lines += ["## Tool Calls", ""]
+    for i, c in enumerate(calls, 1):
+        status_icon = "✅" if c["status"] == "success" else "❌"
+        ts = c["timestamp"][:19].replace("T", " ") if c["timestamp"] else ""
+        lines += [
+            f"### {i}. `{c['tool']}`  {status_icon}  <sub>{ts}</sub>",
+            "",
+            f"**Duration:** {c['duration_ms']:.0f} ms | **Status:** {c['status']}",
+            "",
+        ]
+        if include_args and c["args"]:
+            lines += ["**Arguments:**", ""]
+            lines += ["| Parameter | Value |", "|---|---|"]
+            for k, v in c["args"].items():
+                v_str = str(v) if not isinstance(v, dict) else _json.dumps(v, ensure_ascii=False)
+                lines.append(f"| `{k}` | `{v_str}` |")
+            lines.append("")
+        if c["status"] == "success" and c["result"] is not None:
+            # Show only scalar / short string fields from the result dict
+            if isinstance(c["result"], dict):
+                brief = {
+                    k: v for k, v in c["result"].items()
+                    if isinstance(v, (str, int, float, bool))
+                    and k not in ("next_step",)
+                }
+                if brief:
+                    lines += ["**Key results:**", ""]
+                    lines += ["| Field | Value |", "|---|---|"]
+                    for k, v in brief.items():
+                        lines.append(f"| `{k}` | `{v}` |")
+                    lines.append("")
+        elif c["status"] == "error" and c["error"]:
+            lines += [f"**Error:** `{c['error']}`", ""]
+
+    # ── Artifacts ──────────────────────────────────────────────────────────
+    if artifacts:
+        lines += ["## Artifacts Saved", ""]
+        lines += ["| Category | Destination |", "|---|---|"]
+        for art in artifacts:
+            cat  = art.get("category", "?")
+            dest = art.get("dest", art.get("source", "?"))
+            lines.append(f"| `{cat}` | `{dest}` |")
+        lines.append("")
+
+    markdown = "\n".join(lines)
+
+    # ── Write to disk ─────────────────────────────────────────────────────
+    reports_dir = session_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    ts_file = _dt.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+    report_path = reports_dir / f"report_{ts_file}.md"
+    report_path.write_text(markdown, encoding="utf-8")
+
+    return {
+        "report_path": str(report_path),
+        "session_id":  session_id,
+        "n_tool_calls": len(calls),
+        "n_success":    n_success,
+        "n_errors":     n_error,
+        "n_thoughts":   len(thoughts),
+    }
 
 
 @_register

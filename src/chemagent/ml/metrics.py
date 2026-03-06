@@ -90,7 +90,7 @@ def classification_metrics(
 
     result: dict = {
         "MCC": float(metrics.matthews_corrcoef(labels, pred)),
-        "BA": float(metrics.balanced_accuracy_score(labels, pred)),
+        "Balanced Accuracy": float(metrics.balanced_accuracy_score(labels, pred)),
         "Accuracy": float(metrics.accuracy_score(labels, pred)),
         "Dataset size": len(labels),
         "Target ID": model_type,

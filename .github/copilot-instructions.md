@@ -13,11 +13,11 @@ All capabilities are consolidated into a **single FastMCP server** (`chemagent_m
 |---|---|
 | **Dataset** | `find_datasets`, `list_loaded_datasets`, `list_featurizers`, `load_dataset`, `compute_features`, `split_dataset`, `dataset_status` |
 | **ML** | `get_ml_info`, `train_model`, `check_training`, `export_predictions` |
-| **Plots** | `plot_dataset_info`, `plot_classification_results`, `plot_regression_results` |
+| **Plots** | `plot_classification_results`, `plot_regression_results` |
 | **Utility** | `log_thought`, `start_new_session`, `run_pipeline` |
 
 The following are **internal Python helpers** — they exist in the server but are **not** registered as MCP tools:
-`train_on_split_file`, `predict_from_split_file`, `build_model_from_split_file`, `build_model_from_arrays`, `get_hyperparameter_grids`, `get_dataset_smiles`, `prepare_ml_dataset`, `load_split`, `get_ml_ready_data`, `_train_model_arrays`, `_predict`, `evaluate_classification`, `evaluate_regression`
+`train_on_split_file`, `predict_from_split_file`, `build_model_from_split_file`, `build_model_from_arrays`, `get_dataset_smiles`, `prepare_ml_dataset`, `load_split`, `get_ml_ready_data`, `_predict`, `evaluate_classification`, `evaluate_regression`
 
 XAI/SHAP tools are the **next planned implementation step** (`shap` is already installed). Do not add XAI tools without explicit instruction.
 
@@ -84,14 +84,14 @@ src/chemagent/
 ## Key Conventions
 - **Workspace root resolution**: Resolved at runtime with `Path(__file__).resolve().parents[3]` (4 levels up from `src/chemagent/servers/`). The `src/` directory is inserted into `sys.path` via `parents[2]`. Adjust offsets if the directory structure changes.
 - **In-memory state**: `chemagent_mcp.py` caches loaded DataFrames in `_loaded_datasets` and processed datasets in `_processed_datasets`. State is **ephemeral** — lost on server restart. Re-run `load_dataset()` + `compute_features()` after restarts.
-- **Model persistence**: Trained models saved as `.pkl` via `joblib`. Default path: `<session_dir>/models/<split_stem>_<ALGO>.pkl` (from `train_model` / `build_model_from_split_file`).
+- **Model persistence**: Trained models saved as `.pkl` via `joblib`. Default path: `<session_dir>/models/<split_stem>_<ALGO>.pkl` (from `train_model`).
 - **Dataset naming**: `data/datasets/chembl_activity_data_{UniProtA}_{UniProtB}.csv`. Columns: `smiles`, `class_label` (0/1), `pPot_diff`, `target_pair`, `cid`.
 - **Split persistence**: Saved as `.pkl` under `<session_dir>/splits/` (keys: `train_features`, `train_labels`, `val_*`, `test_*`). Pass `val_size=0.0` for a two-way train/test split.
 - **`task` parameter**: Use `"classification"` as the default. `"classification-cw"` (class-weighted) is available but its utility for these datasets is under review — avoid unless explicitly needed. `"regression"` is for `pPot_diff` prediction tasks.
 - **Featurizer extensibility**: Any public `UpperCase` function added to `chemagent/featurization/fingerprints.py` is automatically available as a `method` in `compute_features()` and appears in `list_featurizers()`. Parameters (`n_bits`, `radius`, etc.) are forwarded via `inspect.signature` — only kwargs the function accepts are passed.
 - **ML extensibility**: All estimator factories and hyperparameter grids live in `chemagent/ml/models.py` as `build_estimator`, `PARAM_GRIDS`, and `MODEL_INFO` — that is the single source of truth. `HYPERPARAMETERS` in `hyperparameter_tuning.py` is imported from `models.py`.
 - **Core ML classes**: `MLModel` (GridSearchCV training) in `chemagent.ml.training`; `Model_Evaluation` (metrics) in `chemagent.ml.evaluation`. Both are exported from `chemagent.ml`.
-- **Plot tools**: The three plot tools (`plot_dataset_info`, `plot_classification_results`, `plot_regression_results`) load model and split data from disk themselves — never pass raw arrays to them. They accept a `plots` list (or `["all"]`) to select which figures to generate.
+- **Plot tools**: The two plot tools (`plot_classification_results`, `plot_regression_results`) load model and split data from disk themselves — never pass raw arrays to them. They accept a `plots` list (or `["all"]`) to select which figures to generate.
 - **Background training**: `train_model` is non-blocking and returns a `job_id`. Always poll with `check_training(job_id)` until `status` is `"completed"` or `"failed"`. The full pipeline result is in `check_training(...)[\"result\"]` when done.
 
 ## Dataset Target Pairs

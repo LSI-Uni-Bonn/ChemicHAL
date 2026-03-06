@@ -316,11 +316,3 @@ def train_on_split_file(
         "model_path":               model_save_path,
     }
 
-
-# ===========================================================================
-# Hyperparameter reference
-# ===========================================================================
-
-def get_hyperparameter_grids() -> dict[str, Any]:
-    """Return all registered hyperparameter grids (internal helper)."""
-    return _to_serialisable(HYPERPARAMETERS)

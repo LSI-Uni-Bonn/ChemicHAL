@@ -19,7 +19,7 @@ Usage
 
 from .random_split   import random_split
 from .scaffold_split import scaffold_split
-from .statistics     import get_split_statistics, class_distribution, check_leakage
+from .statistics     import get_split_statistics, class_distribution
 from .utils          import validate_split_sizes, set_random_seed, generate_murcko_scaffold
 
 __all__ = [
@@ -27,7 +27,6 @@ __all__ = [
     "scaffold_split",
     "get_split_statistics",
     "class_distribution",
-    "check_leakage",
     "validate_split_sizes",
     "set_random_seed",
     "generate_murcko_scaffold",

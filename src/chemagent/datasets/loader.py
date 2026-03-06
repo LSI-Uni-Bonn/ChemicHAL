@@ -51,7 +51,9 @@ def resolve_path(file_path: str, directory: str = "") -> Path:
         p = Path(file_path)
 
     if not p.is_absolute():
-        p = workspace_root() / p
+        # On Windows, paths like "/data/..." are drive-relative, not absolute.
+        # Stripping leading separators ensures workspace_root() / p works correctly.
+        p = workspace_root() / Path(str(p).lstrip("/\\"))
     return p
 
 

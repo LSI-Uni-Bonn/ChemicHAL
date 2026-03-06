@@ -105,6 +105,7 @@ class Model_Evaluation:
             {"Metric": k, "Value": v}
             for k, v in result.items()
             if k not in ("Target ID", "Algorithm", "Dataset size")
+            and isinstance(v, (int, float))
         ]
         return pd.DataFrame(rows)
 

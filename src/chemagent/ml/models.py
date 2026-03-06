@@ -15,30 +15,28 @@ Step 1 — import the estimator (add to the sklearn imports block below).
 
 Step 2 — add a param grid::
 
-    PARAM_GRIDS["XGB"] = {
+    PARAM_GRIDS["RFC"] = {
         "n_estimators": [100, 300],
         "max_depth":    [3, 6],
-        "learning_rate": [0.05, 0.1],
     }
 
 Step 3 — add a factory branch inside ``build_estimator()``::
 
-    if algorithm == "XGB":
-        from xgboost import XGBClassifier, XGBRegressor
+    if algorithm == "RFC":
         if reg_class == "regression":
-            return XGBRegressor(random_state=random_seed, n_jobs=-1)
-        return XGBClassifier(
+            return RandomForestRegressor(random_state=random_seed)
+        return RandomForestClassifier(
             random_state=random_seed,
-            scale_pos_weight=... if class_weighted else 1,
+            class_weight="balanced" if class_weighted else None,
             n_jobs=-1,
         )
 
 Step 4 — add metadata::
 
-    MODEL_INFO["XGB"] = {
-        "description": "XGBoost gradient-boosted trees",
+    MODEL_INFO["RFC"] = {
+        "description": "Random Forest Classifier — ensemble of decision trees; handles multi-class, supports class weighting (task='classification-cw').",
         "task":        "both",
-        "extra_deps":  ["xgboost"],
+
     }
 
 That's it — the new key is automatically available everywhere:
@@ -137,17 +135,17 @@ def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
 
 MODEL_INFO: dict[str, dict] = {
     "RFC": {
-        "description": "Random Forest Classifier",
+        "description": "Random Forest Classifier — ensemble of decision trees; handles multi-class, supports class weighting (task='classification-cw').",
         "task":        "classification",
         "extra_deps":  [],
     },
     "RFR": {
-        "description": "Random Forest Regressor",
+        "description": "Random Forest Regressor — ensemble of decision trees for continuous target prediction (e.g. pPot_diff).",
         "task":        "regression",
         "extra_deps":  [],
     },
     "SVC": {
-        "description": "Support Vector Classifier",
+        "description": "Support Vector Classifier — SVM with RBF/linear kernels; probability estimates enabled; supports class weighting (task='classification-cw').",
         "task":        "classification",
         "extra_deps":  [],
     },
