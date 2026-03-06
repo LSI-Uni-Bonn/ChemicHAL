@@ -38,12 +38,12 @@ def scaffold_split(
     test_size: float = 0.1,
     seed: Optional[int] = None,
     labels: Optional[List[int]] = None,
-    stratify: bool = False,
+    stratified: bool = False,
 ) -> Dict[str, List[int]]:
     """Split a molecular dataset by Murcko scaffold to avoid data leakage.
 
     All molecules sharing the same Murcko scaffold are assigned to the
-    same split.  When *stratify* is ``True`` and *labels* are supplied,
+    same split.  When *stratified* is ``True`` and *labels* are supplied,
     groups are assigned greedily based on per-class deficits to keep
     class ratios balanced.
 
@@ -61,8 +61,8 @@ def scaffold_split(
         Random seed applied to scaffold-group ordering.
     labels:
         Optional 1-D list of integer class labels. Required when
-        *stratify* is ``True``.
-    stratify:
+        *stratified* is ``True``.
+    stratified:
         If ``True``, scaffold groups are assigned greedily to preserve
         per-class proportions.  Requires *labels* to be provided.
 
@@ -76,7 +76,7 @@ def scaffold_split(
     ------
     ValueError
         If sizes are invalid, any SMILES is unparseable, *labels*
-        length mismatches *smiles_list*, or *stratify* is ``True`` but
+        length mismatches *smiles_list*, or *stratified* is ``True`` but
         *labels* is ``None``.
     """
     validate_split_sizes(train_size, val_size, test_size)
@@ -84,8 +84,8 @@ def scaffold_split(
 
     n_samples = len(smiles_list)
 
-    if stratify and labels is None:
-        raise ValueError("stratify=True requires labels to be provided.")
+    if stratified and labels is None:
+        raise ValueError("stratified=True requires labels to be provided.")
 
     if labels is not None and len(labels) != n_samples:
         raise ValueError(
@@ -116,7 +116,7 @@ def scaffold_split(
     # ------------------------------------------------------------------
     # Stratified scaffold split
     # ------------------------------------------------------------------
-    if stratify and labels is not None:
+    if stratified and labels is not None:
         labels_arr = np.array(labels, dtype=int)
         classes    = np.unique(labels_arr)
 

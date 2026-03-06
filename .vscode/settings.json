@@ -3,6 +3,7 @@
     "python-envs.defaultPackageManager": "ms-python.python:pip",
     "python-envs.pythonProjects": [],
     "chat.tools.terminal.autoApprove": {
-        "Set-Content": true
+        "Set-Content": true,
+        "&": true
     }
 }

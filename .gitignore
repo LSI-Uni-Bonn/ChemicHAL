@@ -1,1 +1,3 @@
 data/logs/
+src/chemagent/explainability/
+notebooks/shap_debug.ipynb

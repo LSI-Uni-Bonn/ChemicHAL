@@ -37,6 +37,7 @@ ML
 Plots
   plot_classification_results confusion matrix, ROC, PR, metric bar, threshold (from predictions CSV)
   plot_regression_results     actual vs predicted, residuals, error distribution (from predictions CSV)
+  show_plot                   display a saved PNG directly in the chat UI
 
 Utilities
   log_thought            record reasoning in the session log
@@ -58,7 +59,7 @@ from typing import Any, Literal, Optional
 
 import joblib
 import numpy as np
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
 # ---------------------------------------------------------------------------
 # Make chemagent packages importable when launched from servers/ via uv run
@@ -907,12 +908,13 @@ def build_model_from_arrays(
 def plot_classification_results(
     predictions_path: str,
     plots: Optional[list[str]] = None,
-) -> dict[str, Any]:
+) -> list:
     """Generate classification evaluation plots from a predictions CSV.
 
     Workflow: export_predictions → THIS TOOL
 
     Reads the CSV produced by export_predictions() — no model or split file needed.
+    Images are returned inline so they render directly in the chat UI.
 
     Available plots (use ["all"] or omit for all):
         "confusion_matrix"   — annotated heatmap (binary + multiclass)
@@ -928,7 +930,8 @@ def plot_classification_results(
         plots: Plot names to generate, or ["all"] / None for all.
 
     Returns:
-        Dict mapping plot name → saved PNG path for each generated figure.
+        List starting with a summary dict (plot names → saved paths, metrics),
+        followed by inline Image objects that render directly in the chat UI.
     """
     import pandas as pd
 
@@ -987,21 +990,24 @@ def plot_classification_results(
         _plot_threshold_metrics(y_true, y_score, title="Threshold metrics", save_path=p)
         results["threshold_metrics"] = p
 
-    results["generated"] = [k for k in results if k != "metrics"]
-    return results
+    plot_keys = [k for k in results if k not in ("generated", "metrics")]
+    results["generated"] = plot_keys
+    images = [Image(path=results[k]) for k in plot_keys]
+    return [results, *images]
 
 
 @_register
 def plot_regression_results(
     predictions_path: str,
     plots: Optional[list[str]] = None,
-) -> dict[str, Any]:
+) -> list:
     """Generate regression evaluation plots from a predictions CSV.
 
     Workflow: export_predictions → THIS TOOL
 
     Reads the CSV produced by export_predictions() — no model or split
     file needed.
+    Images are returned inline so they render directly in the chat UI.
 
     Available plots (use ["all"] or omit for all):
         "actual_vs_predicted" — scatter with identity line, R² and MAE
@@ -1015,7 +1021,8 @@ def plot_regression_results(
         plots: Plot names to generate, or ["all"] / None for all.
 
     Returns:
-        Dict mapping plot name → saved PNG path for each generated figure.
+        List starting with a summary dict (plot names → saved paths),
+        followed by inline Image objects that render directly in the chat UI.
     """
     import pandas as pd
 
@@ -1053,8 +1060,43 @@ def plot_regression_results(
         _plot_error_distribution(y_true, y_pred, title="Error distribution", save_path=p)
         results["error_distribution"] = p
 
-    results["generated"] = list(results.keys())
-    return results
+    plot_keys = [k for k in results if k != "generated"]
+    results["generated"] = plot_keys
+    images = [Image(path=results[k]) for k in plot_keys]
+    return [results, *images]
+
+
+# ===========================================================================
+# Inline image display tool
+# ===========================================================================
+
+@_register
+def show_plot(plot_path: str) -> Image:
+    """Display a saved plot image directly in the chat UI.
+
+    Reads the PNG file at *plot_path* and returns it as an inline image
+    so it renders immediately in MCP-compatible chat interfaces (e.g.
+    LM Studio, Claude Desktop).
+
+    Typical workflow:
+        paths = plot_classification_results(predictions_path)
+        show_plot(paths["confusion_matrix"])   # renders in chat
+        show_plot(paths["roc_curve"])           # renders in chat
+
+    Args:
+        plot_path: Absolute or workspace-relative path to a PNG file
+                   previously created by plot_classification_results() or
+                   plot_regression_results().
+
+    Returns:
+        An MCP ImageContent object that the chat UI renders inline.
+    """
+    p = Path(plot_path)
+    if not p.exists():
+        p = _workspace_root() / plot_path
+    if not p.exists():
+        raise FileNotFoundError(f"Plot file not found: {plot_path}")
+    return Image(path=p)
 
 
 # ===========================================================================
