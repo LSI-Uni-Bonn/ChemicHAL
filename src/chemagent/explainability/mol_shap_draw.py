@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import io
 from collections import defaultdict
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 from matplotlib import pyplot as plt
@@ -59,6 +59,7 @@ def get_ecfp_morgan_generator_bit_info(smiles: str, radius: int = 2, n_bits: int
     fp = fpgen.GetFingerprint(mol, additionalOutput=ao)
 
     return ao.GetBitInfoMap()
+
 
 def bit_to_atom_mapping(mol: Chem.Mol, dict_bit_info: dict) -> Dict[int, List[List[int]]]:
     """Map fingerprint bits to the atom indices that encode them.
@@ -239,4 +240,3 @@ def convert_draw2d_to_png(draw2d: Draw.MolDraw2D) -> Image.Image:
         PNG image decoded from the drawing's byte buffer.
     """
     return Image.open(io.BytesIO(draw2d.GetDrawingText()))
-

@@ -7,9 +7,6 @@ Public API
 ----------
 * :class:`SHAPExplainer`  — wraps a trained sklearn model, auto-selects the
   right SHAP explainer (TreeExplainer for RF, KernelExplainer for SVM).
-* :func:`summary_plot`    — beeswarm plot: feature importance + direction.
-* :func:`bar_plot`        — mean |SHAP| global feature importance bar chart.
-* :func:`waterfall_plot`  — single-compound breakdown.
 """
 
 from .shap_explainer import SHAPExplainer

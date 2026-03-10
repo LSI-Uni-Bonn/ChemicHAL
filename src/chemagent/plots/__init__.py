@@ -69,6 +69,9 @@ from .dataset import (
     plot_dataset_comparison,
 )
 
+from .display import show_plot
+from .mcp_tools import plot_classification_results, plot_regression_results
+
 __all__ = [
     # utils
     "set_theme",
@@ -93,4 +96,9 @@ __all__ = [
     "plot_column_distribution",
     "plot_class_balance_splits",
     "plot_dataset_comparison",
+    # display
+    "show_plot",
+    # mcp tools
+    "plot_classification_results",
+    "plot_regression_results",
 ]

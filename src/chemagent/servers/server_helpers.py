@@ -35,21 +35,11 @@ from chemagent.ml.hyperparameter_tuning import HYPERPARAMETERS
 # Path utilities
 # ===========================================================================
 
+from chemagent.session_utils import WORKSPACE_ROOT as _WORKSPACE_ROOT, resolve_path as _resolve_path, get_session_logger
+
+
 def _workspace_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
-def _resolve_path(p: str) -> str:
-    """Resolve *p* against workspace root when it is a relative path.
-
-    This prevents files from being written into the server's cwd
-    (src/chemagent/servers/) when the server is launched via ``uv --directory``.
-    """
-    path = Path(p)
-    if not path.is_absolute():
-        path = _workspace_root() / path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return str(path)
+    return _WORKSPACE_ROOT
 
 
 # ===========================================================================
