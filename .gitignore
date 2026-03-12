@@ -1,4 +1,32 @@
+# Session & runtime data
 data/logs/
+
+# Machine-specific MCP config (contains hardcoded absolute paths)
+lm_studio_mcp_config.json
+
+# Python environment & bytecode
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Package build artifacts
+src/*.egg-info/
+
+# VS Code user-specific settings
+.vscode/
+
+# Jupyter
+notebooks/.ipynb_checkpoints/
+notebooks/debug_outputs/
+
+# Accidental root artifact
+None
+
+# Individual notebook ignores
 notebooks/shap_debug.ipynb
+
+# Test artifacts
 tests/chemagent/servers/test_generate_pdf_report.py
 tests/chemagent/servers/__pycache__/test_generate_pdf_report.cpython-312-pytest-9.0.2.pyc
