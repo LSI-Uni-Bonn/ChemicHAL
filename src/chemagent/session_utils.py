@@ -48,6 +48,7 @@ def get_session_logger() -> "SessionLogger":
     """
     global _standalone_logger
     for mod_name in (
+        "__main__",              # uv run chemagent_mcp.py → runs as __main__
         "chemagent_mcp",
         "servers.chemagent_mcp",
         "src.chemagent.servers.chemagent_mcp",

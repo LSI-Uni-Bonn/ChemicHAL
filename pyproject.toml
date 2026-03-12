@@ -5,6 +5,7 @@ description = "ChemXAI Agent — an AI agent for cheminformatics, compound selec
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fpdf2>=2.8.7",
     "ipykernel>=7.2.0",
     "marimo>=0.20.2",
     "mcp[cli]>=1.26.0",

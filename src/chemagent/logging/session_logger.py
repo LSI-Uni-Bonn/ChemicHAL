@@ -56,7 +56,7 @@ if TYPE_CHECKING:
 
 # ── tuneable constants ──────────────────────────────────────────────────────
 MAX_ARRAY_ROWS        = 20    # lists with more rows → shape summary
-SESSION_TIMEOUT_MINS  = 60    # minutes of inactivity before a new session starts
+SESSION_TIMEOUT_MINS  = 480   # minutes of inactivity before a new session starts
 _CURRENT_SESSION_FILE = ".current_session.json"  # marker file inside log_dir
 
 # Result dict keys whose values are file paths → copied into the session dir.
@@ -149,6 +149,17 @@ def _summarise_args(kwargs: dict[str, Any]) -> dict[str, Any]:
 def _summarise_result(result: Any) -> Any:
     if isinstance(result, dict):
         return {k: _summarise_value(v) for k, v in result.items()}
+    # Mixed list (e.g. [summary_dict, Image, Image, ...]) — strip non-serialisable
+    # objects (Image) so the log stays small and readable.
+    if isinstance(result, list):
+        serialisable = []
+        for item in result:
+            if isinstance(item, dict):
+                serialisable.append({k: _summarise_value(v) for k, v in item.items()})
+            elif isinstance(item, (str, int, float, bool, type(None))):
+                serialisable.append(item)
+            # Image / bytes / other binary objects → skip
+        return serialisable if serialisable else result
     return result
 
 
@@ -220,10 +231,12 @@ class SessionLogger:
         self._log_file = self._session_dir / f"session_{self.session_id}.txt"
         self._lock     = threading.Lock()
         self._counter  = 0
+        self._log_fh   = self._log_file.open("a", encoding="utf-8")  # persistent handle
 
         # ── Persist / refresh the marker ───────────────────────────────────
-        self._marker_file = marker_file
-        self._touch_marker()
+        self._marker_file       = marker_file
+        self._last_marker_write = 0.0  # epoch seconds; throttle writes
+        self._touch_marker(force=True)
 
         # ── Write open / resume event ──────────────────────────────────────
         event: dict[str, Any] = {
@@ -267,10 +280,17 @@ class SessionLogger:
         self._session_dir.mkdir(parents=True, exist_ok=True)
         for subdir in ("datasets", "splits", "models", "plots", "results"):
             (self._session_dir / subdir).mkdir(exist_ok=True)
-        self._log_file  = self._session_dir / f"session_{self.session_id}.txt"
-        self._counter   = 0
+        self._log_file          = self._session_dir / f"session_{self.session_id}.txt"
+        self._counter           = 0
+        self._last_marker_write = 0.0
+        # Close old handle before opening a new one
+        try:
+            self._log_fh.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self._log_fh = self._log_file.open("a", encoding="utf-8")
 
-        self._touch_marker()
+        self._touch_marker(force=True)
         self._write({
             "session_id":  self.session_id,
             "type":        "session_open",
@@ -463,27 +483,32 @@ class SessionLogger:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
-    def _touch_marker(self) -> None:
+    def _touch_marker(self, force: bool = False) -> None:
         """Refresh the .current_session.json marker with the current timestamp.
 
-        Called on init and on every write so the marker always reflects the
-        time of the most recent activity.
+        Throttled to at most one write every 30 seconds to avoid hammering
+        cloud-synced storage (e.g. OneDrive) on every log entry.  Pass
+        ``force=True`` to bypass the throttle (used on session open/reset).
         """
         import time as _time
+        now = _time.time()
+        if not force and (now - self._last_marker_write) < 30:
+            return
         marker = {
             "session_id": self.session_id,
             "username":   self.username,
-            "last_seen":  _time.time(),
+            "last_seen":  now,
         }
         # Write outside the main lock to avoid deadlock (called from _write)
         self._marker_file.write_text(
             json.dumps(marker, indent=2), encoding="utf-8"
         )
+        self._last_marker_write = now
 
     def _write(self, entry: dict[str, Any]) -> None:
         line = json.dumps(entry, default=str)
         with self._lock:
-            with self._log_file.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-        # Keep marker fresh so inactivity timeout resets on every event
+            self._log_fh.write(line + "\n")
+            self._log_fh.flush()
+        # Keep marker reasonably fresh (throttled — see _touch_marker)
         self._touch_marker()

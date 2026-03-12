@@ -70,7 +70,7 @@ from .dataset import (
 )
 
 from .display import show_plot
-from .mcp_tools import plot_classification_results, plot_regression_results
+from .plot_tools import plot_classification_results, plot_regression_results
 
 __all__ = [
     # utils

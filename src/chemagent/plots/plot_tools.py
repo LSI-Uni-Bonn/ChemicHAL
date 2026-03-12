@@ -1,5 +1,5 @@
 """
-chemagent.plots.mcp_tools
+chemagent.plots.plot_tools
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 MCP tool functions that generate evaluation plots from predictions CSVs.
 Imported and registered by chemagent_mcp.py via _register().
@@ -123,6 +123,10 @@ def plot_classification_results(
 
     plot_keys = [k for k in results if k not in ("generated", "metrics")]
     results["generated"] = plot_keys
+    results["next_step"] = (
+        "Call show_plot(path) for each generated plot path to display it in the chat UI. "
+        + "Paths: " + ", ".join(f"{k}={results[k]!r}" for k in plot_keys)
+    )
     images = [Image(path=results[k]) for k in plot_keys]
     return [results, *images]
 
@@ -189,5 +193,9 @@ def plot_regression_results(
 
     plot_keys = [k for k in results if k != "generated"]
     results["generated"] = plot_keys
+    results["next_step"] = (
+        "Call show_plot(path) for each generated plot path to display it in the chat UI. "
+        + "Paths: " + ", ".join(f"{k}={results[k]!r}" for k in plot_keys)
+    )
     images = [Image(path=results[k]) for k in plot_keys]
     return [results, *images]
