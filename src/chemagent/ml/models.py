@@ -52,10 +52,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 
 
-# ===========================================================================
 # 1. Hyperparameter grids
-# ===========================================================================
-
 PARAM_GRIDS: dict[str, dict[str, list]] = {
     "RFC": {
         "n_estimators":      [50, 100, 200],
@@ -78,10 +75,7 @@ PARAM_GRIDS: dict[str, dict[str, list]] = {
 }
 
 
-# ===========================================================================
 # 2. Estimator factories
-# ===========================================================================
-
 def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
     """Return an unfitted scikit-learn estimator for *algorithm*.
 
@@ -102,7 +96,7 @@ def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
     """
     class_weighted = reg_class == "classification-cw"
 
-    # ── built-in models ──────────────────────────────────────────────────────
+    #built-in models
 
     if algorithm == "RFC":
         return RandomForestClassifier(
@@ -120,7 +114,7 @@ def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
             probability=True,
         )
 
-    # ── add new algorithms below ─────────────────────────────────────────────
+    #add new algorithms below
 
     raise ValueError(
         f"Unknown algorithm {algorithm!r}. "
@@ -129,9 +123,7 @@ def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
     )
 
 
-# ===========================================================================
 # 3. Metadata  (used by get_available_algorithms MCP tool)
-# ===========================================================================
 
 MODEL_INFO: dict[str, dict] = {
     "RFC": {
@@ -149,5 +141,5 @@ MODEL_INFO: dict[str, dict] = {
         "task":        "classification",
         "extra_deps":  [],
     },
-    # ── add new metadata below ───────────────────────────────────────────────
+    #add new metadata below
 }

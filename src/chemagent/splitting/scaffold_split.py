@@ -92,9 +92,7 @@ def scaffold_split(
             f"labels length ({len(labels)}) must match smiles_list length ({n_samples})"
         )
 
-    # ------------------------------------------------------------------
     # Build scaffold → molecule-index groups
-    # ------------------------------------------------------------------
     scaffold_to_indices: Dict[str, List[int]] = defaultdict(list)
     for idx, smi in enumerate(smiles_list):
         scaffold = generate_murcko_scaffold(smi)
@@ -112,10 +110,7 @@ def scaffold_split(
 
     train_target = int(n_samples * train_size)
     val_target   = int(n_samples * val_size)
-
-    # ------------------------------------------------------------------
     # Stratified scaffold split
-    # ------------------------------------------------------------------
     if stratified and labels is not None:
         labels_arr = np.array(labels, dtype=int)
         classes    = np.unique(labels_arr)
@@ -153,9 +148,7 @@ def scaffold_split(
             else:
                 test_indices.extend(group)
 
-    # ------------------------------------------------------------------
     # Plain scaffold split (no stratification)
-    # ------------------------------------------------------------------
     else:
         random.shuffle(scaffold_groups)
         for group in scaffold_groups:

@@ -81,10 +81,6 @@ class SHAPExplainer:
         self._is_tree = type(model).__name__ in _TREE_MODEL_NAMES
         self._explainer = self._build_explainer(model, background)
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def explain(self, X: np.ndarray) -> np.ndarray:
         """Compute SHAP values for *X*.
 
@@ -181,10 +177,6 @@ class SHAPExplainer:
         """
         model = joblib.load(model_path)
         return cls(model, background=background)
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _build_explainer(model, background,):
@@ -375,33 +367,33 @@ def explain_smiles_with_shap(
         )
     fn = featurizers[method]
 
-    # ── Background / infer n_bits from split file ────────────────────────
+    #Background / infer n_bits from split file
     background: Optional[np.ndarray] = None
     if split_file_path is not None:
         split_data = joblib.load(split_file_path)
         background = np.array(split_data["train_features"])
         n_bits     = int(background.shape[1])  # authoritative source
 
-    # ── Build keyword args accepted by this featurizer ───────────────────
+    #Build keyword args accepted by this featurizer
     sig = _inspect.signature(fn)
     base_kwargs = {k: v for k, v in {"n_bits": n_bits, "radius": radius}.items()
                    if k in sig.parameters}
     if featurizer_kwargs:
         base_kwargs.update(featurizer_kwargs)
 
-    # ── Featurize ────────────────────────────────────────────────────────
+    #Featurize
     X = np.array(fn(smiles, **base_kwargs))
 
-    # ── Predict ─────────────────────────────────────────────────────────
+    #Predict
     model  = joblib.load(model_path)
     y_pred = model.predict(X)
 
-    # ── SHAP ────────────────────────────────────────────────────────────
+    #SHAP
     explainer    = SHAPExplainer(model, background=background)
     shap_values  = explainer.explain_per_predicted_class(X, y_pred)
     expected_val = explainer.expected_value
 
-    # ── Save ─────────────────────────────────────────────────────────────
+    #Save
     save_dict: dict[str, Any] = {
         "shap_values":    shap_values,
         "expected_value": expected_val,

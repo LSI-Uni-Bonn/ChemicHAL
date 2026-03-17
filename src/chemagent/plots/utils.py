@@ -17,10 +17,7 @@ from matplotlib.figure import Figure
 import seaborn as sns
 
 
-# ---------------------------------------------------------------------------
 # Colour palette
-# ---------------------------------------------------------------------------
-
 #: Named hex colours for explicit element colouring (lines, highlights, etc.)
 PALETTE: dict[str, str] = {
     "primary":   "#2E86AB",   # blue
@@ -45,10 +42,7 @@ SNS_PALETTE: list[str] = [
 CMAP_SEQ = "Blues"
 
 
-# ---------------------------------------------------------------------------
 # Global seaborn theme
-# ---------------------------------------------------------------------------
-
 def set_theme(
     font_scale: float = 1.1,
     style: Literal["white", "dark", "whitegrid", "darkgrid", "ticks"] = "whitegrid",
@@ -79,9 +73,6 @@ def set_theme(
     )
 
 
-# ---------------------------------------------------------------------------
-# Save helper
-# ---------------------------------------------------------------------------
 
 def save_figure(
     fig: Figure,

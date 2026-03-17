@@ -39,9 +39,8 @@ if str(_SRC) not in sys.path:
 from chemagent.logging import SessionLogger
 
 
-# ===========================================================================
+
 # MCP server instance + session logger singleton + _register decorator
-# ===========================================================================
 
 mcp = FastMCP("chemagent")
 
@@ -75,10 +74,7 @@ def _register(fn):
     return logged_fn
 
 
-# ===========================================================================
 # log_thought
-# ===========================================================================
-
 def log_thought(
     thought: str,
     step: Optional[str] = None,
@@ -99,10 +95,19 @@ def log_thought(
     return {"logged": "ok", "session_id": session_logger.session_id}
 
 
-# ===========================================================================
-# Shared log-parsing helper
-# ===========================================================================
+def log_answer(
+    answer: str,
+    role: Optional[str] = None,
+) -> dict[str, str]:
+    """Record an assistant/LLM answer in the session log via the SessionLogger.
 
+    Returns a small confirmation dict so this can be used as an MCP tool.
+    """
+    session_logger.log_answer(answer, role=role)
+    return {"logged": "ok", "session_id": session_logger.session_id}
+
+
+# Shared log-parsing helper
 def _parse_session_log(
     log_file: Path,
 ) -> tuple[list[dict], list[dict], list[dict]]:
@@ -121,6 +126,7 @@ def _parse_session_log(
     starts:    dict[str, dict] = {}
     calls:     list[dict] = []
     thoughts:  list[dict] = []
+    answers:   list[dict] = []
     artifacts: list[dict] = []
 
     for ev in events:
@@ -142,17 +148,19 @@ def _parse_session_log(
             })
         elif etype == "llm_thought":
             thoughts.append(ev)
+        elif etype == "llm_answer":
+            answers.append(ev)
         elif etype == "artifact_saved":
             artifacts.append(ev)
 
-    return calls, thoughts, artifacts
+    return calls, thoughts, answers, artifacts
 
 
 def _parse_chat_events(log_file: Path) -> list[dict]:
     """Return session events as a time-ordered list of chat items.
 
-    Each item is a dict with ``"type"`` of either ``"thought"`` or
-    ``"tool_call"``, plus type-specific fields.
+    Each item is a dict with ``"type"`` of either ``"thought``,
+    ``"answer"`` or ``"tool_call"`, plus type-specific fields.
     """
     events: list[dict] = []
     if log_file.exists():
@@ -191,6 +199,13 @@ def _parse_chat_events(log_file: Path) -> list[dict]:
                 "timestamp": ev.get("timestamp", ""),
                 "step":      ev.get("step") or "thought",
                 "thought":   ev.get("thought", ""),
+            })
+        elif etype == "llm_answer":
+            chat.append({
+                "type":      "answer",
+                "timestamp": ev.get("timestamp", ""),
+                "role":      ev.get("role") or "assistant",
+                "answer":    ev.get("answer", ""),
             })
 
     chat.sort(key=lambda x: x["timestamp"])
@@ -283,7 +298,7 @@ def _render_tool_call(pdf: Any, ev: dict, W: float) -> None:
     ts          = (ev.get("timestamp") or "")[:19].replace("T", " ")
     ok          = status == "success"
 
-    # ── Tool call header ───────────────────────────────────────────────────
+    #Tool call header
     pdf.set_fill_color(30, 64, 175)
     pdf.set_draw_color(30, 64, 175)
     pdf.set_font("Helvetica", "B", 8.5)
@@ -294,24 +309,23 @@ def _render_tool_call(pdf: Any, ev: dict, W: float) -> None:
              fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_text_color(0, 0, 0)
 
-    # ── Arguments ─────────────────────────────────────────────────────────
-    if args:
-        pdf.set_fill_color(235, 239, 252)
-        pdf.set_draw_color(180, 195, 230)
-        pdf.set_font("Helvetica", "B", 7.5)
-        pdf.set_text_color(60, 60, 120)
-        pdf.cell(W, 5, "  Arguments", border="LR", fill=True,
-                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("Courier", "", 7.5)
-        pdf.set_text_color(40, 40, 80)
-        for k, v in args.items():
-            v_str = _json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else str(v)
-            pdf.set_fill_color(245, 247, 255)
-            pdf.cell(W, 5, f"  {k}: {v_str}"[:95], border="LR", fill=True,
-                     new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_text_color(0, 0, 0)
+    #Arguments
+    pdf.set_fill_color(235, 239, 252)
+    pdf.set_draw_color(180, 195, 230)
+    pdf.set_font("Helvetica", "B", 7.5)
+    pdf.set_text_color(60, 60, 120)
+    pdf.cell(W, 5, "  Arguments", border="LR", fill=True,
+                new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_font("Courier", "", 7.5)
+    pdf.set_text_color(40, 40, 80)
+    for k, v in args.items():
+        v_str = _json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else str(v)
+        pdf.set_fill_color(245, 247, 255)
+        pdf.cell(W, 5, f"  {k}: {v_str}"[:95], border="LR", fill=True,
+                    new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_text_color(0, 0, 0)
 
-    # ── Result ────────────────────────────────────────────────────────────
+    #Result
     if ok and result is not None:
         brief: dict
         if isinstance(result, dict):
@@ -335,7 +349,7 @@ def _render_tool_call(pdf: Any, ev: dict, W: float) -> None:
                 pdf.cell(W, 5, f"  {k}: {v}"[:95], border="LR", fill=True,
                          new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
-    # ── Error ─────────────────────────────────────────────────────────────
+    #Error
     elif not ok and error:
         pdf.set_fill_color(254, 226, 226)
         pdf.set_draw_color(252, 165, 165)
@@ -348,17 +362,15 @@ def _render_tool_call(pdf: Any, ev: dict, W: float) -> None:
         pdf.set_fill_color(255, 241, 241)
         pdf.multi_cell(W, 5, f"  {str(error)[:200]}", border="LR", fill=True)
 
-    # ── Bottom border ─────────────────────────────────────────────────────
+    #Bottom border
     pdf.set_draw_color(180, 195, 230)
     pdf.cell(W, 1, "", border="B", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_draw_color(0, 0, 0)
     pdf.ln(3)
 
 
-# ===========================================================================
-# generate_report
-# ===========================================================================
 
+# generate_report
 def generate_report(
     title: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -444,10 +456,7 @@ def generate_report(
     }
 
 
-# ===========================================================================
 # generate_pdf_report
-# ===========================================================================
-
 def generate_pdf_report(
     title: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -504,7 +513,7 @@ def generate_pdf_report(
     pdf.set_margins(left=15, top=25, right=15)
     pdf.set_auto_page_break(auto=True, margin=20)
 
-    # ── Narrative section — one paragraph per thought ──────────────────────
+    #Narrative section — one paragraph per thought
     if thoughts:
         pdf.add_page()
         for ev in thoughts:
@@ -523,7 +532,7 @@ def generate_pdf_report(
             pdf.set_draw_color(0, 0, 0)
             pdf.ln(6)
 
-    # ── Plots section ──────────────────────────────────────────────────────
+    #Plots section 
     n_plots = 0
     for png in pngs:
         pdf.add_page()
@@ -556,10 +565,8 @@ def generate_pdf_report(
     }
 
 
-# ===========================================================================
-# start_new_session
-# ===========================================================================
 
+# start_new_session
 def start_new_session() -> dict[str, str]:
     """Start a fresh logging session, ending the current one immediately.
 

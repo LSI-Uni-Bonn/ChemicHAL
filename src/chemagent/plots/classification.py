@@ -44,10 +44,7 @@ from sklearn import metrics as skmetrics
 from .utils import set_theme, PALETTE, SNS_PALETTE, CMAP_SEQ, save_figure
 
 
-# ---------------------------------------------------------------------------
 # Confusion matrix
-# ---------------------------------------------------------------------------
-
 def plot_confusion_matrix(
     y_true: ArrayLike,
     y_pred: ArrayLike,
@@ -132,10 +129,7 @@ def plot_confusion_matrix(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # ROC curve
-# ---------------------------------------------------------------------------
-
 def plot_roc_curve(
     y_true: ArrayLike,
     y_score: ArrayLike,
@@ -200,10 +194,7 @@ def plot_roc_curve(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # Precision-Recall curve
-# ---------------------------------------------------------------------------
-
 def plot_pr_curve(
     y_true: ArrayLike,
     y_score: ArrayLike,
@@ -269,10 +260,7 @@ def plot_pr_curve(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # Metric comparison bar chart
-# ---------------------------------------------------------------------------
-
 _SCALAR_METRICS = {
     "MCC", "BA", "Accuracy", "F1", "AUC",
     "Precision", "Recall", "Average Precision",
@@ -352,89 +340,7 @@ def plot_metric_bar(
     return fig
 
 
-# ---------------------------------------------------------------------------
-# Feature importances
-# ---------------------------------------------------------------------------
-
-def plot_feature_importance(
-    model,
-    *,
-    feature_names: Optional[Sequence[str]] = None,
-    top_n: int = 20,
-    title: Optional[str] = None,
-    ax: Optional[Axes] = None,
-    save_path: Optional[str] = None,
-) -> Figure:
-    """Top-N feature importances bar chart (seaborn) for tree-based models.
-
-    ``GridSearchCV`` wrappers are unwrapped automatically via
-    ``best_estimator_``.
-
-    Parameters
-    ----------
-    model:
-        Fitted sklearn estimator with a ``feature_importances_`` attribute.
-    feature_names:
-        Display names for features.  Defaults to ``["f0", "f1", ...]``.
-    top_n:
-        Number of most-important features to show.
-    title:
-        Axes title.
-    ax:
-        Pre-existing :class:`~matplotlib.axes.Axes`.
-    save_path:
-        Output file path.
-
-    Returns
-    -------
-    Figure
-    """
-    set_theme()
-
-    estimator = getattr(model, "best_estimator_", model)
-    if not hasattr(estimator, "feature_importances_"):
-        raise AttributeError(
-            f"{type(estimator).__name__} has no \'feature_importances_\' attribute."
-        )
-
-    importances = np.array(estimator.feature_importances_)
-    n_features = len(importances)
-    names = (
-        list(feature_names)[:n_features]
-        if feature_names is not None
-        else [f"f{i}" for i in range(n_features)]
-    )
-
-    top_n = min(top_n, n_features)
-    idx = np.argsort(importances)[-top_n:]
-    top_names = [names[i] for i in idx]
-    top_vals = importances[idx]
-
-    standalone = ax is None
-    height = max(4, 0.45 * top_n)
-    if standalone:
-        fig, ax = plt.subplots(figsize=(7, height))
-    else:
-        fig = ax.get_figure()
-        assert isinstance(fig, Figure)
-
-    sns.barplot(x=top_vals, y=top_names, ax=ax, color=PALETTE["accent"], orient="h")
-    ax.set(
-        xlabel="Feature Importance (Gini)",
-        ylabel="",
-        title=title or f"Top {top_n} Feature Importances",
-    )
-
-    if standalone:
-        fig.tight_layout()
-        save_figure(fig, save_path, tight=False)
-    return fig
-
-
-# ---------------------------------------------------------------------------
 # Decision-threshold sensitivity
-# ---------------------------------------------------------------------------
-
 def plot_threshold_metrics(
     y_true: ArrayLike,
     y_score: ArrayLike,

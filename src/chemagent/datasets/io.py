@@ -23,10 +23,7 @@ import numpy as np
 from .loader import resolve_path
 
 
-# ---------------------------------------------------------------------------
 # Split file I/O
-# ---------------------------------------------------------------------------
-
 def load_split_file(file_path: str) -> Dict[str, Any]:
     """Load a split ``.pkl`` file produced by :func:`~chemagent.datasets.splitter.save_split`.
 
@@ -74,10 +71,7 @@ def load_split_file(file_path: str) -> Dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
 # ML-ready payload builder
-# ---------------------------------------------------------------------------
-
 def get_ml_ready_data(
     processed: Dict[str, Any],
     dataset_id: str,
@@ -124,10 +118,7 @@ def get_ml_ready_data(
     return result
 
 
-# ---------------------------------------------------------------------------
 # Dataset info builder
-# ---------------------------------------------------------------------------
-
 def get_dataset_info(
     dataset_id: str,
     loaded_datasets: Dict[str, Any],

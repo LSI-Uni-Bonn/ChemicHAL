@@ -83,10 +83,6 @@ class Model_Evaluation:
             self._build_classification_df() if is_classification else None
         )
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
     def _build_classification_df(self):
         """Return a tidy ``pandas.DataFrame`` of classification metrics."""
         import pandas as pd
@@ -108,10 +104,6 @@ class Model_Evaluation:
             and isinstance(v, (int, float))
         ]
         return pd.DataFrame(rows)
-
-    # ------------------------------------------------------------------
-    # Public evaluation methods
-    # ------------------------------------------------------------------
 
     def prediction_performance_classification(self):
         """Return a tidy ``pandas.DataFrame`` of classification metrics.

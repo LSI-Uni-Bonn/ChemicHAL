@@ -24,20 +24,16 @@ from chemagent.session_utils import get_session_logger as _get_session_logger, r
 
 from .featurizer import featurize_df, build_processed_entry, list_featurizers as _list_featurizers_impl
 from .io import get_dataset_info as _get_dataset_info_impl, get_ml_ready_data as _get_ml_ready_data_impl
-from .loader import label_stats as _label_stats, list_csv_files, load_csv
+from .loader import list_csv_files, load_csv
 from .splitter import save_split as _save_split, split_processed
 
-# ---------------------------------------------------------------------------
+
 # Shared in-memory state  (ephemeral — lost on server restart)
-# ---------------------------------------------------------------------------
 _loaded_datasets:    dict[str, Any] = {}   # dataset_id → pd.DataFrame
 _processed_datasets: dict[str, dict[str, Any]] = {}
 
 
-# ===========================================================================
 # Dataset tool functions (registered in chemagent_mcp.py via _register)
-# ===========================================================================
-
 def find_datasets(directory: str = "data/datasets") -> dict[str, Any]:
     """List CSV files available for ML in a directory.
 
@@ -167,7 +163,6 @@ def compute_features(
         "method":     method,
         "n_samples":  int(features.shape[0]),
         "n_features": int(features.shape[1]),
-        "label_stats": _label_stats(df[lc].values),
         "prepared":   True,
         "next_step": (
             f"Call split_dataset('{dataset_id}', train_size=0.7, "

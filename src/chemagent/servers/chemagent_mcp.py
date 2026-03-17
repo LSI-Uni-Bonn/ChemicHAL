@@ -93,6 +93,7 @@ from chemagent.servers.session_tools import (
     session_logger,
     _register,
     log_thought,
+    log_answer,
     generate_report,
     generate_pdf_report,
     start_new_session,
@@ -162,6 +163,7 @@ _register(plot_shap_mol)
 # ===========================================================================
 
 _register(log_thought)
+_register(log_answer)
 _register(generate_report)
 _register(generate_pdf_report)
 _register(start_new_session)

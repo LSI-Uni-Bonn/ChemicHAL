@@ -37,10 +37,7 @@ from sklearn import metrics as skmetrics
 from .utils import set_theme, PALETTE, save_figure
 
 
-# ---------------------------------------------------------------------------
 # Actual vs predicted
-# ---------------------------------------------------------------------------
-
 def plot_actual_vs_predicted(
     y_true: ArrayLike,
     y_pred: ArrayLike,
@@ -122,10 +119,7 @@ def plot_actual_vs_predicted(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # Residuals vs fitted
-# ---------------------------------------------------------------------------
-
 def plot_residuals(
     y_true: ArrayLike,
     y_pred: ArrayLike,
@@ -187,10 +181,7 @@ def plot_residuals(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # Residual histogram
-# ---------------------------------------------------------------------------
-
 def plot_residual_histogram(
     y_true: ArrayLike,
     y_pred: ArrayLike,
@@ -250,10 +241,7 @@ def plot_residual_histogram(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # Absolute-error distribution
-# ---------------------------------------------------------------------------
-
 def plot_error_distribution(
     y_true: ArrayLike,
     y_pred: ArrayLike,

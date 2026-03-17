@@ -27,10 +27,7 @@ import pandas as pd
 import chemagent.featurization as _feat
 
 
-# ---------------------------------------------------------------------------
 # Featurizer discovery
-# ---------------------------------------------------------------------------
-
 def available_featurizers() -> Dict[str, Any]:
     """Return all public UpperCase callables from ``chemagent.featurization``.
 
@@ -67,10 +64,7 @@ def list_featurizers() -> Dict[str, Any]:
     return result
 
 
-# ---------------------------------------------------------------------------
 # Feature computation
-# ---------------------------------------------------------------------------
-
 def featurize_df(
     df: pd.DataFrame,
     method: str = "ECFP",
@@ -127,10 +121,7 @@ def featurize_df(
     return np.array(fn(df[col].tolist(), **kwargs))
 
 
-# ---------------------------------------------------------------------------
 # Processed-entry builder
-# ---------------------------------------------------------------------------
-
 def build_processed_entry(
     df: pd.DataFrame,
     features: np.ndarray,
@@ -172,10 +163,7 @@ def build_processed_entry(
     return entry
 
 
-# ---------------------------------------------------------------------------
 # External feature injection
-# ---------------------------------------------------------------------------
-
 def prepare_from_external_features(
     df: pd.DataFrame,
     features: List[List[float]],

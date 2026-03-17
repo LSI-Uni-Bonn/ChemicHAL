@@ -19,10 +19,7 @@ import numpy as np
 from rdkit import Chem
 
 
-# ---------------------------------------------------------------------------
 # SMILES → RDKit Mol
-# ---------------------------------------------------------------------------
-
 def get_mol_list(smiles_list: List[str]) -> List[Chem.Mol]:
     """Convert a list of SMILES strings to RDKit molecule objects.
 
@@ -76,10 +73,7 @@ def validate_smiles(smiles_list: List[str]) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
 # Reproducibility helpers
-# ---------------------------------------------------------------------------
-
 def set_seeds(seed: int) -> None:
     """Set Python, NumPy, and hash-seed random states.
 
@@ -98,10 +92,7 @@ def set_global_determinism(seed: int) -> None:
     set_seeds(seed)
 
 
-# ---------------------------------------------------------------------------
 # Directory helpers
-# ---------------------------------------------------------------------------
-
 def create_directory(path: Union[str, Path], verbose: bool = True) -> Path:
     """Create *path* (and any missing parents) if it does not already exist.
 

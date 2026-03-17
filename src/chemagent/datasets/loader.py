@@ -21,10 +21,7 @@ import numpy as np
 import pandas as pd
 
 
-# ---------------------------------------------------------------------------
 # Path helpers
-# ---------------------------------------------------------------------------
-
 def workspace_root() -> Path:
     """Return the workspace root (4 levels up from this file)."""
     return Path(__file__).resolve().parents[3]
@@ -86,10 +83,7 @@ def list_csv_files(directory: str = "data/datasets") -> Dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
 # Label statistics
-# ---------------------------------------------------------------------------
-
 def label_stats(labels: np.ndarray) -> Dict[str, Any]:
     """Compute basic statistics for a label array.
 
@@ -113,10 +107,7 @@ def label_stats(labels: np.ndarray) -> Dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
 # CSV loading
-# ---------------------------------------------------------------------------
-
 def load_csv(
     file_path: str,
     label_col: str = "class_label",
@@ -234,14 +225,12 @@ def load_csv(
             "or ensure the CSV has a SMILES column."
         )
 
-    stats = label_stats(df[label_col].values)
-
     meta: Dict[str, Any] = {
         "dataset_id":              dataset_id,
         "n_samples":               len(df),
         "columns":                 df.columns.tolist(),
         "label_col":               label_col,
-        "label_stats":             stats,
+        # label statistics removed — kept out of loader meta to reduce log noise
         "has_smiles":              has_smiles,
         "has_precomputed_features": has_precomputed,
         "loaded":                  True,

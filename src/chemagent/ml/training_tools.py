@@ -37,16 +37,11 @@ from chemagent.servers.server_helpers import _run_pipeline, _workspace_root
 from chemagent.session_utils import get_session_logger as _get_session_logger
 
 
-# ---------------------------------------------------------------------------
-# Shared job state  (ephemeral — lost on server restart)
-# ---------------------------------------------------------------------------
+# Shared job state  (lost on server restart)
 _jobs: dict[str, dict[str, Any]] = {}
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
-
 def _default_model_path(algorithm: str, stem: str = "") -> str:
     session_logger = _get_session_logger()
     out_dir = session_logger.session_dir / "models"
@@ -132,10 +127,7 @@ def build_model_from_split_file(
     )
 
 
-# ===========================================================================
 # MCP tool functions
-# ===========================================================================
-
 def train_model(
     split_file_path: str,
     algorithm: Literal["RFC", "RFR", "SVC"] = "RFC",

@@ -17,10 +17,7 @@ from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
 
-# ---------------------------------------------------------------------------
 # Seed helpers
-# ---------------------------------------------------------------------------
-
 def set_random_seed(seed: Optional[int]) -> None:
     """Set Python and NumPy random seeds.
 
@@ -34,10 +31,7 @@ def set_random_seed(seed: Optional[int]) -> None:
         np.random.seed(seed)
 
 
-# ---------------------------------------------------------------------------
 # Proportion validation
-# ---------------------------------------------------------------------------
-
 def validate_split_sizes(
     train_size: float,
     val_size: float,
@@ -65,10 +59,8 @@ def validate_split_sizes(
         )
 
 
-# ---------------------------------------------------------------------------
-# Scaffold helpers
-# ---------------------------------------------------------------------------
 
+# Scaffold helper
 def generate_murcko_scaffold(smiles: str) -> str:
     """Return the canonical SMILES of the Murcko scaffold for *smiles*.
 

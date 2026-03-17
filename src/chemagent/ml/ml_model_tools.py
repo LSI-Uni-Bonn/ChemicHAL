@@ -50,10 +50,7 @@ from chemagent.servers.server_helpers import (
 from chemagent.session_utils import get_session_logger as _get_session_logger
 
 
-# ===========================================================================
 # Reference tool
-# ===========================================================================
-
 def get_ml_info() -> dict[str, Any]:
     """Return all ML reference information in one call: algorithms, hyperparameter grids, and recommended metrics.
 
@@ -109,10 +106,8 @@ def get_ml_info() -> dict[str, Any]:
     return {"algorithms": algorithms, "recommended_metrics": recommended_metrics}
 
 
-# ===========================================================================
-# Inference / export tool
-# ===========================================================================
 
+# Inference / export tool
 def export_predictions(
     model_path: str,
     split_file_path: str,
@@ -205,10 +200,6 @@ def export_predictions(
         "columns":      list(df_out.columns),
     }
 
-
-# ===========================================================================
-# Internal helpers
-# ===========================================================================
 
 def predict_from_split_file(
     model_path: str,

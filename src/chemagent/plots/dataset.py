@@ -40,10 +40,7 @@ import seaborn as sns
 from .utils import set_theme, PALETTE, SNS_PALETTE, save_figure
 
 
-# ---------------------------------------------------------------------------
 # Class distribution (single partition)
-# ---------------------------------------------------------------------------
-
 def plot_class_distribution(
     labels: Sequence,
     *,
@@ -116,10 +113,7 @@ def plot_class_distribution(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # Split proportions (train / val / test stacked bar)
-# ---------------------------------------------------------------------------
-
 def plot_split_statistics(
     split_stats: Dict[str, Dict[str, Any]],
     *,
@@ -187,10 +181,7 @@ def plot_split_statistics(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # Generic numeric column distribution
-# ---------------------------------------------------------------------------
-
 def plot_column_distribution(
     df,
     *,
@@ -271,10 +262,7 @@ def plot_column_distribution(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # Class balance across splits (grouped bars)
-# ---------------------------------------------------------------------------
-
 def plot_class_balance_splits(
     class_dist: Dict[str, Dict[str, int]],
     *,
@@ -348,10 +336,7 @@ def plot_class_balance_splits(
     return fig
 
 
-# ---------------------------------------------------------------------------
 # Generic dataset comparison bar chart
-# ---------------------------------------------------------------------------
-
 def plot_dataset_comparison(
     counts: Dict[str, int],
     *,

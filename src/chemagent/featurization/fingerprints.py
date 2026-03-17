@@ -28,10 +28,8 @@ from rdkit.Chem import rdFingerprintGenerator, rdMolDescriptors
 from .utils import get_mol_list
 
 
-# ---------------------------------------------------------------------------
-# ECFP (Morgan) fingerprints
-# ---------------------------------------------------------------------------
 
+# ECFP (Morgan) fingerprints
 def ECFP(
     smiles_list: List[str],
     n_bits: int = 2048,
@@ -77,10 +75,7 @@ def ECFP(
     return [fp_gen.GetFingerprintAsNumPy(mol).tolist() for mol in mols]
 
 
-# ---------------------------------------------------------------------------
 # MACCS keys
-# ---------------------------------------------------------------------------
-
 def MACCS(smiles_list: List[str]) -> List[List[int]]:
     """Generate 166-bit MACCS structural-key fingerprints from SMILES strings.
 
@@ -110,112 +105,3 @@ def MACCS(smiles_list: List[str]) -> List[List[int]]:
     ]
 
 
-# ---------------------------------------------------------------------------
-# RDKit topological fingerprints
-# ---------------------------------------------------------------------------
-
-def RDKitFP(
-    smiles_list: List[str],
-    n_bits: int = 2048,
-    min_path: int = 1,
-    max_path: int = 7,
-) -> List[List[int]]:
-    """Generate RDKit topological (path-based) fingerprints.
-
-    Parameters
-    ----------
-    smiles_list:
-        List of SMILES strings.
-    n_bits:
-        Fingerprint length in bits (default: 2048).
-    min_path:
-        Minimum path length (default: 1).
-    max_path:
-        Maximum path length (default: 7).
-
-    Returns
-    -------
-    List[List[int]]
-        One *n_bits*-element integer list per molecule.
-
-    Raises
-    ------
-    ValueError
-        If any SMILES string is invalid.
-    """
-    mols = get_mol_list(smiles_list)
-    fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
-        minPath=min_path, maxPath=max_path, fpSize=n_bits
-    )
-    return [fp_gen.GetFingerprintAsNumPy(mol).tolist() for mol in mols]
-
-
-# ---------------------------------------------------------------------------
-# Atom-pair fingerprints
-# ---------------------------------------------------------------------------
-
-def AtomPairFP(
-    smiles_list: List[str],
-    n_bits: int = 2048,
-) -> List[List[int]]:
-    """Generate atom-pair fingerprints.
-
-    Atom-pair fingerprints encode pairs of atoms together with the shortest
-    path distance between them. They are useful for capturing global molecular
-    shape and pharmacophoric features.
-
-    Parameters
-    ----------
-    smiles_list:
-        List of SMILES strings.
-    n_bits:
-        Fingerprint length in bits (default: 2048).
-
-    Returns
-    -------
-    List[List[int]]
-        One *n_bits*-element integer list per molecule.
-
-    Raises
-    ------
-    ValueError
-        If any SMILES string is invalid.
-    """
-    mols = get_mol_list(smiles_list)
-    fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(fpSize=n_bits)
-    return [fp_gen.GetFingerprintAsNumPy(mol).tolist() for mol in mols]
-
-
-# ---------------------------------------------------------------------------
-# Topological-torsion fingerprints
-# ---------------------------------------------------------------------------
-
-def TopologicalTorsionFP(
-    smiles_list: List[str],
-    n_bits: int = 2048,
-) -> List[List[int]]:
-    """Generate topological-torsion fingerprints.
-
-    Topological torsion fingerprints encode sequences of four consecutively
-    bonded atoms and are sensitive to molecular shape and branching.
-
-    Parameters
-    ----------
-    smiles_list:
-        List of SMILES strings.
-    n_bits:
-        Fingerprint length in bits (default: 2048).
-
-    Returns
-    -------
-    List[List[int]]
-        One *n_bits*-element integer list per molecule.
-
-    Raises
-    ------
-    ValueError
-        If any SMILES string is invalid.
-    """
-    mols = get_mol_list(smiles_list)
-    fp_gen = rdFingerprintGenerator.GetTopologicalTorsionGenerator(fpSize=n_bits)
-    return [fp_gen.GetFingerprintAsNumPy(mol).tolist() for mol in mols]

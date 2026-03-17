@@ -88,7 +88,7 @@ def random_split(
     all_indices = list(range(n_samples))
     stratify_arr = list(labels) if (stratified and labels is not None) else None
 
-    # --- split off test first -------------------------------------------
+    #split off test first
     if test_size > 0:
         train_val_idx, test_idx = train_test_split(
             all_indices,
@@ -106,7 +106,7 @@ def random_split(
         test_idx = []
         stratify_tv = stratify_arr
 
-    # --- split val from remaining ----------------------------------------
+    #split val from remaining
     if val_size > 0 and len(train_val_idx) > 0:
         # Relative val size within the train+val portion
         rel_val = val_size / (train_size + val_size)

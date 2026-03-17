@@ -42,9 +42,7 @@ def _workspace_root() -> Path:
     return _WORKSPACE_ROOT
 
 
-# ===========================================================================
 # Serialisation utils
-# ===========================================================================
 
 def _to_serialisable(obj: Any) -> Any:
     """Recursively convert numpy scalars / arrays to plain Python types."""
@@ -61,10 +59,7 @@ def _to_serialisable(obj: Any) -> Any:
     return obj
 
 
-# ===========================================================================
 # ML data container
-# ===========================================================================
-
 class _DataContainer:
     """Minimal data container accepted by :class:`chemagent.ml.training.MLModel`."""
     def __init__(self, features: np.ndarray, labels: np.ndarray) -> None:
@@ -73,10 +68,8 @@ class _DataContainer:
         self.class_labels = labels
 
 
-# ===========================================================================
-# Evaluation helpers
-# ===========================================================================
 
+# Evaluation helpers
 def _build_evaluator(labels, predictions, probabilities, reg_class, model_id, model_type):
     is_regression = reg_class == "regression"
     return Model_Evaluation(
@@ -128,10 +121,7 @@ def evaluate_regression(
                             ).prediction_performance_regression()
 
 
-# ===========================================================================
 # Core ML pipeline
-# ===========================================================================
-
 def _run_pipeline(
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -221,9 +211,7 @@ def _predict(
     }
 
 
-# ===========================================================================
 # Split-file training helper
-# ===========================================================================
 
 def train_on_split_file(
     split_file_path: str,

@@ -12,12 +12,8 @@ Usage
     grid = get_param_grid("RFC")   # {'n_estimators': [...], ...}
 """
 
-from .models import PARAM_GRIDS as HYPERPARAMETERS  # single source of truth
+from .models import PARAM_GRIDS as HYPERPARAMETERS
 
-
-# ---------------------------------------------------------------------------
-# Public helpers
-# ---------------------------------------------------------------------------
 
 def get_param_grid(algorithm: str) -> dict:
     """Return the hyperparameter grid for *algorithm*.

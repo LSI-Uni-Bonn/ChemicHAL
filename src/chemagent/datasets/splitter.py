@@ -27,9 +27,6 @@ from chemagent.splitting import random_split, scaffold_split
 from .loader import workspace_root
 
 
-# ---------------------------------------------------------------------------
-# Core split logic
-# ---------------------------------------------------------------------------
 
 def split_processed(
     processed: Dict[str, Any],
@@ -147,10 +144,6 @@ def split_processed(
         "save_dict":  save_dict,
     }
 
-
-# ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
 
 def save_split(
     save_dict: Dict[str, Any],

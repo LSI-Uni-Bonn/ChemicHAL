@@ -328,6 +328,30 @@ class SessionLogger:
             entry["step"] = step
         self._write(entry)
 
+    def log_answer(
+        self,
+        answer: str,
+        role: Optional[str] = None,
+    ) -> None:
+        """Record an assistant/LLM answer in the session log.
+
+        Parameters
+        ----------
+        answer:
+            The assistant's textual answer or response.
+        role:
+            Optional role label (e.g. "assistant", "system").
+        """
+        entry: dict[str, Any] = {
+            "session_id": self.session_id,
+            "type":       "llm_answer",
+            "timestamp":  self._now(),
+            "answer":     answer,
+        }
+        if role:
+            entry["role"] = role
+        self._write(entry)
+
     def start_call(self, tool_name: str, kwargs: dict[str, Any]) -> str:
         """Record the start of a tool call; return a unique *call_id*."""
         with self._lock:

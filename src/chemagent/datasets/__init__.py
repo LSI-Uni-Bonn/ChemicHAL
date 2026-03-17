@@ -14,7 +14,7 @@ Usage
     from chemagent.datasets import load_split_file, get_ml_ready_data
 """
 
-from .loader      import load_csv, label_stats, resolve_path, list_csv_files, workspace_root
+from .loader      import load_csv, resolve_path, list_csv_files, workspace_root
 from .featurizer  import (
     featurize_df,
     build_processed_entry,
@@ -28,7 +28,6 @@ from .io          import load_split_file, get_ml_ready_data, get_dataset_info
 __all__ = [
     # loader
     "load_csv",
-    "label_stats",
     "resolve_path",
     "list_csv_files",
     "workspace_root",

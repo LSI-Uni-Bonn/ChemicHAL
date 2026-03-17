@@ -18,10 +18,7 @@ import numpy as np
 from sklearn import metrics
 
 
-# ---------------------------------------------------------------------------
 # Confusion-matrix decomposition
-# ---------------------------------------------------------------------------
-
 def confusion_components(
     labels: np.ndarray,
     pred: np.ndarray,
@@ -48,10 +45,7 @@ def confusion_components(
     return FP, FN, TP, TN
 
 
-# ---------------------------------------------------------------------------
 # Classification metrics
-# ---------------------------------------------------------------------------
-
 def classification_metrics(
     labels: np.ndarray,
     pred: np.ndarray,
@@ -198,10 +192,7 @@ def multiclass_metrics(
     }
 
 
-# ---------------------------------------------------------------------------
 # Regression metrics
-# ---------------------------------------------------------------------------
-
 def regression_metrics(
     labels: np.ndarray,
     pred: np.ndarray,
