@@ -18,7 +18,7 @@ Usage
 """
 
 from .utils import get_mol_list, validate_smiles, set_seeds, set_global_determinism, create_directory
-from .fingerprints import ECFP, MACCS, RDKitFP, AtomPairFP, TopologicalTorsionFP
+from .fingerprints import ECFP, MACCS
 
 __all__ = [
     # utils
@@ -30,7 +30,4 @@ __all__ = [
     # fingerprints
     "ECFP",
     "MACCS",
-    "RDKitFP",
-    "AtomPairFP",
-    "TopologicalTorsionFP",
 ]

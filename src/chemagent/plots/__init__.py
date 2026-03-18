@@ -50,7 +50,6 @@ from .classification import (
     plot_roc_curve,
     plot_pr_curve,
     plot_metric_bar,
-    plot_feature_importance,
     plot_threshold_metrics,
 )
 
@@ -83,7 +82,6 @@ __all__ = [
     "plot_roc_curve",
     "plot_pr_curve",
     "plot_metric_bar",
-    "plot_feature_importance",
     "plot_threshold_metrics",
     # regression
     "plot_actual_vs_predicted",
