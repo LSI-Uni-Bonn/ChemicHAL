@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "chemagent": {
-      "command": "C:/Users/janela/.local/bin/uv.exe",
+      "command": "C:/Users/lamens/.local/bin/uv.exe",
       "args": [
         "--directory",
-        "C:/Users/janela/OneDrive - uni-bonn.de/Code/AI-Agent-for-Compound-Selectivity-Prediction-and-Explainability/src/chemagent/servers",
+        "C:/Users/lamens/projects/AI_agent/AI-Agent-for-Compound-Selectivity-Prediction-and-Explainability/src/chemagent/servers",
         "run",
         "chemagent_mcp.py"
       ],
@@ -12,6 +12,7 @@
       "disabled": false,
       "alwaysAllow": [],
       "timeout": 600000
+
     }
   }
 }

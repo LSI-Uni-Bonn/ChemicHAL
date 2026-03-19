@@ -71,7 +71,8 @@ def featurize_df(
     n_bits: int = 2048,
     radius: int = 2,
     smiles_col: Optional[str] = None,
-) -> np.ndarray:
+    return_bit_info: bool = False,
+) -> np.ndarray | tuple[np.ndarray, Optional[dict]]:
     """Compute a fingerprint feature matrix from a DataFrame's SMILES column.
 
     Parameters
@@ -88,11 +89,17 @@ def featurize_df(
         Passed to the featurizer if its signature accepts it (default 2).
     smiles_col:
         Override the SMILES column name (falls back to ``df.attrs["smiles_col"]``).
+    return_bit_info:
+        If True and method is "ECFP", also return bit information dictionary.
+        Bit info maps fingerprint bit indices to atom environments.
 
     Returns
     -------
     np.ndarray
         2-D feature matrix, shape ``(n_samples, n_bits)``.
+    tuple (if return_bit_info=True)
+        (features, bit_info_dict) where bit_info_dict is the bit information for ECFP,
+        or None for other methods.
 
     Raises
     ------
@@ -118,7 +125,19 @@ def featurize_df(
     kwargs = {k: v for k, v in {"n_bits": n_bits, "radius": radius}.items()
               if k in sig.parameters}
 
-    return np.array(fn(df[col].tolist(), **kwargs))
+    # For ECFP with return_bit_info, also request bit information
+    if return_bit_info and method == "ECFP" and "return_bit_info" in sig.parameters:
+        result = fn(df[col].tolist(), return_bit_info=True, **kwargs)
+        if isinstance(result, tuple):
+            fps, bit_info = result
+            return np.array(fps), bit_info
+    
+    features = fn(df[col].tolist(), **kwargs)
+    
+    if return_bit_info:
+        return np.array(features), None
+    
+    return np.array(features)
 
 
 # Processed-entry builder
@@ -128,6 +147,7 @@ def build_processed_entry(
     label_col: Optional[str] = None,
     smiles_col: Optional[str] = None,
     id_col: Optional[str] = None,
+    bit_info: Optional[Dict[int, Any]] = None,
 ) -> Dict[str, Any]:
     """Assemble the processed-dataset dict stored in ``_processed_datasets``.
 
@@ -140,12 +160,15 @@ def build_processed_entry(
         2-D feature array, shape ``(n_samples, n_features)``.
     label_col, smiles_col, id_col:
         Override column names; fall back to ``df.attrs`` values.
+    bit_info:
+        Optional bit information dictionary for ECFP fingerprints.
+        Maps bit indices to atom environment tuples (for explainability tools like MolAnchor).
 
     Returns
     -------
     dict
         Keys: ``features``, ``labels``, ``label_column``, and optionally
-        ``smiles`` and ``cid``.
+        ``smiles``, ``cid``, and ``bit_info``.
     """
     lc = label_col  or df.attrs.get("label_col",  "class_label")
     sc = smiles_col or df.attrs.get("smiles_col", None)
@@ -160,6 +183,8 @@ def build_processed_entry(
         entry["smiles"] = df[sc].values
     if ic and ic in df.columns:
         entry["cid"] = df[ic].values
+    if bit_info is not None:
+        entry["bit_info"] = bit_info
     return entry
 
 

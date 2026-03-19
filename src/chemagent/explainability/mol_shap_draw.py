@@ -148,12 +148,12 @@ def shap_to_atom_weight(mol: Chem.Mol, dict_bit_info: dict, shapley_values: np.n
     atom_weight_dict = assign_prediction_importance(bit_atom_env_dict, shapley_values)
     atom_weight_list = [atom_weight_dict[a_idx] for a_idx in range(mol.GetNumAtoms())]
     return atom_weight_list
-
+    
 
 def get_atom_wise_weight_map(
     mol: Chem.Mol,
     weights: List[float],
-    mol_size: tuple,
+    mol_size: tuple = (500, 500),
     cmap: Union[str, Any] = DEFAULT_COLORMAP,
     return_png: bool = True,
 ) -> Union[Image.Image, Draw.MolDraw2D]:

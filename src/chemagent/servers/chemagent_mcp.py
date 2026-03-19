@@ -3,13 +3,14 @@
 STANDARD WORKFLOW (data stays on disk — preferred):
     find_datasets()                                          # discover CSVs
     load_dataset("data/datasets/chembl_activity_data_O00329_P42336.csv")
-    compute_features(dataset_id, method="ECFP", n_bits=2048)
+    compute_features(dataset_id, method="ECFP", n_bits=2048) # generates + saves bit info for MolAnchor
     split_dataset(dataset_id, train_size=0.7, test_size=0.3, stratified=True)
     job = train_model(split_file_path, algorithm="RFC",
                       task="classification", opt_metric="balanced_accuracy")
     result = check_training(job["job_id"], model_save_path=job["model_save_path"])  # poll every 30 s
     export_predictions(result["model_path"], split_file_path)
     plot_classification_results(predictions_path)
+    explain_with_molanchor(smiles="CCO", model_path="model.pkl", dataset_id=dataset_id)  # use saved bit info
 
 SHORTCUT (load+featurize+split synchronously, then trains in background):
     job = run_pipeline("data/datasets/chembl_activity_data_O00329_P42336.csv",
@@ -36,13 +37,19 @@ ML
 
 Plots
   plot_classification_results confusion matrix, ROC, PR, metric bar, threshold (from predictions CSV)
-  plot_regression_results     actual vs predicted, residuals, error distribution (from predictions CSV)
-  show_plot                   display a saved PNG directly in the chat UI
+  plot_regression_results        actual vs predicted, residuals, error distribution (from predictions CSV)
+  show_plot                      display a saved PNG directly in the chat UI
 
 XAI
-  explain_with_shap      compute per-compound SHAP values from a model + split .pkl
-  explain_smiles         compute SHAP values for SMILES strings typed directly in chat (no split file needed)
-  plot_shap_mol          render atom-level SHAP heatmaps on molecular structures
+  explain_with_shap              compute per-compound SHAP values from a model + split .pkl
+  explain_smiles                 compute SHAP values for SMILES strings typed directly in chat (no split file needed)
+  plot_shap_mol                  render atom-level SHAP heatmaps on molecular structures
+  explain_with_molanchor         identify molecular anchors (critical fragments) for a single prediction
+  explain_batch_with_molanchor   run MolAnchor analysis on all correctly predicted compounds of a given class
+  identify_recurrent_anchor_rules compute substructure & anchor occurrence metrics to identify robust rules
+  visualize_molanchor_anchors    draw molecular structure with identified anchors highlighted
+  get_molanchor_info             reference information about MolAnchor parameters and methods
+  select_compound_for_xai        randomly select a correctly predicted compound of specified class for analysis
 
 Utilities
   log_thought            record reasoning in the session log
@@ -88,6 +95,13 @@ from chemagent.ml.training_tools import (
 from chemagent.plots.display import show_plot
 from chemagent.plots.plot_tools import plot_classification_results, plot_regression_results
 from chemagent.explainability.shap_explainer import explain_with_shap, explain_smiles_with_shap, plot_shap_mol
+from chemagent.explainability.molanchor_tools import (
+    explain_with_molanchor,
+    identify_recurrent_anchor_rules,
+    visualize_molanchor_anchors,
+    get_molanchor_info,
+    select_compound_for_xai,
+)
 from chemagent.servers.session_tools import (
     mcp,
     session_logger,
@@ -156,6 +170,11 @@ _register(show_plot)
 _register(explain_with_shap)
 _register(explain_smiles_with_shap)
 _register(plot_shap_mol)
+_register(explain_with_molanchor)
+_register(identify_recurrent_anchor_rules)
+_register(visualize_molanchor_anchors)
+_register(get_molanchor_info)
+_register(select_compound_for_xai)
 
 
 # ===========================================================================

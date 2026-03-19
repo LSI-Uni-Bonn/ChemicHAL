@@ -138,6 +138,8 @@ def compute_features(
     """Compute molecular fingerprints server-side for a loaded dataset.
 
     Features stay on disk — nothing large is returned to the LLM context.
+    For ECFP, also generates and saves bit information (required for MolAnchor explainability).
+    
     Workflow: load_dataset → THIS TOOL → split_dataset
 
     Args:
@@ -150,20 +152,50 @@ def compute_features(
     Returns:
         dataset_id, method, n_samples, n_features, label_stats, prepared=True, next_step.
     """
+    import joblib
+    from chemagent.session_utils import get_session_logger as _get_session_logger
+    
     if dataset_id not in _loaded_datasets:
         raise ValueError(f"Dataset '{dataset_id}' not loaded. Call load_dataset() first.")
     df = _loaded_datasets[dataset_id]
     lc = label_col or df.attrs.get("label_col", "class_label")
     if lc not in df.columns:
         raise ValueError(f"Label column '{lc}' not found. Available: {df.columns.tolist()}")
-    features = featurize_df(df, method=method, n_bits=n_bits, radius=radius)
-    _processed_datasets[dataset_id] = build_processed_entry(df=df, features=features, label_col=lc)
+    
+    # Compute features, optionally with bit info for ECFP
+    features_result = featurize_df(
+        df, method=method, n_bits=n_bits, radius=radius, return_bit_info=(method == "ECFP")
+    )
+    
+    bit_info = None
+    if isinstance(features_result, tuple):
+        features, bit_info = features_result
+    else:
+        features = features_result
+    
+    _processed_datasets[dataset_id] = build_processed_entry(
+        df=df, features=features, label_col=lc, bit_info=bit_info
+    )
+    
+    # Save bit info to session if available
+    if bit_info is not None:
+        try:
+            logger = _get_session_logger()
+            bit_info_dir = logger.session_dir / "bit_info"
+            bit_info_dir.mkdir(exist_ok=True)
+            bit_info_path = bit_info_dir / f"{dataset_id}_bit_info.pkl"
+            joblib.dump(bit_info, bit_info_path)
+        except Exception as e:
+            # Non-critical: bit info couldn't be saved, but featurization succeeded
+            pass
+    
     return {
         "dataset_id": dataset_id,
         "method":     method,
         "n_samples":  int(features.shape[0]),
         "n_features": int(features.shape[1]),
         "prepared":   True,
+        "bit_info_saved": bit_info is not None,
         "next_step": (
             f"Call split_dataset('{dataset_id}', train_size=0.7, "
             "val_size=0.0, test_size=0.3, stratified=True) to create splits."

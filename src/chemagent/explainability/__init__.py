@@ -1,12 +1,14 @@
 """
 chemagent.explainability
 ~~~~~~~~~~~~~~~~~~~~~~~~
-SHAP-based explainability tools for trained selectivity prediction models.
+Explainability tools for trained selectivity prediction models.
 
 Public API
 ----------
 * :class:`SHAPExplainer`  — wraps a trained sklearn model, auto-selects the
   right SHAP explainer (TreeExplainer for RF, KernelExplainer for SVM).
+* :class:`MolecularAnchor`  — identifies molecular fragments (anchors) critical
+  for model predictions.
 """
 
 from .shap_explainer import SHAPExplainer
@@ -15,10 +17,13 @@ from .mol_shap_draw import (
     shap_to_atom_weight,
     get_atom_wise_weight_map,
 )
+from .MolAnchor import MolecularAnchor
 
 __all__ = [
     "SHAPExplainer",
     "get_ecfp_morgan_generator_bit_info",
     "shap_to_atom_weight",
     "get_atom_wise_weight_map",
+    "MolecularAnchor",
 ]
+
