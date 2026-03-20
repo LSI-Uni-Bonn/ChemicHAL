@@ -155,10 +155,19 @@ class SHAPExplainer:
     def expected_value(self) -> float:
         """Base value (mean model output) for the positive class / regression."""
         ev = self._explainer.expected_value
+        if ev is None:
+            raise TypeError("SHAP explainer returned None for expected_value")
+
+        if callable(ev):
+            raise TypeError("Unsupported callable SHAP expected_value")
+
         if isinstance(ev, (list, np.ndarray)):
             ev = np.atleast_1d(ev)
             return float(ev[1]) if len(ev) == 2 else float(ev[0])
-        return float(ev)
+        if isinstance(ev, (int, float, np.number)):
+            return float(ev)
+
+        raise TypeError(f"Unsupported type for SHAP expected_value: {type(ev)!r}")
 
     @classmethod
     def from_model_path(
@@ -225,7 +234,7 @@ def explain_with_shap(
 
     Returns:
         shap_values_path, n_samples, n_samples_total, n_correct, correct_only,
-        n_features, expected_value, mean_abs_shap, top_10_bits, has_smiles, next_step.
+        n_features, expected_value, mean_abs_shap, has_smiles, next_step.
     """
 
     split_data  = joblib.load(split_file_path)
@@ -303,7 +312,7 @@ def explain_with_shap(
         ),
     }
 
-
+    
 def explain_smiles_with_shap(
     model_path: str,
     smiles: list[str],
@@ -352,7 +361,7 @@ def explain_smiles_with_shap(
 
     Returns:
         shap_values_path, n_samples, n_features, expected_value,
-        predictions, mean_abs_shap, method, has_smiles, next_step.
+        predictions, mean_abs_shap, shap_sum, method, has_smiles, next_step.
     """
 
     if not smiles:
@@ -424,8 +433,9 @@ def explain_smiles_with_shap(
         "n_samples":        int(shap_values.shape[0]),
         "n_features":       int(shap_values.shape[1]),
         "expected_value":   float(expected_val),
-        "predictions":      y_pred.tolist(),
+        "prediction":      y_pred.tolist()[0],
         "mean_abs_shap":    float(np.abs(shap_values).mean()),
+        "shap_sum":         float(shap_values.sum()),
         "method":           method,
         "has_smiles":       True,
         "note":             "Labels in output file are model predictions, not ground truth.",
