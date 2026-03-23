@@ -17,6 +17,7 @@ Functions
 log_thought        — record agent reasoning / planning in the session log
 generate_report    — write a Markdown summary of the current session to disk
 generate_pdf_report — write a clean PDF with agent narrative (thoughts) and plots
+export_chat_html   — export full chat as self-contained HTML with embedded figures
 start_new_session  — start a fresh logging session, ending the current one
 """
 
@@ -564,6 +565,288 @@ def generate_pdf_report(
         "n_plots_embedded": n_plots,
     }
 
+
+
+def _extract_image_paths(result: Any) -> list[str]:
+    """Recursively collect file paths pointing to image files inside a result."""
+    _IMG_EXTS = {".png", ".svg", ".jpg", ".jpeg"}
+    found: list[str] = []
+    if isinstance(result, dict):
+        for v in result.values():
+            if isinstance(v, str) and Path(v).suffix.lower() in _IMG_EXTS:
+                found.append(v)
+            elif isinstance(v, (dict, list)):
+                found.extend(_extract_image_paths(v))
+    elif isinstance(result, list):
+        for item in result:
+            found.extend(_extract_image_paths(item))
+    return found
+
+
+def _b64_data_uri(path: str) -> str | None:
+    """Return a base64 data-URI for the image at *path*, or None if missing."""
+    import base64
+    p = Path(path)
+    if not p.exists():
+        return None
+    ext = p.suffix.lower().lstrip(".")
+    mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "svg": "svg+xml"}.get(ext, "png")
+    data = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:image/{mime};base64,{data}"
+
+
+_HTML_STYLE = """\
+<style>
+  :root { --blue:#1e40af; --blue-lt:#dbeafe; --blue-pale:#eff6ff;
+          --green:#15803d; --green-lt:#dcfce7; --red:#991b1b; --red-lt:#fee2e2;
+          --gray:#6b7280; --border:#e5e7eb; --bg:#f9fafb; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: var(--bg);
+         color: #111827; padding: 24px; max-width: 900px; margin: auto; }
+  h1 { font-size: 1.4rem; color: var(--blue); margin-bottom: 4px; }
+  .meta { font-size: .78rem; color: var(--gray); margin-bottom: 20px; }
+  .event { margin-bottom: 14px; }
+  /* Thought */
+  .thought { background: var(--blue-pale); border: 1px solid #93c5fd;
+             border-radius: 8px; overflow: hidden; }
+  .thought-hdr { background: var(--blue-lt); padding: 5px 10px;
+                 font-size: .75rem; font-weight: 700; color: var(--blue);
+                 display: flex; justify-content: space-between; cursor: pointer;
+                 user-select: none; }
+  .thought-body { padding: 8px 12px; font-size: .85rem; color: #1e3a8a;
+                  white-space: pre-wrap; }
+  /* Answer */
+  .answer { background: #fff; border: 1px solid var(--border);
+            border-radius: 8px; padding: 10px 14px; font-size: .9rem;
+            line-height: 1.55; white-space: pre-wrap; }
+  .answer-hdr { font-size: .72rem; font-weight: 700; color: var(--gray);
+                margin-bottom: 4px; }
+  /* Tool call */
+  .tool { border-radius: 8px; overflow: hidden;
+          border: 1px solid #b4c3e6; }
+  .tool-hdr { background: var(--blue); color: #fff; padding: 6px 10px;
+              font-size: .8rem; font-weight: 700; display: flex;
+              justify-content: space-between; cursor: pointer; user-select: none; }
+  .tool-hdr .ok   { color: #86efac; }
+  .tool-hdr .err  { color: #fca5a5; }
+  .tool-section { padding: 5px 10px; font-size: .78rem; border-top: 1px solid #d1d5db; }
+  .tool-section-lbl { font-weight: 700; color: #4b5563; margin-bottom: 2px; }
+  .tool-args   { background: #f0f3ff; }
+  .tool-result { background: var(--green-lt); color: var(--green); }
+  .tool-error  { background: var(--red-lt);   color: var(--red); }
+  .kv { font-family: monospace; font-size: .76rem; padding: 1px 0; }
+  /* Figures */
+  .figures { margin-top: 8px; }
+  .fig { margin-top: 8px; text-align: center; }
+  .fig img { max-width: 100%; border: 1px solid var(--border);
+             border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+  .fig-label { font-size: .72rem; color: var(--gray); margin-top: 3px; }
+  /* Collapse */
+  .collapsible-body { overflow: hidden; transition: max-height .25s ease; }
+  .collapsed .collapsible-body { max-height: 0 !important; }
+</style>
+<script>
+  function toggle(el) {
+    el.closest('.collapsible').classList.toggle('collapsed');
+  }
+</script>
+"""
+
+
+def export_chat_html(
+    title: Optional[str] = None,
+    collapse_tool_calls: bool = True,
+    collapse_thoughts: bool = False,
+) -> dict[str, Any]:
+    """Export the current session as a self-contained HTML chat with embedded figures.
+
+    Renders the session in chronological order — thoughts, tool calls (with
+    arguments and result summaries), and assistant answers — as a styled HTML
+    page.  Any figures produced during the session are detected from tool-call
+    results and embedded directly as base64 images so the file is fully
+    self-contained and viewable offline.
+
+    Writes ``chat_<timestamp>.html`` inside ``<session_dir>/reports/``.
+
+    Args:
+        title:               Optional page headline. Defaults to "Chat Export: <session_id>".
+        collapse_tool_calls: Render tool-call cards collapsed by default (click to expand).
+                             Set to False to show all arguments/results expanded.
+        collapse_thoughts:   Render thought blocks collapsed by default.
+
+    Returns:
+        {"html_path": <absolute path>, "session_id": <id>,
+         "n_thoughts": <int>, "n_tool_calls": <int>, "n_figures": <int>}
+    """
+    log_file    = session_logger.log_file
+    session_id  = session_logger.session_id
+    session_dir = session_logger.session_dir
+
+    chat_events = _parse_chat_events(log_file)
+    now_str     = _dt.now(_tz.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    headline    = title or f"Chat Export: {session_id}"
+
+    n_thoughts = 0
+    n_calls    = 0
+    n_figs     = 0
+
+    blocks: list[str] = []
+
+    for ev in chat_events:
+        etype = ev["type"]
+        ts    = ev["timestamp"][:19].replace("T", " ")
+
+        if etype == "thought":
+            step = (ev.get("step") or "thought").upper()
+            text = ev.get("thought", "").strip()
+            if not text:
+                continue
+            cls  = "collapsible collapsed" if collapse_thoughts else "collapsible"
+            blocks.append(
+                f'<div class="event thought {cls}">'
+                f'<div class="thought-hdr" onclick="toggle(this)">'
+                f'<span>&#128161; {step}</span><span>{ts}</span></div>'
+                f'<div class="thought-body collapsible-body" style="max-height:2000px">'
+                f'{_html_escape(text)}</div></div>'
+            )
+            n_thoughts += 1
+
+        elif etype == "answer":
+            role = (ev.get("role") or "assistant").capitalize()
+            text = ev.get("answer", "").strip()
+            if not text:
+                continue
+            blocks.append(
+                f'<div class="event answer">'
+                f'<div class="answer-hdr">{_html_escape(role)} &bull; {ts}</div>'
+                f'{_html_escape(text)}</div>'
+            )
+
+        elif etype == "tool_call":
+            tool   = ev["tool"]
+            if tool in ("log_thought", "log_answer"):
+                continue
+            ok     = ev["status"] == "success"
+            ms     = ev["duration_ms"]
+            args   = ev.get("args", {})
+            result = ev.get("result")
+            error  = ev.get("error")
+
+            status_cls  = "ok" if ok else "err"
+            status_text = "OK" if ok else "ERR"
+            cls         = "collapsible collapsed" if collapse_tool_calls else "collapsible"
+
+            # Build inner sections
+            sections: list[str] = []
+
+            # Arguments section
+            if args:
+                arg_rows = "".join(
+                    f'<div class="kv">'
+                    f'<b>{_html_escape(str(k))}:</b> '
+                    f'{_html_escape(_json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v))[:200]}'
+                    f'</div>'
+                    for k, v in args.items()
+                )
+                sections.append(
+                    f'<div class="tool-section tool-args collapsible-body" style="max-height:2000px">'
+                    f'<div class="tool-section-lbl">Arguments</div>{arg_rows}</div>'
+                )
+
+            # Result section
+            if ok and result is not None:
+                if isinstance(result, dict):
+                    brief = {
+                        k: v for k, v in result.items()
+                        if isinstance(v, (str, int, float, bool)) and k not in ("next_step",)
+                    }
+                else:
+                    brief = {"result": str(result)}
+                if brief:
+                    res_rows = "".join(
+                        f'<div class="kv">'
+                        f'<b>{_html_escape(str(k))}:</b> {_html_escape(str(v))[:200]}'
+                        f'</div>'
+                        for k, v in brief.items()
+                    )
+                    sections.append(
+                        f'<div class="tool-section tool-result collapsible-body" style="max-height:2000px">'
+                        f'<div class="tool-section-lbl">Result</div>{res_rows}</div>'
+                    )
+
+            # Error section
+            elif not ok and error:
+                sections.append(
+                    f'<div class="tool-section tool-error collapsible-body" style="max-height:2000px">'
+                    f'<div class="tool-section-lbl">Error</div>'
+                    f'<div class="kv">{_html_escape(str(error)[:400])}</div></div>'
+                )
+
+            # Figures: embed any image paths found in the result
+            img_paths = _extract_image_paths(result) if result else []
+            fig_html  = ""
+            for img_path in img_paths:
+                uri = _b64_data_uri(img_path)
+                if uri:
+                    label = Path(img_path).name
+                    fig_html += (
+                        f'<div class="fig">'
+                        f'<img src="{uri}" alt="{_html_escape(label)}">'
+                        f'<div class="fig-label">{_html_escape(label)}</div></div>'
+                    )
+                    n_figs += 1
+
+            if fig_html:
+                sections.append(f'<div class="figures">{fig_html}</div>')
+
+            inner = "".join(sections)
+            blocks.append(
+                f'<div class="event tool {cls}">'
+                f'<div class="tool-hdr" onclick="toggle(this)">'
+                f'<span>&#128296; {_html_escape(tool)}</span>'
+                f'<span><span class="{status_cls}">[{status_text}]</span>'
+                f' &nbsp;{ms:.0f}&thinsp;ms &nbsp; {ts}</span></div>'
+                f'{inner}</div>'
+            )
+            n_calls += 1
+
+    body = "\n".join(blocks) or '<p style="color:#9ca3af;font-style:italic">No events found.</p>'
+
+    html = (
+        f'<!DOCTYPE html><html lang="en"><head>'
+        f'<meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>{_html_escape(headline)}</title>'
+        f'{_HTML_STYLE}</head><body>'
+        f'<h1>{_html_escape(headline)}</h1>'
+        f'<p class="meta">Generated: {now_str} &bull; Session: <code>{session_id}</code> &bull; '
+        f'{n_thoughts} thoughts &bull; {n_calls} tool calls &bull; {n_figs} figures</p>'
+        f'{body}'
+        f'</body></html>'
+    )
+
+    reports_dir = session_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    ts_file   = _dt.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+    html_path = reports_dir / f"chat_{ts_file}.html"
+    html_path.write_text(html, encoding="utf-8")
+
+    return {
+        "html_path":    str(html_path),
+        "session_id":   session_id,
+        "n_thoughts":   n_thoughts,
+        "n_tool_calls": n_calls,
+        "n_figures":    n_figs,
+    }
+
+
+def _html_escape(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+    )
 
 
 # start_new_session

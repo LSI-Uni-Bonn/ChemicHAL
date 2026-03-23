@@ -22,17 +22,15 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 import random
 
 import joblib
+import json
 import numpy as np
 import pandas as pd
 from rdkit import Chem
-from rdkit.Chem import Draw
-from PIL import Image as PILImage
 from mcp.server.fastmcp import Image as MCPImage
-import io
 
 _SRC = Path(__file__).resolve().parents[2]
 if str(_SRC) not in sys.path:
@@ -41,6 +39,15 @@ if str(_SRC) not in sys.path:
 from chemagent.explainability.MolAnchor.MolAnchor import MolecularAnchor
 from chemagent.session_utils import get_session_logger as _get_session_logger
 from chemagent.featurization.fingerprints import ECFP
+
+
+def _parse_bool(value: Union[bool, str]) -> bool:
+    """Coerce MCP string booleans ('true'/'false') to Python bool."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in ("false", "0", "no", "")
+
+
 
 
 def _smiles_to_mol_for_matching(smiles: str) -> Optional[Chem.Mol]:
@@ -61,12 +68,13 @@ def _smiles_to_mol_for_matching(smiles: str) -> Optional[Chem.Mol]:
         Molecule object for substructure matching, or None if invalid
     """
     try:
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return None
+        # mol = Chem.MolFromSmiles(smiles)
+        # if mol is None:
+        #     return None
         
-        # Sanitize and canonicalize for consistent matching
-        Chem.SanitizeMol(mol, sanitizeOps=Chem.SANITIZE_ALL)
+        # # Sanitize and canonicalize for consistent matching
+        # smarts = Chem.MolToSmarts(mol)
+        mol = Chem.MolFromSmarts(smiles)
         return mol
     except Exception:
         return None
@@ -131,10 +139,9 @@ def get_molanchor_info() -> dict[str, Any]:
     }
 
 
-def explain_with_molanchor(
+def _explain_with_molanchor(
     smiles: str,
     model_path: str,
-    dataset_id: Optional[str] = None,
     fragment_scheme: str = "BRICS",
     representation: str = "ECFP",
     target_class: int = 1,
@@ -146,136 +153,41 @@ def explain_with_molanchor(
     radius: int = 2,
     bit_info_path: Optional[str] = None,
     original_fp_path: Optional[str] = None,
-) -> dict[str, Any]:
-    """
-    Identify molecular anchors (critical fragments) for a model prediction using MolAnchor.
-    
-    This tool analyzes which molecular fragments are essential for a trained model's prediction
-    on a given compound. It works by systematically testing fragment combinations and measuring
-    their impact on the model's output.
-    
-    **Key Feature**: The function automatically generates the ECFP fingerprint and bit information
-    for the given SMILES internally, making it self-contained and accessible. Just provide the
-    SMILES and model path.
-    
-    Parameters
-    ----------
-    smiles : str
-        SMILES string of the compound to analyze
-    model_path : str
-        Path to the trained model file (.pkl format)
-    dataset_id : str, optional
-        Dataset ID for reference/logging. Not required for the analysis.
-    fragment_scheme : str, optional
-        Fragmentation scheme to use. Currently supports "BRICS" (default)
-    representation : str, optional
-        Molecular representation: "ECFP" (default) or "graphs"
-    target_class : int, optional
-        Class label to identify anchors for (default=1, relevant for classification)
-    cutoff : float, optional
-        Precision cutoff (0-1) for identifying anchors (default=0.95). Higher cutoff
-        means fragments must be more selective to be called anchors
-    allow_frag_combinations : bool, optional
-        If True, search for combinations of fragments if no single atoms anchor the prediction (default=True)
-    return_multiple_anchors : bool, optional
-        If True, return all fragments meeting the cutoff; if False, return only the highest precision anchors (default=False)
-    acc_for_radius : bool, optional
-        Account for atom environments spanning outside fragments (default=False)
-    n_bits : int, optional
-        ECFP fingerprint length in bits (default=2048). Must match the fingerprints used during model training.
-        Common values: 1024, 2048, 4096
-    radius : int, optional
-        ECFP Morgan radius (default=2). Use 2 for ECFP4 (most common) or 3 for ECFP6.
-        Must match the radius used during model training.
-    bit_info_path : str, optional
-        Path to bit information dictionary (.pkl) for external ECFP data.
-        **Not typically needed** — the function automatically regenerates bit info internally.
-        Provide only if you want to use pre-saved bit information instead.
-    original_fp_path : str, optional
-        Path to original fingerprint array (.npy) (rarely used, only for advanced debugging)
-    
-    Returns
-    -------
-    dict
-        Analysis results containing:
-        - smiles: input SMILES
-        - fragment_combinations: DataFrame showing all fragment combinations and their predictions
-        - identified_anchors: DataFrame with identified anchor fragments and their metrics
-        - num_fragments: number of fragments in the molecule
-        - anchor_indices: indices of the identified anchors
-        - anchor_smiles: SMILES of the anchor fragments
-        - precision: precision of the identified anchors
-        - coverage: coverage of the identified anchors
-        - multiple_anchors_used: whether multiple anchor fragments were combined
-        - status: completion status
-    
-    Raises
-    ------
-    ValueError
-        If SMILES is invalid, model cannot be loaded, or representation is unsupported
-    
-    Examples
-    --------
-    The simplest usage — just provide SMILES and model path:
-    
-    >>> result = explain_with_molanchor(
-    ...     smiles="CCO",
-    ...     model_path="path/to/trained_model.pkl"
-    ... )
-    >>> result["anchor_smiles"]  # Get the identified critical fragments
-    
-    If your model used different ECFP parameters, specify them to match:
-    
-    >>> result = explain_with_molanchor(
-    ...     smiles="CCO",
-    ...     model_path="path/to/trained_model.pkl",
-    ...     n_bits=1024,
-    ...     radius=3
-    ... )
-    """
-    logger = _get_session_logger()
-    
-    # Parse SMILES
+) -> tuple[dict[str, Any], Any]:
+    """Run MolAnchor analysis and return (result_dict, mol_anchor) for internal use."""
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         raise ValueError(f"Invalid SMILES: {smiles}")
-    
-    # Load model
+
     try:
         model = joblib.load(model_path)
     except Exception as e:
         raise ValueError(f"Failed to load model from {model_path}: {e}")
-    
-    # Load or generate bit info and original FP
+
     bit_inf = None
     original_fp = None
-    
+
     if representation == "ECFP":
-        # First, try to use provided bit_info_path
         if bit_info_path is not None:
             try:
                 bit_inf = joblib.load(bit_info_path)
-            except Exception as e:
+            except Exception:
                 pass
-        
-        # If not provided, generate bit info from the SMILES using ECFP
         if bit_inf is None:
             try:
                 fps, bit_inf = ECFP([smiles], n_bits=n_bits, radius=radius, return_bit_info=True)
-                # Store the generated fingerprint as original_fp for reference
                 original_fp = np.array(fps[0])
             except Exception as e:
                 raise ValueError(
-                    f"Failed to generate ECFP fingerprint for SMILES '{smiles}': {e}\n"
-                    f"Please verify the SMILES is valid and matches the model's expected fingerprint dimension."
+                    f"Failed to generate ECFP fingerprint for SMILES '{smiles}': {e}"
                 )
-    
+
     if original_fp_path is not None:
         try:
             original_fp = np.load(original_fp_path)
-        except Exception as e:
+        except Exception:
             pass
-    
+
     mol_anchor = MolecularAnchor(
         mol=mol,
         model_obj=model,
@@ -284,40 +196,30 @@ def explain_with_molanchor(
         representation=representation,
         bit_inf=bit_inf,
         original_fp=original_fp,
-        acc_for_radius=acc_for_radius
+        acc_for_radius=acc_for_radius,
     )
-    
-    # Get fragment combinations and predictions
+
     df_combinations = mol_anchor.predict_frag_combinations()
-    
-    # Identify anchors
     anchors_df = mol_anchor.identify_anchors(
         df_anchors=df_combinations,
         cutoff=cutoff,
         allow_frag_combinations=allow_frag_combinations,
-        return_multiple_anchors=return_multiple_anchors
+        return_multiple_anchors=return_multiple_anchors,
     )
-    
-    # Extract anchor information
-    anchor_indices = []
-    anchor_smiles_list = []
+
+    anchor_indices: list[int] = []
+    anchor_smiles_list: list[str] = []
     precision = 0.0
-    coverage = 0.0
     multiple_used = False
-    
+
     if not anchors_df.empty:
         first_row = anchors_df.iloc[0]
-        anchor_smiles_list = (
-            [first_row["anchor_smile"]] 
-            if isinstance(first_row["anchor_smile"], str) 
-            else first_row["anchor_smile"]
-        )
+        raw = first_row["anchor_smile"]
+        anchor_smiles_list = [raw] if isinstance(raw, str) else list(raw)
         precision = float(first_row.get("precision", 0.0))
-        coverage = float(first_row.get("coverage", 0.0))
         multiple_used = bool(first_row.get("plural_rule", False))
-        
-        # Extract anchor indices if anchor_mol is valid
-        if first_row["anchor_mol"] != "no_anchor" and first_row["anchor_mol"] != "all_frags":
+
+        if first_row["anchor_mol"] not in ("no_anchor", "all_frags"):
             anchor_mols = (
                 [first_row["anchor_mol"]]
                 if not isinstance(first_row["anchor_mol"], list)
@@ -325,38 +227,139 @@ def explain_with_molanchor(
             )
             anchor_indices = [
                 i for i, frag_mol in enumerate(mol_anchor.mol_frags)
-                if any(
-                    frag_mol.GetNumAtoms() == am.GetNumAtoms()
-                    for am in anchor_mols
-                )
+                if any(frag_mol.GetNumAtoms() == am.GetNumAtoms() for am in anchor_mols)
             ]
-    
-    final_anchor_smiles = anchor_smiles_list if isinstance(anchor_smiles_list, list) else [anchor_smiles_list]
 
-    # Automatically visualize identified anchors on the compound structure
-    visualization = None
-    if final_anchor_smiles:
-        try:
-            visualization = visualize_molanchor_anchors(
-                smiles=smiles,
-                anchor_smiles_list=final_anchor_smiles,
-            )
-        except Exception as viz_err:
-            visualization = {"status": "failed", "error": str(viz_err)}
-
-    return {
+    result = {
         "smiles": smiles,
-        "fragment_combinations": df_combinations.drop(columns=["Predictions"] if "Predictions" in df_combinations.columns else []).to_dict("records")[:10],  # Sample
-        "identified_anchors": anchors_df.drop(columns=["mol", "anchor_mol"] if "mol" in anchors_df.columns else []).to_dict("records"),
+        "fragment_combinations": df_combinations.drop(
+            columns=["Predictions"] if "Predictions" in df_combinations.columns else []
+        ).to_dict("records")[:10],
+        "identified_anchors": anchors_df.drop(
+            columns=["mol", "anchor_mol"] if "mol" in anchors_df.columns else []
+        ).to_dict("records"),
         "num_fragments": len(mol_anchor.mol_frags),
         "anchor_indices": anchor_indices,
-        "anchor_smiles": final_anchor_smiles,
+        "anchor_smiles": anchor_smiles_list,
         "precision": precision,
-        "coverage": coverage,
         "multiple_anchors_used": multiple_used,
-        "visualization": visualization,
-        "status": "completed"
+        "status": "completed",
     }
+    return result, mol_anchor
+
+
+def explain_with_molanchor(
+    smiles: str,
+    model_path: str,
+    fragment_scheme: str = "BRICS",
+    representation: str = "ECFP",
+    target_class: int = 1,
+    cutoff: float = 0.95,
+    allow_frag_combinations: Union[bool, str] = True,
+    return_multiple_anchors: Union[bool, str] = False,
+    acc_for_radius: Union[bool, str] = False,
+    n_bits: int = 2048,
+    radius: int = 2,
+    bit_info_path: Optional[str] = None,
+    original_fp_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> list:
+    """
+    Identify molecular anchors (critical fragments) for a model prediction using MolAnchor,
+    and automatically visualize the anchors highlighted on the compound structure.
+
+    The image is rendered directly in the chat window (LM Studio). Metadata —
+    including anchor SMILES, precision, fragment count — is returned as a JSON string
+    alongside the image.
+
+    Parameters
+    ----------
+    smiles : str
+        SMILES string of the compound to analyze.
+    model_path : str
+        Path to the trained model file (.pkl format).
+    fragment_scheme : str, optional
+        Fragmentation scheme. Currently supports "BRICS" (default).
+    representation : str, optional
+        Molecular representation: "ECFP" (default) or "graphs".
+    target_class : int, optional
+        Class label to identify anchors for (default 1).
+    cutoff : float, optional
+        Precision cutoff (0–1) for identifying anchors (default 0.95).
+    allow_frag_combinations : bool, optional
+        If True, search for fragment combinations if no single fragment anchors (default True).
+    return_multiple_anchors : bool, optional
+        If True, return all fragments meeting the cutoff; otherwise only the highest (default False).
+    acc_for_radius : bool, optional
+        Account for atom environments spanning outside fragments (default False).
+    n_bits : int, optional
+        ECFP fingerprint length (default 2048). Must match model training setup.
+    radius : int, optional
+        ECFP Morgan radius (default 2). Must match model training setup.
+    bit_info_path : str, optional
+        Path to pre-saved bit information (.pkl). Auto-generated if not provided.
+    original_fp_path : str, optional
+        Path to original fingerprint array (.npy). Rarely needed.
+    output_path : str, optional
+        Path to save the visualization image (.png).
+        Defaults to ``session_dir/plots/molanchor_<session_id>.png``.
+
+    Returns
+    -------
+    list
+        [MCPImage, json_metadata_str] — fastmcp converts this to an ImageContent block
+        (renders in LM Studio) plus a TextContent block with the analysis metadata.
+
+    Raises
+    ------
+    ValueError
+        If SMILES is invalid, model cannot be loaded, or no anchors are identified.
+
+    Examples
+    --------
+    >>> explain_with_molanchor(smiles="CCO", model_path="path/to/model.pkl")
+    """
+    allow_frag_combinations = _parse_bool(allow_frag_combinations)
+    return_multiple_anchors = _parse_bool(return_multiple_anchors)
+    acc_for_radius = _parse_bool(acc_for_radius)
+
+    logger = _get_session_logger()
+
+    result, mol_anchor = _explain_with_molanchor(
+        smiles=smiles,
+        model_path=model_path,
+        fragment_scheme=fragment_scheme,
+        representation=representation,
+        target_class=target_class,
+        cutoff=cutoff,
+        allow_frag_combinations=allow_frag_combinations,
+        return_multiple_anchors=return_multiple_anchors,
+        acc_for_radius=acc_for_radius,
+        n_bits=n_bits,
+        radius=radius,
+        bit_info_path=bit_info_path,
+        original_fp_path=original_fp_path,
+    )
+
+    anchor_indices = result["anchor_indices"]
+
+    if not anchor_indices:
+        # No anchors found — return just the metadata as text
+        return [json.dumps(result, indent=2)]
+
+    img = mol_anchor.map_anchor_to_cpd(anchor_indices)
+
+    if output_path is None:
+        img_path = logger.session_dir / "plots" / f"molanchor_{logger.session_id}.png"
+    else:
+        img_path = Path(output_path)
+
+    img_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(str(img_path))
+
+    result["image_path"] = str(img_path)
+    mcp_image = MCPImage(path=img_path)
+    return [mcp_image, json.dumps(result, indent=2)]
 
 
 def select_compound_for_xai(
@@ -653,14 +656,13 @@ def explain_batch_with_molanchor(
     anchor_frequency = {}
     num_fragments_list = []
     precision_list = []
-    coverage_list = []
     compounds_with_anchors = 0
     
-    for idx, compound_idx in enumerate(correct_indices):
+    for compound_idx in correct_indices:
         smiles = smiles_list[compound_idx]
         
         try:
-            result = explain_with_molanchor(
+            result, _ = _explain_with_molanchor(
                 smiles=smiles,
                 model_path=model_path,
                 fragment_scheme=fragment_scheme,
@@ -675,7 +677,7 @@ def explain_batch_with_molanchor(
                 bit_info_path=bit_info_path,
                 original_fp_path=original_fp_path,
             )
-            
+
             # Store detailed result
             result["compound_index"] = int(compound_idx)
             result["true_label"] = int(labels[compound_idx])
@@ -685,13 +687,12 @@ def explain_batch_with_molanchor(
             # Aggregate statistics
             num_fragments_list.append(result.get("num_fragments", 0))
             precision_list.append(result.get("precision", 0.0))
-            coverage_list.append(result.get("coverage", 0.0))
             
-            # Track anchor frequency
+            # Track anchor frequency (whole rule as one unit, single- or multi-fragment)
             if result.get("anchor_smiles"):
                 compounds_with_anchors += 1
-                for anchor_smile in result["anchor_smiles"]:
-                    anchor_frequency[anchor_smile] = anchor_frequency.get(anchor_smile, 0) + 1
+                anchor_key = "||".join(result["anchor_smiles"])
+                anchor_frequency[anchor_key] = anchor_frequency.get(anchor_key, 0) + 1
                     
         except Exception as e:
             # Log error but continue with other compounds
@@ -713,7 +714,6 @@ def explain_batch_with_molanchor(
     aggregate_statistics = {
         "mean_num_fragments": float(np.mean(num_fragments_list)) if num_fragments_list else 0.0,
         "mean_precision": float(np.mean(precision_list)) if precision_list else 0.0,
-        "mean_coverage": float(np.mean(coverage_list)) if coverage_list else 0.0,
         "compounds_with_anchors": compounds_with_anchors,
         "anchor_frequency": anchor_frequency,
         "most_common_anchors": [{"anchor": smile, "frequency": freq} for smile, freq in most_common_anchors]
@@ -738,17 +738,15 @@ def identify_recurrent_anchor_rules(
     fragment_scheme: str = "BRICS",
     representation: str = "ECFP",
     cutoff: float = 0.95,
-    allow_frag_combinations: bool = True,
-    return_multiple_anchors: bool = False,
-    acc_for_radius: bool = False,
+    allow_frag_combinations: Union[bool, str] = True,
+    return_multiple_anchors: Union[bool, str] = False,
+    acc_for_radius: Union[bool, str] = False,
     n_bits: int = 2048,
     radius: int = 2,
     bit_info_path: Optional[str] = None,
     original_fp_path: Optional[str] = None,
-    max_compounds: Optional[int] = None,
-    single_fragment_rules_only: bool = True,
-    top_n_anchors: Optional[int] = 5,
-) -> dict[str, Any]:
+    top_n_anchors: Optional[int] = 3,
+) -> list:
     """
     Run batch MolAnchor analysis and identify recurrent anchor rules in one step.
 
@@ -760,13 +758,13 @@ def identify_recurrent_anchor_rules(
        predicted the target class) where this fragment was identified as an anchor.
        Measures how important the fragment is for the model's predictions.
 
-    2. **Substructure Occurrence**: Fraction of ALL compounds in the split that contain
-       this fragment. A population-wide statistic showing how prevalent the fragment is
-       in the dataset, regardless of model predictions.
-
+    2. **Substructure Occurrence**: Fraction of ANALYZED compounds in the split that contain
+       this fragment. Supplies context for anchor occurrence, anchor occurrence can never be higher than substructure occurrence.
+        If substructure occurrence is equal to anchor occurrence, it means that whenever the fragment is present, it is an anchor (strong indicator).
+        If substructure occurrence is much higher than anchor occurrence, it means the fragment is common but not always critical (weaker indicator).
+        
     High-occurrence fragments represent consistent chemical logic your model uses for a given
-    class. Single-fragment rules (anchor_occurrence >= 0.8) are fragments that alone are
-    strong indicators of the prediction class.
+    class. 
 
     Parameters
     ----------
@@ -798,35 +796,28 @@ def identify_recurrent_anchor_rules(
         Path to bit information dictionary (.pkl). Not typically needed — auto-generated.
     original_fp_path : str, optional
         Path to original fingerprint array (.npy) (rarely used)
-    max_compounds : int, optional
-        Limit batch analysis to this many compounds (default None = analyze all).
-    single_fragment_rules_only : bool, optional
-        If True (default), return only single-fragment rules (anchor_occurrence >= 0.8).
-        If False, return all identified rules.
     top_n_anchors : int, optional
         Maximum number of top anchors to return, sorted by anchor_occurrence then
-        substructure_occurrence. Default: 5. Set to None to return all.
+        substructure_occurrence. Default: 3. Set to None to return all.
 
     Returns
     -------
-    dict
-        - recurrent_rules: list of fragment rules (filtered/ranked):
-            - fragment: SMILES of the fragment
-            - substructure_occurrence: fraction of ALL compounds in split containing this fragment
-            - anchor_occurrence: fraction of ANALYZED compounds where identified as anchor
-            - num_compounds_with_substructure: count of compounds containing fragment
-            - num_compounds_with_anchor: count of analyzed compounds where identified as anchor
-            - single_fragment_rule: bool, True if anchor_occurrence >= 0.8
-        - rule_details: alias for recurrent_rules
-        - statistics:
-            - total_unique_anchors: unique fragments identified in batch analysis
-            - total_single_fragment_rules: fragments with anchor_occurrence >= 0.8
-            - filtered_rules_count: rules in final recurrent_rules list
-        - batch_summary: summary statistics from the underlying batch analysis
-        - num_analyzed_compounds: correctly predicted compounds analyzed with MolAnchor
-        - total_compounds_in_split: total size of the dataset split
-        - single_fragment_rules_only: echo of the filter parameter used
-        - status: completion status
+    list
+        Interleaved per-rule items followed by a summary JSON:
+        [MCPImage_1, rule_1_json, MCPImage_2, rule_2_json, ..., summary_json]
+
+        Each rule JSON contains:
+        - rank: position in the ranked list (1 = most recurrent)
+        - fragment: SMILES string (single-fragment) or list of SMILES (multi-fragment rule)
+        - anchor_occurrence: fraction of analyzed compounds where this rule was identified
+        - substructure_occurrence: fraction of ALL split compounds containing the fragment(s)
+        - num_compounds_with_anchor: absolute count for anchor_occurrence
+        - num_compounds_with_substructure: absolute count for substructure_occurrence
+        - image_path: path to the saved highlight image (if visualization succeeded)
+
+        The final summary JSON contains:
+        - target_class, split, num_analyzed_compounds, total_compounds_in_split
+        - total_unique_anchor_rules, top_n_rules_shown, status
 
     Raises
     ------
@@ -839,14 +830,17 @@ def identify_recurrent_anchor_rules(
     ...     split_file_path="session/splits/data.pkl",
     ...     model_path="session/models/model.pkl",
     ...     target_class=1,
-    ...     single_fragment_rules_only=True,
-    ...     top_n_anchors=5
+    ...     top_n_anchors=3
     ... )
     >>> for rule in rules["recurrent_rules"]:
     ...     print(f"Fragment {rule['fragment']}: "
     ...           f"{rule['anchor_occurrence']:.1%} anchor, "
     ...           f"{rule['substructure_occurrence']:.1%} substructure")
     """
+    allow_frag_combinations = _parse_bool(allow_frag_combinations)
+    return_multiple_anchors = _parse_bool(return_multiple_anchors)
+    acc_for_radius = _parse_bool(acc_for_radius)
+
     logger = _get_session_logger()
 
     # Run batch analysis internally
@@ -865,7 +859,6 @@ def identify_recurrent_anchor_rules(
         radius=radius,
         bit_info_path=bit_info_path,
         original_fp_path=original_fp_path,
-        max_compounds=max_compounds,
     )
 
     # Load split file to get all SMILES for substructure searching
@@ -885,11 +878,15 @@ def identify_recurrent_anchor_rules(
     if smiles_list is None:
         raise ValueError(f"No SMILES found in {split} split. Cannot perform substructure search.")
 
-    # Extract analyzed compounds from batch results
+    # Extract analyzed compounds and build anchor→representative compound mapping
     analyzed_compounds = {}
+    anchor_representative: dict[str, str] = {}  # anchor key -> first compound SMILES showing it
     for result in batch_results.get("detailed_results", []):
         if "compound_index" in result and "smiles" in result and result.get("status") == "completed":
             analyzed_compounds[result["compound_index"]] = result["smiles"]
+            anchor_key = "||".join(result.get("anchor_smiles", []))
+            if anchor_key and anchor_key not in anchor_representative:
+                anchor_representative[anchor_key] = result["smiles"]
 
     num_analyzed_compounds = len(analyzed_compounds)
     if num_analyzed_compounds == 0:
@@ -913,221 +910,100 @@ def identify_recurrent_anchor_rules(
     # Compute metrics for each anchor fragment
     recurrent_rules = []
     
-    for anchor_smiles, anchor_count in anchor_frequency.items():
-        # Convert SMILES to molecule for direct substructure matching
-        anchor_mol = _smiles_to_mol_for_matching(anchor_smiles)
-        if anchor_mol is None:
+    for anchor_key, anchor_count in anchor_frequency.items():
+        # Split key back into individual fragment SMILES
+        fragment_smiles_list = anchor_key.split("||")
+        anchor_mols = [_smiles_to_mol_for_matching(smi) for smi in fragment_smiles_list]
+        anchor_mols = [m for m in anchor_mols if m is not None]
+        if not anchor_mols:
             continue
-        
-        # Anchor occurrence: fraction of ANALYZED compounds where this was identified as anchor
+
+        # Anchor occurrence: fraction of ANALYZED compounds where this rule was identified
         anchor_occurrence = anchor_count / num_analyzed_compounds if num_analyzed_compounds > 0 else 0.0
-        
-        # Substructure occurrence: count ALL compounds in split containing this fragment
-        # This is a population-wide statistic showing how prevalent the fragment is
+
+        # Substructure occurrence: fraction of ALL compounds in split containing ALL rule fragments
         substructure_count = 0
         for compound_smiles in smiles_list:
             try:
                 compound_mol = Chem.MolFromSmiles(compound_smiles)
-                if compound_mol is not None and compound_mol.HasSubstructMatch(anchor_mol):
+                if compound_mol is not None and all(
+                    compound_mol.HasSubstructMatch(am) for am in anchor_mols
+                ):
                     substructure_count += 1
             except Exception:
                 pass
-        
-        substructure_occurrence = substructure_count / total_compounds_in_split if total_compounds_in_split > 0 else 0.0
-        
+
+        substructure_occurrence = substructure_count / num_analyzed_compounds if num_analyzed_compounds > 0 else 0.0
+
         rule_entry = {
-            "fragment": anchor_smiles,
+            "fragment": fragment_smiles_list[0] if len(fragment_smiles_list) == 1 else fragment_smiles_list,
             "substructure_occurrence": float(substructure_occurrence),
             "anchor_occurrence": float(anchor_occurrence),
             "num_compounds_with_substructure": int(substructure_count),
             "num_compounds_with_anchor": int(anchor_count),
-            "single_fragment_rule": anchor_occurrence >= 0.8  # Very high consistency
         }
-        
+
         recurrent_rules.append(rule_entry)
-    
+
     # Sort by anchor occurrence (primary) then substructure occurrence (secondary)
     recurrent_rules.sort(
         key=lambda x: (x["anchor_occurrence"], x["substructure_occurrence"]),
         reverse=True
     )
-    
-    # Count single-fragment rules (anchor_occurrence >= 0.8)
-    single_fragment_rules = [r for r in recurrent_rules if r["single_fragment_rule"]]
-    
-    # Filter if requested
-    if single_fragment_rules_only:
-        final_rules = single_fragment_rules
-    else:
-        final_rules = recurrent_rules
+
+    final_rules = recurrent_rules
     
     # Limit to top N anchors if specified
     if top_n_anchors is not None and len(final_rules) > top_n_anchors:
         final_rules = final_rules[:top_n_anchors]
     
-    return {
-        "recurrent_rules": final_rules,
-        "rule_details": final_rules,  # Alias for clarity
-        "statistics": {
-            "total_unique_anchors": len(anchor_frequency),
-            "total_single_fragment_rules": len(single_fragment_rules),
-            "filtered_rules_count": len(final_rules),
-        },
-        "batch_summary": batch_results.get("aggregate_statistics", {}),
+    # Generate one highlighted image per anchor rule; interleave with per-rule JSON
+    plots_dir = logger.session_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    output_items = []  # alternating: MCPImage, rule_json_str, MCPImage, rule_json_str, ...
+    for i, rule in enumerate(final_rules):
+        rule["rank"] = i + 1
+        frag = rule["fragment"]
+        lookup_key = "||".join(frag) if isinstance(frag, list) else frag
+        rep_smiles = anchor_representative.get(lookup_key)
+        if rep_smiles:
+            try:
+                vis_result, mol_anchor = _explain_with_molanchor(
+                    smiles=rep_smiles,
+                    model_path=model_path,
+                    fragment_scheme=fragment_scheme,
+                    representation=representation,
+                    target_class=target_class,
+                    cutoff=cutoff,
+                    allow_frag_combinations=allow_frag_combinations,
+                    return_multiple_anchors=return_multiple_anchors,
+                    acc_for_radius=acc_for_radius,
+                    n_bits=n_bits,
+                    radius=radius,
+                    bit_info_path=bit_info_path,
+                    original_fp_path=original_fp_path,
+                )
+                anchor_indices = vis_result.get("anchor_indices", [])
+                if anchor_indices:
+                    img = mol_anchor.map_anchor_to_cpd(anchor_indices)
+                    img_path = plots_dir / f"anchor_rule_{i + 1}_{logger.session_id}.png"
+                    img.save(str(img_path))
+                    rule["image_path"] = str(img_path)
+                    output_items.append(MCPImage(path=img_path))
+            except Exception:
+                pass
+        output_items.append(json.dumps(rule, indent=2))
+
+    summary = {
         "target_class": target_class,
         "split": split,
         "num_analyzed_compounds": num_analyzed_compounds,
         "total_compounds_in_split": total_compounds_in_split,
-        "single_fragment_rules_only": single_fragment_rules_only,
-        "top_n_anchors_limit": top_n_anchors,
-        "status": "completed"
+        "total_unique_anchor_rules": len(anchor_frequency),
+        "top_n_rules_shown": len(final_rules),
+        "status": "completed",
     }
+    return output_items + [json.dumps(summary, indent=2)]
 
 
-def visualize_molanchor_anchors(
-    smiles: str,
-    anchor_smiles_list: list[str],
-    output_path: Optional[str] = None,
-    size: tuple[int, int] = (400, 400),
-    highlight_color: tuple[int, int, int] = (255, 100, 100),
-    include_atom_indices: bool = True,
-) -> dict[str, Any]:
-    """
-    Visualize identified MolAnchor anchor fragments highlighted on the molecular structure.
-    
-    This tool creates a molecular structure image with identified anchor fragments
-    highlighted in a distinct color. Useful for understanding which substructures
-    your model considers critical for a prediction.
-    
-    Parameters
-    ----------
-    smiles : str
-        SMILES string of the compound to visualize
-    anchor_smiles_list : list[str]
-        List of anchor SMILES strings to highlight (from explain_with_molanchor results)
-    output_path : str, optional
-        Path to save the visualization image (.png format).
-        If not provided, image is saved to session directory: `session_dir/plots/molanchor_<timestamp>.png`
-    size : tuple[int, int], optional
-        Image dimensions in pixels (width, height). Default: (400, 400)
-    highlight_color : tuple[int, int, int], optional
-        RGB color for highlighting anchor atoms. Default: red (255, 100, 100)
-        Examples: (255, 100, 100) = red, (100, 255, 100) = green, (100, 100, 255) = blue
-    include_atom_indices : bool, optional
-        If True, show atom indices on the structure (default: True)
-    
-    Returns
-    -------
-    dict
-        Visualization result containing:
-        - image: MCP Image object that renders directly in LM Studio GUI
-        - image_path: path to saved PNG file for reference/download
-        - num_anchors: number of anchor fragments highlighted
-        - num_atoms_highlighted: total atom indices highlighted
-        - anchor_info: list of dicts with anchor SMILES and atom indices matched
-        - status: completion status
-    
-    Raises
-    ------
-    ValueError
-        If main SMILES or anchor SMILES are invalid
-    
-    Examples
-    --------
-    Visualize anchors from a single prediction (renders automatically in LM Studio):
-    
-    >>> result = explain_with_molanchor(
-    ...     smiles="CCO",
-    ...     model_path="model.pkl"
-    ... )
-    >>> viz = visualize_molanchor_anchors(
-    ...     smiles="CCO",
-    ...     anchor_smiles_list=result["anchor_smiles"]
-    ... )
-    # The image renders directly in the LM Studio chat window
-    # viz['image'] contains the MCP Image object
-    
-    With custom highlighting and output path:
-    
-    >>> viz = visualize_molanchor_anchors(
-    ...     smiles="CCO",
-    ...     anchor_smiles_list=["CC", "CO"],
-    ...     output_path="outputs/anchors.png",
-    ...     highlight_color=(100, 200, 255)  # cyan
-    ... )
-    """
-    logger = _get_session_logger()
-    
-    # Parse main molecule
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise ValueError(f"Invalid SMILES for main compound: {smiles}")
-    
-    # Validate anchor SMILES and build list of atom indices to highlight
-    all_highlight_indices = set()
-    anchor_info_list = []
-    
-    for anchor_smile in anchor_smiles_list:
-        # Convert SMILES to molecule for direct substructure matching
-        anchor_mol = _smiles_to_mol_for_matching(anchor_smile)
-        if anchor_mol is None:
-            continue  # Skip invalid anchors
-        
-        # Find all substructure matches in the main molecule
-        matches = mol.GetSubstructMatches(anchor_mol)
-        if matches:
-            for match in matches:
-                all_highlight_indices.update(match)
-            
-            anchor_info_list.append({
-                "anchor_smiles": anchor_smile,
-                "num_matches": len(matches),
-                "atom_indices": sorted(list(set().union(*(list(m) for m in matches))))
-            })
-    
-    if not all_highlight_indices:
-        raise ValueError(
-            f"No anchor SMILES could be found as substructures in the main compound. "
-            f"Main SMILES: {smiles}, Anchors: {anchor_smiles_list}"
-        )
-    
-    # Draw molecule with highlighted atoms
-    highlight_atom_list = list(all_highlight_indices)
-    
-    # Use custom highlight colors
-    highlight_atom_map = {atom_idx: highlight_color for atom_idx in highlight_atom_list}
-    
-    # Draw the molecule
-    img = Draw.MolToImage(
-        mol,
-        size=size,
-        kekulize=True,
-        includeAtomNumbers=include_atom_indices,
-        highlightAtoms=highlight_atom_list,
-        highlightAtomColors=highlight_atom_map,
-    )
-    
-    # Determine output path
-    if output_path is None:
-        output_path = logger.session_dir / "plots" / f"molanchor_{logger.session_id}.png"
-    else:
-        output_path = Path(output_path)
-    
-    # Create directory if needed
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Save image
-    img.save(str(output_path))
-    
-    # Create MCP Image object for rendering in LM Studio
-    mcp_image = MCPImage(path=output_path)
-    
-    return {
-        "image": mcp_image,
-        "image_path": str(output_path),
-        "num_anchors": len(anchor_info_list),
-        "anchor_info": anchor_info_list,
-        "compound_smiles": smiles,
-        "status": "completed"
-    }
 
