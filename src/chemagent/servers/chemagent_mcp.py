@@ -45,11 +45,14 @@ XAI
   explain_smiles                 compute SHAP values for SMILES strings typed directly in chat (no split file needed)
   plot_shap_mol                  render atom-level SHAP heatmaps on molecular structures
   explain_with_molanchor         identify molecular anchors (critical fragments) for a single prediction
-  explain_batch_with_molanchor   run MolAnchor analysis on all correctly predicted compounds of a given class
-  identify_recurrent_anchor_rules compute substructure & anchor occurrence metrics to identify robust rules
-  visualize_molanchor_anchors    draw molecular structure with identified anchors highlighted
+  identify_recurrent_anchor_rules batch MolAnchor + compute substructure & anchor occurrence metrics
   get_molanchor_info             reference information about MolAnchor parameters and methods
   select_compound_for_xai        randomly select a correctly predicted compound of specified class for analysis
+  generate_counterfactuals       generate counterfactual molecules that change the model prediction
+  visualize_counterfactuals      draw query compound + counterfactuals as a molecule grid image
+  explain_with_molce             contrastive R-group attribution — why class A and not class B?
+  visualize_molce_foils          draw query compound + MolCE foil molecules as a grid image
+  identify_recurrent_molce_rules global MolCE: aggregate R-group rules across a compound class
 
 Utilities
   log_thought            record reasoning in the session log
@@ -98,9 +101,17 @@ from chemagent.explainability.shap_explainer import explain_with_shap, explain_s
 from chemagent.explainability.molanchor_tools import (
     explain_with_molanchor,
     identify_recurrent_anchor_rules,
-    visualize_molanchor_anchors,
     get_molanchor_info,
     select_compound_for_xai,
+)
+from chemagent.explainability.counterfactual_tools import (
+    generate_counterfactuals,
+    visualize_counterfactuals,
+)
+from chemagent.explainability.molce_tools import (
+    explain_with_molce,
+    visualize_molce_foils,
+    identify_recurrent_molce_rules,
 )
 from chemagent.servers.session_tools import (
     mcp,
@@ -110,6 +121,7 @@ from chemagent.servers.session_tools import (
     log_answer,
     generate_report,
     generate_pdf_report,
+    export_chat_html,
     start_new_session,
 )
 
@@ -172,9 +184,13 @@ _register(explain_smiles_with_shap)
 _register(plot_shap_mol)
 _register(explain_with_molanchor)
 _register(identify_recurrent_anchor_rules)
-_register(visualize_molanchor_anchors)
 _register(get_molanchor_info)
 _register(select_compound_for_xai)
+_register(generate_counterfactuals)
+_register(visualize_counterfactuals)
+_register(explain_with_molce)
+_register(visualize_molce_foils)
+_register(identify_recurrent_molce_rules)
 
 
 # ===========================================================================
@@ -185,6 +201,7 @@ _register(log_thought)
 _register(log_answer)
 _register(generate_report)
 _register(generate_pdf_report)
+_register(export_chat_html)
 _register(start_new_session)
 
 
