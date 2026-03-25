@@ -28,7 +28,13 @@ None
 notebooks/shap_debug.ipynb
 
 # Test artifacts
+Explainability/results/
 tests/chemagent/servers/test_generate_pdf_report.py
-tests/chemagent/servers/__pycache__/test_generate_pdf_report.cpython-312-pytest-9.0.2.pyc
 lm_studio_mcp_config.json
 data/logs/.current_session.json
+lm_studio_mcp_config.json
+results/*
+models/*
+src/chemagent/servers/results/chembl_activity_data_O00329_P42336_test_predictions.csv
+src/chemagent/servers/results/molanchor_test_1.png
+src/chemagent/servers/results/chembl_activity_data_O00329_P42336_test_predictions_metrics.pkl
