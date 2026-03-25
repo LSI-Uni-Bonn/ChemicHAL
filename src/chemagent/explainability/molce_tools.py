@@ -6,9 +6,8 @@ Registered via ``_register()`` in ``chemagent_mcp.py``.
 
 Functions
 ---------
-explain_with_molce               — contrastive R-group attribution for a single compound
-visualize_molce_foils            — draw a compound and its top contrastive foil molecules as a grid
-identify_recurrent_molce_rules   — global MolCE: aggregate contrastive R-group rules across a class
+explain_with_molce               — contrastive R-group + scaffold attribution for a single compound
+identify_recurrent_molce_rules   — global MolCE: aggregate contrastive R-group + scaffold rules across a class
 
 MolCE (Molecular Contrastive Explanations) explains *why* a model predicts class A
 rather than class B (the foil class) by systematically substituting R-groups from a
@@ -23,12 +22,11 @@ import sys
 from pathlib import Path
 from typing import Any, List, Optional
 
+import PIL
 import joblib
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from rdkit import Chem
-from rdkit.Chem import Draw
 from mcp.server.fastmcp import Image as MCPImage
 
 _SRC = Path(__file__).resolve().parents[2]
@@ -42,6 +40,90 @@ from chemagent.session_utils import get_session_logger as _get_session_logger
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _show_mol_as_pil(
+    mol: "Chem.Mol",
+    legend: str = "",
+    highlightAtoms: Optional[list] = None,
+    corestructure: Optional["Chem.Mol"] = None,
+    original_cpd: Optional["Chem.Mol"] = None,
+    substructure_smiles: Optional[str] = None,
+    rotate: float = 0,
+    alt_dummy: bool = False,
+    highlight_subs: bool = False,
+    size: tuple = (400, 350),
+) -> Optional["PIL.Image.Image"]:
+    """Render *mol* to a PIL Image using RDKit Cairo drawing with optional atom highlighting.
+
+    Adapted from the ``show_mol`` helper used in MolCE notebooks.
+
+    - ``corestructure`` + ``highlight_subs=False``: highlights core atoms.
+    - ``corestructure`` + ``highlight_subs=True``: highlights substituent atoms (non-core).
+    - ``original_cpd``: highlights atoms that differ from the MCS with the original.
+    - ``alt_dummy=True``: renders dummy atoms as attachment-point wedges.
+    """
+    try:
+        from rdkit.Chem.Draw import MolDraw2DCairo
+        from rdkit.Chem import AllChem, rdFMCS
+        from PIL import Image as PILImage
+        from io import BytesIO
+
+        d2d = MolDraw2DCairo(size[0], size[1])
+        dopts = d2d.drawOptions()
+        dopts.useBWAtomPalette()
+        dopts.prepareMolsBeforeDrawing = True
+        dopts.dummiesAreAttachments = alt_dummy
+        dopts.rotate = rotate
+        dopts.clearBackground = True
+        if legend:
+            dopts.legendFontSize = 14
+            dopts.legendFraction = 0.3
+
+        atoms_to_highlight = list(highlightAtoms) if highlightAtoms else []
+
+        if corestructure is not None:
+            du = Chem.MolFromSmiles("*")
+            core = AllChem.ReplaceSubstructs(corestructure, du, Chem.MolFromSmiles("[H]"), True)[0]
+            core = Chem.RemoveHs(core)
+            core.UpdatePropertyCache(strict=True)
+            Chem.SanitizeMol(core)
+            core_match = set(mol.GetSubstructMatch(Chem.MolFromSmarts(Chem.MolToSmiles(core))))
+            all_idx = {atom.GetIdx() for atom in mol.GetAtoms()}
+            if not highlight_subs:
+                atoms_to_highlight = list(core_match)
+            else:
+                atoms_to_highlight = list(all_idx - core_match)
+
+        if original_cpd is not None:
+            mcs = rdFMCS.FindMCS([mol, original_cpd])
+            mcs_smarts = Chem.MolFromSmarts(mcs.smartsString)
+            all_idx = {atom.GetIdx() for atom in mol.GetAtoms()}
+            atoms_to_highlight = list(all_idx - set(mol.GetSubstructMatch(mcs_smarts)))
+
+        if substructure_smiles is not None:
+            atoms_to_highlight = list(mol.GetSubstructMatch(Chem.MolFromSmarts(substructure_smiles)))
+
+        d2d.DrawMolecule(mol, legend=legend, highlightAtoms=atoms_to_highlight)
+        d2d.FinishDrawing()
+        return PILImage.open(BytesIO(d2d.GetDrawingText()))
+    except Exception:
+        return None
+
+
+def _make_mol_grid(images: list, cols: int = 4) -> "PIL.Image.Image":
+    """Stitch a flat list of PIL Images into a grid with *cols* columns."""
+    from PIL import Image as PILImage
+
+    valid = [img for img in images if img is not None]
+    if not valid:
+        raise ValueError("No images to assemble into grid.")
+    w, h = valid[0].size
+    rows = (len(valid) + cols - 1) // cols
+    grid = PILImage.new("RGB", (cols * w, rows * h), color=(255, 255, 255))
+    for i, img in enumerate(valid):
+        grid.paste(img.resize((w, h)), ((i % cols) * w, (i // cols) * h))
+    return grid
+
 
 def _make_sklearn_predict_funcs(model, n_bits: int, radius: int):
     """Return (predict_func, predict_func_proba) adapters for an sklearn model.
@@ -81,11 +163,8 @@ class _MolContrastWrapper:
 
     ``MolContrast.__init__`` unconditionally calls ``get_scaffold_dict()``,
     which reads a ``core_dict_generic.pkl`` file from the working directory.
-    This wrapper overrides that method so the dict is only loaded when a
-    valid ``core_dict_path`` is explicitly provided, avoiding a hard crash
-    when scaffold-based analysis is not needed.
-
-    ``supports_cores`` is True when a scaffold dict was successfully loaded.
+    This wrapper overrides that method to load from the bundled dict by
+    default, or from a custom path when provided.
     """
 
     def __init__(
@@ -99,15 +178,16 @@ class _MolContrastWrapper:
         import pickle
         from chemagent.explainability.MolCE.MolCE import MolContrast
 
-        _core_dict: dict = {}
-        if core_dict_path is not None:
-            try:
-                with open(core_dict_path, "rb") as fh:
-                    _core_dict = pickle.load(fh)
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to load scaffold dict from {core_dict_path!r}: {e}"
-                )
+        _BUNDLED_CORE_DICT = Path(__file__).parent / "MolCE" / "core_dict_generic.pkl"
+        resolved_path = core_dict_path if core_dict_path is not None else str(_BUNDLED_CORE_DICT)
+
+        try:
+            with open(resolved_path, "rb") as fh:
+                _core_dict: dict = pickle.load(fh)
+        except Exception as e:
+            raise ValueError(
+                f"Failed to load scaffold dict from {resolved_path!r}: {e}"
+            )
 
         class _SafeMolContrast(MolContrast):
             def get_scaffold_dict(self_inner):  # noqa: N805
@@ -119,7 +199,6 @@ class _MolContrastWrapper:
             predict_func=predict_func,
             predict_func_proba=predict_func_proba,
         )
-        self.supports_cores: bool = bool(_core_dict)
 
     def get_contrastive_rgroups(self, mol, foil_class: int, random_order: bool = False):
         return self._mc.get_contrastive_rgroups(mol, foil_class, random_order)
@@ -143,27 +222,27 @@ def explain_with_molce(
     foil_class: int = 0,
     n_bits: int = 2048,
     radius: int = 2,
-    top_n: int = 10,
     core_dict_path: Optional[str] = None,
     similarity_threshold: Optional[float] = None,
     output_path: Optional[str] = None,
 ) -> list:
-    """Run MolCE contrastive attribution for a single compound (R-groups and optionally scaffolds).
+    """Run MolCE contrastive attribution for a single compound (R-groups and scaffolds).
 
     MolCE asks: *"Why does the model predict class A rather than class B?"*
 
-    **R-group analysis** (always run): replaces each R-group in the query
-    compound with R-groups extracted from the dataset library and measures how
-    much each substitution shifts the probability toward the foil class.
+    **R-group analysis**: replaces each R-group in the query compound with
+    R-groups from the dataset library and measures how much each substitution
+    shifts the probability toward the foil class.
 
-    **Scaffold analysis** (optional, requires ``core_dict_path``): swaps the
-    Murcko scaffold of the query with similar scaffolds from a prebuilt library
-    (``core_dict_generic.pkl``) while keeping the original R-groups, measuring
-    how much each core swap shifts the prediction.
+    **Scaffold analysis**: swaps the Murcko scaffold with similar scaffolds
+    from the bundled library, keeping original R-groups, measuring how much
+    each core swap shifts the prediction.
+
+    Returns the **top 3** most contrastive substituents and scaffolds with
+    their contrast scores and molecule-grid visualizations inline.
 
     A high **contrast score** means the current R-group / scaffold strongly
-    separates the predicted class from the foil class.  A negative score means
-    the substitution would help the compound look more like the foil class.
+    separates the predicted class from the foil class.
 
     Parameters
     ----------
@@ -181,34 +260,30 @@ def explain_with_molce(
         ECFP fingerprint length (default 2048).  Must match model training setup.
     radius : int, optional
         ECFP Morgan radius (default 2).  Must match model training setup.
-    top_n : int, optional
-        Number of top-ranked R-group / scaffold substitutions to visualize
-        (default 10).
     core_dict_path : str, optional
-        Path to the ``core_dict_generic.pkl`` scaffold library required for
-        scaffold contrastive analysis.  When omitted only R-group attribution
-        is performed.
+        Path to a custom ``core_dict_generic.pkl`` scaffold library.  When
+        omitted the bundled library is used.
     similarity_threshold : float, optional
         Size-similarity filter (0–1) for external scaffolds: keeps only those
         whose atom count differs from the original core by at most
-        ``(1 - similarity_threshold) * 100 %``.  Only used when
-        ``core_dict_path`` is provided.
+        ``(1 - similarity_threshold) * 100 %``.
     output_path : str, optional
-        Base path for output images (.png).  Two images are saved when scaffold
-        analysis is active: ``<base>_rgroups.png`` and ``<base>_scaffolds.png``.
+        Base path for output images (.png).  Two images are saved:
+        ``<base>_rgroups.png`` and ``<base>_scaffolds.png``.
         Defaults to ``session_dir/plots/molce_<session_id>``.
 
     Returns
     -------
     list
-        One or two MCPImage objects followed by a JSON metadata string.
+        Two MCPImage objects (R-group grid, scaffold grid) followed by a JSON
+        metadata string.
 
         JSON fields:
         - smiles, predicted_class, foil_class
-        - contrastive_rgroups: top R-group attributions (rank, r_group_smiles,
+        - contrastive_rgroups: top-3 R-group attributions (rank, r_group_smiles,
           r_group_site, contrast_score)
-        - contrastive_scaffolds: top scaffold attributions (rank, core_smiles,
-          contrast_score) — empty list if scaffold analysis was not run
+        - contrastive_scaffolds: top-3 scaffold attributions (rank, core_smiles,
+          contrast_score)
         - num_rgroups_evaluated, num_scaffolds_evaluated
         - image_path_rgroups, image_path_scaffolds
         - status: "completed"
@@ -226,7 +301,6 @@ def explain_with_molce(
     ...     model_path="data/logs/session_xxx/models/data_RFC.pkl",
     ...     split_file_path="data/logs/session_xxx/splits/data_random.pkl",
     ...     foil_class=0,
-    ...     core_dict_path="data/core_dict_generic.pkl",
     ... )
     """
     logger = _get_session_logger()
@@ -313,7 +387,7 @@ def explain_with_molce(
 
     rgroup_df = rgroup_df.reset_index()
     rgroup_records = []
-    for rank, (_, row) in enumerate(rgroup_df.head(top_n).iterrows(), start=1):
+    for rank, (_, row) in enumerate(rgroup_df.head(3).iterrows(), start=1):
         rgroup_records.append({
             "rank": rank,
             "r_group_smiles": str(row["R-group"]),
@@ -321,77 +395,79 @@ def explain_with_molce(
             "contrast_score": float(row["contrast"]),
         })
 
-    # Draw R-group foil grid
+    # Pre-render query molecule (reused in both grids)
+    from rdkit.Chem.Scaffolds import MurckoScaffold
+    original_core = MurckoScaffold.GetScaffoldForMol(mol)
+    query_pil = _show_mol_as_pil(mol, legend=f"Query\npred={predicted_class}")
+
+    # ==== R-group foil grid — same core, contrastive substituents highlighted ====
     img_path_rgroups: Optional[Path] = None
-    foil_mols: list[Chem.Mol] = []
-    foil_legends: list[str] = []
+    rgroup_foil_pils = []
     for rec in rgroup_records:
         foil_mol = _try_build_foil(mol, rec["r_group_smiles"], rec["r_group_site"])
         if foil_mol is not None:
-            foil_mols.append(foil_mol)
-            foil_legends.append(
-                f"Rank {rec['rank']} | site {rec['r_group_site']}\n"
-                f"contrast={rec['contrast_score']:.3f}"
+            pil = _show_mol_as_pil(
+                foil_mol,
+                legend=f"Rank {rec['rank']} | site {rec['r_group_site']}\ncontrast={rec['contrast_score']:.3f}",
+                corestructure=original_core,
+                highlight_subs=True,
             )
+            if pil is not None:
+                rgroup_foil_pils.append(pil)
 
     try:
-        img_path_rgroups = base_path.parent / f"{base_path.name}_rgroups.png"
-        grid_img = Draw.MolsToGridImage(
-            [mol] + foil_mols,
-            molsPerRow=min(4, 1 + len(foil_mols)),
-            subImgSize=(300, 300),
-            legends=[f"Query\npred={predicted_class}"] + foil_legends,
-        )
-        grid_img.save(str(img_path_rgroups))
-        output_images.append(MCPImage(path=img_path_rgroups))
+        all_rgroup_pils = ([query_pil] if query_pil is not None else []) + rgroup_foil_pils
+        if all_rgroup_pils:
+            img_path_rgroups = base_path.parent / f"{base_path.name}_rgroups.png"
+            _make_mol_grid(all_rgroup_pils, cols=len(all_rgroup_pils)).save(str(img_path_rgroups))
+            output_images.append(MCPImage(path=img_path_rgroups))
     except Exception:
         img_path_rgroups = None
 
-    # ==== Scaffold attribution (optional) ====
+    # ==== Scaffold attribution — contrastive cores highlighted ====
     scaffold_records: list[dict] = []
     img_path_scaffolds: Optional[Path] = None
     num_scaffolds_evaluated = 0
 
-    if mc.supports_cores:
-        try:
-            core_df = mc.get_contrastive_cores(
-                mol, foil_class=foil_class, similarity_threshold=similarity_threshold
-            )
-            num_scaffolds_evaluated = len(core_df)
-            core_df = core_df.reset_index()
-            for rank, (_, row) in enumerate(core_df.head(top_n).iterrows(), start=1):
-                scaffold_records.append({
-                    "rank": rank,
-                    "core_smiles": str(row["index"] if "index" in row.index else row.iloc[0]),
-                    "contrast_score": float(row["contrast"]),
-                })
+    try:
+        core_df = mc.get_contrastive_cores(
+            mol, foil_class=foil_class, similarity_threshold=similarity_threshold
+        )
+        num_scaffolds_evaluated = len(core_df)
+        core_df = core_df.reset_index()
+        for rank, (_, row) in enumerate(core_df.head(3).iterrows(), start=1):
+            scaffold_records.append({
+                "rank": rank,
+                "core_smiles": str(row["index"] if "index" in row.index else row.iloc[0]),
+                "contrast_score": float(row["contrast"]),
+            })
 
-            # Draw core foil grid — reconstruct full foil molecules
-            core_foil_mols: list[Chem.Mol] = []
-            core_foil_legends: list[str] = []
-            for rec in scaffold_records:
-                foil_mol = _try_build_core_foil(mol, rec["core_smiles"])
-                if foil_mol is not None:
-                    core_foil_mols.append(foil_mol)
-                    core_foil_legends.append(
-                        f"Rank {rec['rank']}\ncontrast={rec['contrast_score']:.3f}"
-                    )
-
-            try:
-                img_path_scaffolds = base_path.parent / f"{base_path.name}_scaffolds.png"
-                grid_img_cores = Draw.MolsToGridImage(
-                    [mol] + core_foil_mols,
-                    molsPerRow=min(4, 1 + len(core_foil_mols)),
-                    subImgSize=(300, 300),
-                    legends=[f"Query\npred={predicted_class}"] + core_foil_legends,
+        # Draw core foil grid — foil molecule with contrastive core highlighted
+        core_foil_pils = []
+        for rec in scaffold_records:
+            foil_mol = _try_build_core_foil(mol, rec["core_smiles"])
+            contrastive_core_mol = Chem.MolFromSmiles(rec["core_smiles"])
+            if foil_mol is not None and contrastive_core_mol is not None:
+                pil = _show_mol_as_pil(
+                    foil_mol,
+                    legend=f"Rank {rec['rank']}\ncontrast={rec['contrast_score']:.3f}",
+                    corestructure=contrastive_core_mol,
+                    alt_dummy=True,
                 )
-                grid_img_cores.save(str(img_path_scaffolds))
-                output_images.append(MCPImage(path=img_path_scaffolds))
-            except Exception:
-                img_path_scaffolds = None
+                if pil is not None:
+                    core_foil_pils.append(pil)
 
+        try:
+            all_core_pils = ([query_pil] if query_pil is not None else []) + core_foil_pils
+            if all_core_pils:
+                img_path_scaffolds = base_path.parent / f"{base_path.name}_scaffolds.png"
+                _make_mol_grid(all_core_pils, cols=len(all_core_pils)).save(str(img_path_scaffolds))
+                output_images.append(MCPImage(path=img_path_scaffolds))
         except Exception:
-            pass  # scaffold analysis failure is non-fatal
+            img_path_scaffolds = None
+
+    except Exception:
+        pass  # scaffold analysis failure is non-fatal
 
     metadata: dict[str, Any] = {
         "smiles": smiles,
@@ -409,105 +485,6 @@ def explain_with_molce(
     return output_images + [json.dumps(metadata, indent=2)]
 
 
-def visualize_molce_foils(
-    query_smiles: str,
-    foil_smiles_list: List[str],
-    contrast_scores: Optional[List[float]] = None,
-    output_path: Optional[str] = None,
-    mol_size: tuple[int, int] = (300, 300),
-    mols_per_row: int = 4,
-) -> list:
-    """Draw the query compound and MolCE foil molecules as a molecule grid image.
-
-    Use this tool when you already have foil SMILES from a previous
-    ``explain_with_molce`` call and want a standalone visualization, or when
-    you want to customize the grid layout.
-
-    Parameters
-    ----------
-    query_smiles : str
-        SMILES of the original query compound.
-    foil_smiles_list : list[str]
-        SMILES of the foil compounds to display (structurally similar molecules
-        with different R-groups that shift the prediction toward the foil class).
-    contrast_scores : list[float], optional
-        Contrast scores to display as legends (one per foil SMILES).
-    output_path : str, optional
-        Path to save the image (.png).  Defaults to the session plots directory.
-    mol_size : tuple[int, int], optional
-        Pixel size of each molecule cell (default (300, 300)).
-    mols_per_row : int, optional
-        Molecules per row in the grid (default 4).
-
-    Returns
-    -------
-    list
-        [MCPImage, json_metadata_str]
-
-    Raises
-    ------
-    ValueError
-        If the query SMILES is invalid.
-
-    Examples
-    --------
-    >>> result = explain_with_molce(
-    ...     smiles="CCO",
-    ...     model_path="model.pkl",
-    ...     split_file_path="split.pkl",
-    ...     foil_class=0,
-    ... )
-    >>> import json
-    >>> meta = json.loads(result[-1])
-    >>> viz = visualize_molce_foils(
-    ...     query_smiles=meta["smiles"],
-    ...     foil_smiles_list=[r["r_group_smiles"] for r in meta["contrastive_rgroups"]],
-    ...     contrast_scores=[r["contrast_score"] for r in meta["contrastive_rgroups"]],
-    ... )
-    """
-    logger = _get_session_logger()
-
-    query_mol = Chem.MolFromSmiles(query_smiles)
-    if query_mol is None:
-        raise ValueError(f"Invalid query SMILES: {query_smiles!r}")
-
-    foil_mols = []
-    foil_legends = []
-    for i, smi in enumerate(foil_smiles_list):
-        m = Chem.MolFromSmiles(smi)
-        if m is not None:
-            foil_mols.append(m)
-            score_label = (
-                f"  c={contrast_scores[i]:.3f}" if contrast_scores and i < len(contrast_scores) else ""
-            )
-            foil_legends.append(f"Foil {i + 1}{score_label}")
-
-    all_mols = [query_mol] + foil_mols
-    all_legends = ["Query (original)"] + foil_legends
-
-    img = Draw.MolsToGridImage(
-        all_mols,
-        molsPerRow=mols_per_row,
-        subImgSize=mol_size,
-        legends=all_legends,
-    )
-
-    if output_path is None:
-        img_path = logger.session_dir / "plots" / f"molce_foils_{logger.session_id}.png"
-    else:
-        img_path = Path(output_path)
-
-    img_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(str(img_path))
-
-    mcp_image = MCPImage(path=img_path)
-    metadata = {
-        "image_path": str(img_path),
-        "num_foils": len(foil_mols),
-        "status": "completed",
-    }
-    return [mcp_image, json.dumps(metadata, indent=2)]
-
 
 def identify_recurrent_molce_rules(
     split_file_path: str,
@@ -517,22 +494,23 @@ def identify_recurrent_molce_rules(
     split: str = "test",
     n_bits: int = 2048,
     radius: int = 2,
-    top_n: int = 10,
     min_occurrences: int = 2,
+    min_core_occurrences: int = 3,
     max_compounds: Optional[int] = None,
     core_dict_path: Optional[str] = None,
     similarity_threshold: Optional[float] = None,
     output_path: Optional[str] = None,
 ) -> list:
-    """Global MolCE analysis: aggregate contrastive R-group (and optionally scaffold) rules.
+    """Global MolCE analysis: aggregate the top-3 contrastive R-group and scaffold rules.
 
-    Runs ``get_contrastive_rgroups`` on every correctly predicted compound of
-    *fact_class* and aggregates scores by R-group SMILES:
+    Runs ``get_contrastive_rgroups`` and ``get_contrastive_cores`` on every
+    correctly predicted compound of *fact_class* and aggregates scores by
+    R-group / scaffold SMILES:
 
-        mean_contrast = groupby(r_group_smiles).contrast.mean()
+        mean_contrast = groupby(smiles).contrast.mean()
 
-    When ``core_dict_path`` is provided, also runs ``get_contrastive_cores`` per
-    compound and aggregates scaffold-level contrastive scores the same way.
+    Returns the **top 3** most recurrent contrastive substituents and scaffolds
+    with their mean contrast scores and molecule-grid visualizations inline.
 
     Motifs with a high mean contrast are the structural features that most
     consistently distinguish *fact_class* from *foil_class* across the
@@ -555,39 +533,39 @@ def identify_recurrent_molce_rules(
         ECFP fingerprint length (default 2048).
     radius : int, optional
         ECFP Morgan radius (default 2).
-    top_n : int, optional
-        Number of top rules to return and visualize for each attribution type
-        (default 10).
     min_occurrences : int, optional
-        Minimum number of compounds in which a motif must appear to be included
-        (default 2).  Filters out idiosyncratic motifs seen in only one compound.
+        Minimum number of compounds in which an R-group must appear to be
+        included (default 2).  Filters out idiosyncratic substituents.
+    min_core_occurrences : int, optional
+        Minimum number of compounds in which a scaffold core must appear to be
+        included (default 3).  Higher threshold keeps only well-supported cores.
     max_compounds : int, optional
         Cap the number of compounds analyzed (default None = all).
     core_dict_path : str, optional
-        Path to ``core_dict_generic.pkl``.  When provided, scaffold contrastive
-        analysis is also performed and a second bar chart is added to the output.
+        Path to a custom ``core_dict_generic.pkl``.  When omitted the bundled
+        library is used.
     similarity_threshold : float, optional
-        Size-similarity filter (0–1) for external scaffolds (only used when
-        ``core_dict_path`` is provided).
+        Size-similarity filter (0–1) for external scaffolds.
     output_path : str, optional
-        Path to save the bar chart image (.png).
-        Defaults to ``session_dir/plots/molce_global_<session_id>.png``.
-        When scaffold analysis is active a second image is saved at
-        ``<base>_scaffolds.png``.
+        Base path for output images (.png).  Two images are saved:
+        ``<base>_rgroups.png`` and ``<base>_scaffolds.png``.
+        Defaults to ``session_dir/plots/molce_global_<session_id>``.
 
     Returns
     -------
     list
-        One or two MCPImage objects followed by a JSON metadata string.
+        Two MCPImage objects (R-group grid, scaffold grid) followed by a JSON
+        metadata string.
 
         JSON fields:
         - fact_class, foil_class, split
         - compounds_analyzed, compounds_failed
         - total_rgroup_evaluations, total_scaffold_evaluations
-        - rgroup_rules: list of dicts (r_group_smiles, mean_contrast,
+        - rgroup_rules: top-3 dicts (r_group_smiles, mean_contrast,
           std_contrast, occurrences, r_group_site_most_common)
-        - scaffold_rules: list of dicts (core_smiles, mean_contrast,
-          std_contrast, occurrences) — empty list if scaffold analysis skipped
+        - scaffold_rules: top-3 dicts (core_smiles, mean_contrast,
+          std_contrast, occurrences)
+        - image_path_rgroups, image_path_scaffolds
         - status: "completed"
 
     Raises
@@ -603,8 +581,6 @@ def identify_recurrent_molce_rules(
     ...     model_path="data/logs/session_xxx/models/data_RFC.pkl",
     ...     fact_class=1,
     ...     foil_class=0,
-    ...     top_n=10,
-    ...     core_dict_path="data/core_dict_generic.pkl",
     ... )
     """
     logger = _get_session_logger()
@@ -708,16 +684,15 @@ def identify_recurrent_molce_rules(
         except Exception:
             pass
 
-        if mc.supports_cores:
-            try:
-                df_c = mc.get_contrastive_cores(
-                    mol, foil_class=foil_class, similarity_threshold=similarity_threshold
-                )
-                df_c = df_c.reset_index().rename(columns={"index": "core_smiles"})
-                df_c["compound_smiles"] = smi
-                all_scaffold_rows.append(df_c)
-            except Exception:
-                pass
+        try:
+            df_c = mc.get_contrastive_cores(
+                mol, foil_class=foil_class, similarity_threshold=similarity_threshold
+            )
+            df_c = df_c.reset_index().rename(columns={"index": "core_smiles"})
+            df_c["compound_smiles"] = smi
+            all_scaffold_rows.append(df_c)
+        except Exception:
+            pass
 
         if success:
             compounds_analyzed += 1
@@ -750,9 +725,9 @@ def identify_recurrent_molce_rules(
         .sort_values("mean_contrast", ascending=False)
         .reset_index(drop=True)
     )
-    top_rgroups = grouped_r.head(top_n)
+    top_rgroups = grouped_r.head(3)
 
-    # ---- Aggregate scaffolds (if available) ----
+    # ---- Aggregate scaffolds ----
     top_scaffolds = pd.DataFrame()
     total_scaffold_evals = 0
 
@@ -770,63 +745,69 @@ def identify_recurrent_molce_rules(
             .reset_index()
         )
         grouped_c = (
-            grouped_c[grouped_c["occurrences"] >= min_occurrences]
+            grouped_c[grouped_c["occurrences"] >= min_core_occurrences]
             .sort_values("mean_contrast", ascending=False)
             .reset_index(drop=True)
         )
-        top_scaffolds = grouped_c.head(top_n)
+        top_scaffolds = grouped_c.head(3)
 
-    # ---- Visualization ----
+    # ---- Base output path ----
     if output_path is None:
-        img_path = logger.session_dir / "plots" / f"molce_global_{logger.session_id}.png"
+        base_path = logger.session_dir / "plots" / f"molce_global_{logger.session_id}"
     else:
-        img_path = Path(output_path)
-    img_path.parent.mkdir(parents=True, exist_ok=True)
+        base_path = Path(output_path)
+    base_path.parent.mkdir(parents=True, exist_ok=True)
 
     output_images: list = []
-    n_panels = 2 if not top_scaffolds.empty else 1
-    title_suffix = f"({compounds_analyzed} compounds, {split} split)"
+    img_path_rgroups: Optional[Path] = None
+    img_path_scaffolds: Optional[Path] = None
+
+    # ---- R-group molecule grid ----
+    def _mol_from_fragment(smi: str) -> Optional[Chem.Mol]:
+        """Parse a fragment SMILES, replacing attachment points with H for rendering."""
+        import re
+        cleaned = re.sub(r"\[\*:\d+\]|\*", "[H]", smi)
+        return Chem.MolFromSmiles(cleaned)
+
+    rgroup_pils = []
+    for rank, (_, row) in enumerate(top_rgroups.iterrows(), start=1):
+        m = _mol_from_fragment(str(row["r_group_smiles"]))
+        if m is not None:
+            pil = _show_mol_as_pil(
+                m,
+                legend=f"Rank {rank} substituent\nmean contrast: {float(row['mean_contrast']):.3f}  (n={int(row['occurrences'])})",
+            )
+            if pil is not None:
+                rgroup_pils.append(pil)
 
     try:
-        fig, axes = plt.subplots(
-            1, n_panels,
-            figsize=(8 * n_panels, max(4, max(len(top_rgroups), len(top_scaffolds) if not top_scaffolds.empty else 0) * 0.55)),
-            squeeze=False,
-        )
-
-        def _draw_bar(ax, data, label_col, title):
-            colors = ["#d94f3d" if v >= 0 else "#4878d0" for v in data["mean_contrast"]]
-            y_pos = range(len(data))
-            tick_labels = [
-                f"{str(row[label_col])[:28]}{'…' if len(str(row[label_col])) > 28 else ''}  (n={int(row['occurrences'])})"
-                for _, row in data.iterrows()
-            ]
-            ax.barh(
-                list(y_pos),
-                data["mean_contrast"].tolist(),
-                xerr=data["std_contrast"].fillna(0).tolist(),
-                color=colors,
-                edgecolor="white",
-                capsize=3,
-                height=0.6,
-            )
-            ax.set_yticks(list(y_pos))
-            ax.set_yticklabels(tick_labels, fontsize=8)
-            ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
-            ax.set_xlabel("Mean Contrastive Score", fontsize=10)
-            ax.set_title(f"{title}\nclass {fact_class} vs. {foil_class} — {title_suffix}", fontsize=10)
-            ax.invert_yaxis()
-
-        _draw_bar(axes[0][0], top_rgroups, "r_group_smiles", "R-group rules")
-        if not top_scaffolds.empty:
-            _draw_bar(axes[0][1], top_scaffolds, "core_smiles", "Scaffold rules")
-
-        plt.tight_layout()
-        fig.savefig(str(img_path), dpi=150)
-        plt.close(fig)
-        output_images.append(MCPImage(path=img_path))
+        if rgroup_pils:
+            img_path_rgroups = base_path.parent / f"{base_path.name}_rgroups.png"
+            _make_mol_grid(rgroup_pils, cols=len(rgroup_pils)).save(str(img_path_rgroups))
+            output_images.append(MCPImage(path=img_path_rgroups))
     except Exception:
-        plt.close("all")
+        img_path_rgroups = None
+
+    # ---- Scaffold molecule grid ----
+    if not top_scaffolds.empty:
+        scaffold_pils = []
+        for rank, (_, row) in enumerate(top_scaffolds.iterrows(), start=1):
+            m = _mol_from_fragment(str(row["core_smiles"]))
+            if m is not None:
+                pil = _show_mol_as_pil(
+                    m,
+                    legend=f"Rank {rank} core\nmean contrast: {float(row['mean_contrast']):.3f}  (n={int(row['occurrences'])})",
+                )
+                if pil is not None:
+                    scaffold_pils.append(pil)
+
+        try:
+            if scaffold_pils:
+                img_path_scaffolds = base_path.parent / f"{base_path.name}_scaffolds.png"
+                _make_mol_grid(scaffold_pils, cols=len(scaffold_pils)).save(str(img_path_scaffolds))
+                output_images.append(MCPImage(path=img_path_scaffolds))
+        except Exception:
+            img_path_scaffolds = None
 
     # ---- Serialize results ----
     def _serialize(df: pd.DataFrame) -> list[dict]:
@@ -853,7 +834,8 @@ def identify_recurrent_molce_rules(
         "total_scaffold_evaluations": total_scaffold_evals,
         "rgroup_rules": rgroup_rules_out,
         "scaffold_rules": scaffold_rules_out,
-        "image_path": str(img_path) if output_images else None,
+        "image_path_rgroups": str(img_path_rgroups) if img_path_rgroups else None,
+        "image_path_scaffolds": str(img_path_scaffolds) if img_path_scaffolds else None,
         "status": "completed",
     }
 
@@ -879,7 +861,7 @@ def _try_build_core_foil(query_mol: Chem.Mol, new_core_smiles: str) -> Optional[
         # Decompose query into core + R-groups
         core = MurckoScaffold.GetScaffoldForMol(query_mol)
         rgd, _ = rdRGroupDecomposition.RGroupDecompose([core], [query_mol], asRows=False)
-        if len(rgd) != 1:
+        if len(rgd) < 2:
             return None
 
         rgd.pop("Core")
@@ -941,7 +923,7 @@ def _try_build_foil(
 
         core = MurckoScaffold.GetScaffoldForMol(query_mol)
         rgd, _ = rdRGroupDecomposition.RGroupDecompose([core], [query_mol], asRows=False)
-        if len(rgd) != 1:
+        if len(rgd) < 2:
             return None
 
         core_mol = rgd.pop("Core")[0]

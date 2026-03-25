@@ -50,9 +50,8 @@ XAI
   select_compound_for_xai        randomly select a correctly predicted compound of specified class for analysis
   generate_counterfactuals       generate counterfactual molecules that change the model prediction
   visualize_counterfactuals      draw query compound + counterfactuals as a molecule grid image
-  explain_with_molce             contrastive R-group attribution — why class A and not class B?
-  visualize_molce_foils          draw query compound + MolCE foil molecules as a grid image
-  identify_recurrent_molce_rules global MolCE: aggregate R-group rules across a compound class
+  explain_with_molce             contrastive R-group + scaffold attribution — why class A and not class B?
+  identify_recurrent_molce_rules global MolCE: aggregate top-3 R-group + scaffold rules across a compound class
 
 Utilities
   log_thought            record reasoning in the session log
@@ -110,7 +109,6 @@ from chemagent.explainability.counterfactual_tools import (
 )
 from chemagent.explainability.molce_tools import (
     explain_with_molce,
-    visualize_molce_foils,
     identify_recurrent_molce_rules,
 )
 from chemagent.servers.session_tools import (
@@ -189,7 +187,6 @@ _register(select_compound_for_xai)
 _register(generate_counterfactuals)
 _register(visualize_counterfactuals)
 _register(explain_with_molce)
-_register(visualize_molce_foils)
 _register(identify_recurrent_molce_rules)
 
 
