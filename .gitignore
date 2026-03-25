@@ -10,6 +10,7 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+src\chemagent\__pycache__
 
 # Package build artifacts
 src/*.egg-info/
@@ -38,3 +39,4 @@ models/*
 src/chemagent/servers/results/chembl_activity_data_O00329_P42336_test_predictions.csv
 src/chemagent/servers/results/molanchor_test_1.png
 src/chemagent/servers/results/chembl_activity_data_O00329_P42336_test_predictions_metrics.pkl
+
