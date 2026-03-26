@@ -6,6 +6,7 @@ Thin wrapper that selects the right SHAP explainer for a trained sklearn model.
 Supported models
 ----------------
 * RandomForestClassifier / RandomForestRegressor  →  ``shap.TreeExplainer``
+* DNNClassifier / DNNRegressor                    →  ``shap.GradientExplainer`` (Deep fallback)
 * SVC                                             →  ``shap.KernelExplainer``
 
 Usage
@@ -79,6 +80,7 @@ class SHAPExplainer:
     ) -> None:
         self.model = model
         self._is_tree = type(model).__name__ in _TREE_MODEL_NAMES
+        self._is_dnn = self._is_dnn_model(model)
         self._explainer = self._build_explainer(model, background)
 
     def explain(self, X: np.ndarray) -> np.ndarray:
@@ -95,11 +97,14 @@ class SHAPExplainer:
             For binary classifiers the values correspond to the positive
             class (index 1).  For regressors a single 2-D array is returned.
         """
-        sv = self._explainer.shap_values(X)
+        X_in = self.model.as_torch_tensor(X) if self._is_dnn else X
+        sv = self._normalise_shap_values(self._explainer.shap_values(X_in))
         # binary classifiers return a list [class0_sv, class1_sv].
         if isinstance(sv, list) and len(sv) == 2:
             return np.asarray(sv[1])
         sv = np.asarray(sv)
+        if sv.ndim == 3 and sv.shape[-1] == 1:
+            return sv[..., 0]
         #binary classifiers return 3-D (n_samples, n_features, n_classes).
         if sv.ndim == 3 and sv.shape[-1] == 2:
             return sv[..., 1]
@@ -133,7 +138,8 @@ class SHAPExplainer:
         -------
         np.ndarray, shape ``(n_samples, n_features)``
         """
-        sv = self._explainer.shap_values(X)
+        X_in = self.model.as_torch_tensor(X) if self._is_dnn else X
+        sv = self._normalise_shap_values(self._explainer.shap_values(X_in))
 
         # Normalise to ndarray
         if isinstance(sv, list):
@@ -141,9 +147,12 @@ class SHAPExplainer:
         else:
             sv = np.asarray(sv)
 
-        # 2-D: regression or single-output — nothing to select
+        # 2-D: regression or single-output
         if sv.ndim == 2:
             return sv
+
+        if sv.ndim == 3 and sv.shape[-1] == 1:
+            return sv[..., 0]
 
         # 3-D (n_samples, n_features, n_classes): select predicted class per sample
         classes = list(getattr(self.model, 'classes_', range(sv.shape[-1])))
@@ -160,6 +169,8 @@ class SHAPExplainer:
 
         if callable(ev):
             raise TypeError("Unsupported callable SHAP expected_value")
+
+        ev = self._to_numpy(ev)
 
         if isinstance(ev, (list, np.ndarray)):
             ev = np.atleast_1d(ev)
@@ -188,10 +199,54 @@ class SHAPExplainer:
         return cls(model, background=background)
 
     @staticmethod
+    def _to_numpy(value: Any) -> Any:
+        if hasattr(value, "detach") and hasattr(value, "cpu") and hasattr(value, "numpy"):
+            return value.detach().cpu().numpy()
+        return value
+
+    @classmethod
+    def _normalise_shap_values(cls, sv: Any) -> Any:
+        if isinstance(sv, list):
+            return [cls._to_numpy(x) for x in sv]
+        if isinstance(sv, tuple):
+            return tuple(cls._to_numpy(x) for x in sv)
+        return cls._to_numpy(sv)
+
+    @staticmethod
+    def _is_dnn_model(model: Any) -> bool:
+        return all(
+            hasattr(model, attr)
+            for attr in ("get_torch_model", "as_torch_tensor", "predict")
+        )
+
+    @staticmethod
+    def _sample_background(background: np.ndarray, max_background: int = 128) -> np.ndarray:
+        bg = np.asarray(background)
+        if bg.ndim != 2:
+            raise ValueError(f"Expected 2D background features, got shape {bg.shape}")
+        n_samples = int(bg.shape[0])
+        if n_samples <= max_background:
+            return bg
+        idx = np.linspace(0, n_samples - 1, num=max_background, dtype=int)
+        return bg[idx]
+
+    @staticmethod
     def _build_explainer(model, background,):
         model_name = type(model).__name__
         if model_name in _TREE_MODEL_NAMES:
             return shap.TreeExplainer(model)
+
+        if SHAPExplainer._is_dnn_model(model):
+            if background is None:
+                raise ValueError(
+                    f"background data is required for DNN SHAP explainer (model={model_name!r}). "
+                    "Pass the training feature matrix as the 'background' argument."
+                )
+            sampled_bg = SHAPExplainer._sample_background(background, max_background=128)
+            bg_tensor = model.as_torch_tensor(sampled_bg)
+            torch_model = model.get_torch_model()
+
+            return shap.DeepExplainer(torch_model, bg_tensor)
 
         # Fallback: model-agnostic KernelExplainer (e.g. SVC)
         if background is None:
@@ -199,7 +254,10 @@ class SHAPExplainer:
                 f"background data is required for KernelExplainer (model={model_name!r}). "
                 "Pass the training feature matrix as the 'background' argument."
             )
-        return shap.KernelExplainer(model.predict_proba, background)
+        sampled_bg = SHAPExplainer._sample_background(background, max_background=128)
+        if hasattr(model, "predict_proba"):
+            return shap.KernelExplainer(model.predict_proba, sampled_bg)
+        return shap.KernelExplainer(model.predict, sampled_bg)
 
 
 def explain_with_shap(

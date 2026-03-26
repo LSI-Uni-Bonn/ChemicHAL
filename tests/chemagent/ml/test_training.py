@@ -179,3 +179,30 @@ def test_same_seed_produces_same_predictions(clf_data):
         ml1.model.predict(clf_data.features),
         ml2.model.predict(clf_data.features),
     )
+
+
+def test_dnn_classification_no_grid_smoke(clf_data):
+    """DNN classifier should train and predict without grid search."""
+    ml = MLModel(
+        clf_data,
+        ml_algorithm="DNN",
+        reg_class="classification",
+        parameters="none",
+        random_seed=7,
+    )
+    preds = ml.model.predict(clf_data.features)
+    assert preds.shape == (len(clf_data.labels),)
+
+
+def test_dnn_regression_no_grid_smoke(reg_data):
+    """DNN regressor should train and predict without grid search."""
+    ml = MLModel(
+        reg_data,
+        ml_algorithm="DNN",
+        reg_class="regression",
+        parameters="none",
+        random_seed=7,
+    )
+    preds = ml.model.predict(reg_data.features)
+    assert preds.shape == (len(reg_data.labels),)
+    assert np.issubdtype(preds.dtype, np.floating)

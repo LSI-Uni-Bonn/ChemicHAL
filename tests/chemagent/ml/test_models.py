@@ -14,6 +14,7 @@ import pytest
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 
+from chemagent.ml.dnn_model import DNNClassifier, DNNRegressor
 from chemagent.ml.models import MODEL_INFO, PARAM_GRIDS, build_estimator
 
 
@@ -21,8 +22,8 @@ from chemagent.ml.models import MODEL_INFO, PARAM_GRIDS, build_estimator
 # Fixtures
 # ---------------------------------------------------------------------------
 
-CLASSIFICATION_ALGOS = ["RFC", "SVC"]
-REGRESSION_ALGOS = ["RFR"]
+CLASSIFICATION_ALGOS = ["RFC", "SVC", "DNN"]
+REGRESSION_ALGOS = ["RFR", "DNN"]
 ALL_ALGOS = list(MODEL_INFO.keys())
 
 
@@ -51,6 +52,16 @@ def test_svc_classification_returns_svc():
     assert isinstance(est, SVC)
 
 
+def test_dnn_classification_returns_dnn_classifier():
+    est = build_estimator("DNN", "classification", random_seed=0)
+    assert isinstance(est, DNNClassifier)
+
+
+def test_dnn_regression_returns_dnn_regressor():
+    est = build_estimator("DNN", "regression", random_seed=0)
+    assert isinstance(est, DNNRegressor)
+
+
 # ---------------------------------------------------------------------------
 # build_estimator — random_seed is forwarded
 # ---------------------------------------------------------------------------
@@ -59,6 +70,7 @@ def test_svc_classification_returns_svc():
 @pytest.mark.parametrize("algo,task", [
     ("RFC", "classification"),
     ("RFR", "regression"),
+    ("DNN", "classification"),
 ])
 def test_random_seed_is_stored(algo, task):
     """The estimator's random_state must equal the seed passed in."""
@@ -90,6 +102,11 @@ def test_svc_classification_no_class_weight():
 
 def test_svc_classification_cw_balanced():
     est = build_estimator("SVC", "classification-cw", random_seed=0)
+    assert est.class_weight == "balanced"
+
+
+def test_dnn_classification_cw_balanced():
+    est = build_estimator("DNN", "classification-cw", random_seed=0)
     assert est.class_weight == "balanced"
 
 

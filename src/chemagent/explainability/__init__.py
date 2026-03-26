@@ -17,7 +17,15 @@ from .mol_shap_draw import (
     shap_to_atom_weight,
     get_atom_wise_weight_map,
 )
-from .MolAnchor import MolecularAnchor
+
+
+def __getattr__(name: str):
+    # Lazily import optional heavy modules to keep lightweight SHAP-only imports clean.
+    if name == "MolecularAnchor":
+        from .MolAnchor import MolecularAnchor
+
+        return MolecularAnchor
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "SHAPExplainer",

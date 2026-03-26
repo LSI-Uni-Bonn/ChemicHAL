@@ -51,6 +51,8 @@ from typing import Any
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 
+from .dnn_model import DNNClassifier, DNNRegressor
+
 
 # 1. Hyperparameter grids
 PARAM_GRIDS: dict[str, dict[str, list]] = {
@@ -114,6 +116,14 @@ def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
             probability=True,
         )
 
+    if algorithm == "DNN":
+        if reg_class == "regression":
+            return DNNRegressor(random_seed=random_seed)
+        return DNNClassifier(
+            random_seed=random_seed,
+            class_weight="balanced" if class_weighted else None,
+        )
+
     #add new algorithms below
 
     raise ValueError(
@@ -140,6 +150,11 @@ MODEL_INFO: dict[str, dict] = {
         "description": "Support Vector Classifier — SVM with RBF/linear kernels; probability estimates enabled; supports class weighting (task='classification-cw').",
         "task":        "classification",
         "extra_deps":  [],
+    },
+    "DNN": {
+        "description": "Feed-forward PyTorch neural network wrapped as a scikit-learn estimator; supports classification, class-weighted classification, and regression.",
+        "task":        "both",
+        "extra_deps":  ["torch"],
     },
     #add new metadata below
 }

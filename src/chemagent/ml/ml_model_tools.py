@@ -83,6 +83,13 @@ def get_ml_info() -> dict[str, Any]:
             "supports_multiclass": True,
             "description": "SVM classifier with RBF/linear kernels, probability estimates enabled",
         },
+        "DNN": {
+            "name": "Feed-forward Neural Network",
+            "task_type": "both",
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("DNN", {})),
+            "supports_multiclass": True,
+            "description": "PyTorch MLP wrapped as a scikit-learn estimator; no grid-search hyperparameters configured by default",
+        },
     }
     recommended_metrics = {
         "binary_classification": {
@@ -255,7 +262,7 @@ def build_model_from_arrays(
     train_labels: list[float],
     test_features: list[list[float]],
     test_labels: list[float],
-    algorithm: Literal["RFC", "RFR", "SVC"] = "RFC",
+    algorithm: Literal["RFC", "RFR", "SVC", "DNN"] = "RFC",
     task: Literal["classification", "classification-cw", "regression"] = "classification",
     cv_fold: int = 5,
     opt_metric: Optional[str] = "balanced_accuracy",
@@ -291,7 +298,7 @@ def build_model_from_arrays(
 
 def run_pipeline(
     file_path: str,
-    algorithm: Literal["RFC", "RFR", "SVC"] = "RFC",
+    algorithm: Literal["RFC", "RFR", "SVC", "DNN"] = "RFC",
     task: Literal["classification", "classification-cw", "regression"] = "classification",
     method: str = "ECFP",
     featurizer_kwargs: Optional[dict] = None,
@@ -312,7 +319,7 @@ def run_pipeline(
 
     Args:
         file_path: CSV dataset path (workspace-relative or absolute).
-        algorithm: "RFC" (default), "RFR", or "SVC". See get_ml_info().
+        algorithm: "RFC" (default), "RFR", "SVC", or "DNN". See get_ml_info().
         task: "classification" (default), "classification-cw", or "regression".
         method: Featurization method (default "ECFP"). See list_featurizers().
         featurizer_kwargs: Method-specific parameters forwarded to the featurizer,
@@ -352,7 +359,8 @@ def run_pipeline(
     ).start()
 
     # 2. Featurize
-    features = featurize_df(df, method=method, **(featurizer_kwargs or {}))
+    features_result = featurize_df(df, method=method, **(featurizer_kwargs or {}))
+    features = features_result[0] if isinstance(features_result, tuple) else features_result
     _processed_datasets[ds_id] = build_processed_entry(
         df=df, features=features, label_col=label_col
     )
