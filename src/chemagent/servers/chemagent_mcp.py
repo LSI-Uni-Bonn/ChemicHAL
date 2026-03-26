@@ -1,4 +1,4 @@
-"""chemagent_mcp.py — single consolidated FastMCP server (20 tools).
+"""chemagent_mcp.py — single consolidated FastMCP server (23 tools).
 
 STANDARD WORKFLOW (data stays on disk — preferred):
     find_datasets()                                          # discover CSVs
@@ -94,6 +94,11 @@ from chemagent.ml.training_tools import (
     train_model,
     check_training,
 )
+from chemagent.ml.gnn_training_tools import (
+    prepare_gnn_dataset,
+    train_gnn_model_mcp,
+    check_gnn_training,
+)
 from chemagent.plots.display import show_plot
 from chemagent.plots.plot_tools import plot_classification_results, plot_regression_results
 from chemagent.explainability.shap_explainer import explain_with_shap, explain_smiles_with_shap, plot_shap_mol
@@ -151,6 +156,15 @@ _register(export_predictions)
 
 _register(train_model)
 _register(check_training)
+
+
+# ===========================================================================
+# GNN Training tools
+# ===========================================================================
+
+_register(prepare_gnn_dataset)
+_register(train_gnn_model_mcp)
+_register(check_gnn_training)
 
 
 # ===========================================================================
