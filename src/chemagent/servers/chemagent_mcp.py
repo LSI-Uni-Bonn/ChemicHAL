@@ -179,7 +179,7 @@ _register(plot_regression_results)
 # Shortcut tool
 # ===========================================================================
 
-_register(run_pipeline)
+#_register(run_pipeline)
 
 # ===========================================================================
 # Inline image display
