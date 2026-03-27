@@ -9,6 +9,7 @@ from __future__ import annotations
 import pickle
 from typing import Optional
 
+import joblib
 import networkx as nx
 import torch
 from rdkit import Chem
@@ -129,7 +130,9 @@ class SmilesGraphDataset(InMemoryDataset):
         self.labels = labels
         self.name = name
         super().__init__(root)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        # PyTorch 2.6 defaults to weights_only=True, which blocks loading
+        # arbitrary dataset objects saved by InMemoryDataset processing.
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
     @property
     def processed_file_names(self) -> list[str]:
@@ -174,8 +177,26 @@ def load_and_prepare_gnn_dataset(
     -------
     Tuple of (train_dataset, val_dataset, test_dataset).
     """
-    with open(split_file_path, "rb") as f:
-        split = pickle.load(f)
+    # Split files are commonly serialized with joblib in this project.
+    # Keep pickle support for backwards compatibility.
+    split = None
+    load_errors: list[str] = []
+
+    try:
+        with open(split_file_path, "rb") as f:
+            split = pickle.load(f)
+    except Exception as exc:  # noqa: BLE001
+        load_errors.append(f"pickle: {type(exc).__name__}: {exc}")
+
+    if split is None:
+        try:
+            split = joblib.load(split_file_path)
+        except Exception as exc:  # noqa: BLE001
+            load_errors.append(f"joblib: {type(exc).__name__}: {exc}")
+
+    if split is None:
+        errors = "; ".join(load_errors)
+        raise ValueError(f"Could not load split file '{split_file_path}'. {errors}")
 
     train_labels = split.get("train_labels")
     test_labels = split.get("test_labels")
@@ -187,6 +208,12 @@ def load_and_prepare_gnn_dataset(
 
     train_labels = list(train_labels)
     test_labels = list(test_labels)
+
+    # Normalize labels to contiguous class IDs (e.g. {1,2} -> {0,1}).
+    unique_labels = sorted(set(train_labels) | set(test_labels))
+    label_to_id = {label: idx for idx, label in enumerate(unique_labels)}
+    train_labels = [label_to_id[label] for label in train_labels]
+    test_labels = [label_to_id[label] for label in test_labels]
 
     # Preferred schema: split file already includes split SMILES arrays.
     if "train_smiles" in split and "test_smiles" in split:
@@ -292,10 +319,11 @@ def train_gnn_model(
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
     # Initialize model
+    num_classes = len(set(train_dataset.labels) | set(val_dataset.labels) | set(test_dataset.labels))
     model = model_class(
         node_features_dim=4,  # atomic_num, formal_charge, num_hs, is_aromatic
         hidden_channels=hidden_channels,
-        num_classes=2,
+        num_classes=num_classes,
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -311,7 +339,7 @@ def train_gnn_model(
             batch = batch.to(device)
             optimizer.zero_grad()
             out = model(batch.x, batch.edge_index, batch.batch)
-            loss = criterion(out, batch.y.squeeze())
+            loss = criterion(out, batch.y.view(-1))
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -323,7 +351,7 @@ def train_gnn_model(
             for batch in val_loader:
                 batch = batch.to(device)
                 out = model(batch.x, batch.edge_index, batch.batch)
-                val_acc += (out.argmax(dim=1) == batch.y.squeeze()).sum().item()
+                val_acc += (out.argmax(dim=1) == batch.y.view(-1)).sum().item()
 
         val_acc /= len(val_dataset) if len(val_dataset) > 0 else 1.0
         if val_acc > best_val_acc:
@@ -338,7 +366,7 @@ def train_gnn_model(
         for batch in test_loader:
             batch = batch.to(device)
             out = model(batch.x, batch.edge_index, batch.batch)
-            test_acc += (out.argmax(dim=1) == batch.y.squeeze()).sum().item()
+            test_acc += (out.argmax(dim=1) == batch.y.view(-1)).sum().item()
 
     test_acc /= len(test_dataset) if len(test_dataset) > 0 else 1.0
 

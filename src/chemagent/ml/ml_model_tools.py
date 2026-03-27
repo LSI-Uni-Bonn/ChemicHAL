@@ -49,6 +49,21 @@ from chemagent.servers.server_helpers import (
 )
 from chemagent.session_utils import get_session_logger as _get_session_logger
 
+# Optional imports for GNN model inference
+try:
+    import torch
+    import torch.nn.functional as F
+    from torch_geometric.loader import DataLoader as PyGDataLoader
+    from chemagent.ml import gnn_models as _gnn_models
+    from chemagent.ml.gnn_training import smiles_to_nx_graph, nx_graph_to_pyg_data
+except Exception:
+    torch = None
+    F = None
+    PyGDataLoader = None
+    _gnn_models = None
+    smiles_to_nx_graph = None
+    nx_graph_to_pyg_data = None
+
 
 # Reference tool
 def get_ml_info() -> dict[str, Any]:
@@ -89,6 +104,49 @@ def get_ml_info() -> dict[str, Any]:
             "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("DNN", {})),
             "supports_multiclass": True,
             "description": "PyTorch MLP wrapped as a scikit-learn estimator; no grid-search hyperparameters configured by default",
+        },
+        # Graph Neural Networks (PyTorch Geometric)
+        "GCN": {
+            "name": "Graph Convolutional Network",
+            "task_type": "classification",
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("GCN", {})),
+            "supports_multiclass": True,
+            "description": "Graph Convolutional Network (PyG) for graph-structured molecular data",
+        },
+        "GraphSAGE": {
+            "name": "GraphSAGE",
+            "task_type": "classification",
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("GraphSAGE", {})),
+            "supports_multiclass": True,
+            "description": "GraphSAGE inductive representation learner for graphs",
+        },
+        "GAT": {
+            "name": "Graph Attention Network",
+            "task_type": "classification",
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("GAT", {})),
+            "supports_multiclass": True,
+            "description": "Graph Attention Network using attention-based message passing",
+        },
+        "GIN": {
+            "name": "Graph Isomorphism Network",
+            "task_type": "classification",
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("GIN", {})),
+            "supports_multiclass": True,
+            "description": "GIN: powerful message-passing GNN for graph classification",
+        },
+        "GINE": {
+            "name": "GINE",
+            "task_type": "classification",
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("GINE", {})),
+            "supports_multiclass": True,
+            "description": "GINE: GIN variant with edge features for molecular graphs",
+        },
+        "GC_GNN": {
+            "name": "GC-GNN",
+            "task_type": "classification",
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("GC_GNN", {})),
+            "supports_multiclass": True,
+            "description": "Custom GC_GNN architecture used in the project",
         },
     }
     recommended_metrics = {
@@ -144,6 +202,16 @@ def export_predictions(
     import pandas as pd
 
     session_logger = _get_session_logger()
+
+    # Handle PyTorch GNN models saved as .pt/.pth
+    if str(model_path).lower().endswith((".pt", ".pth")):
+        return _export_predictions_gnn(
+            model_path=model_path,
+            split_file_path=split_file_path,
+            split=split,
+            save_path=save_path,
+            device=None,
+        )
 
     data   = joblib.load(split_file_path)
     labels = data[f"{split}_labels"].tolist()
@@ -255,6 +323,152 @@ def predict_from_split_file(
     result["results_path"] = results_save_path
     result["metrics_path"] = metrics_save_path
     return result
+
+
+def _export_predictions_gnn(
+    model_path: str,
+    split_file_path: str,
+    split: Literal["train", "val", "test"] = "test",
+    save_path: Optional[str] = None,
+    device: Optional[str] = None,
+    batch_size: int = 64,
+    model_class: Optional[str] = None,
+    hidden_channels: int = 64,
+) -> dict[str, Any]:
+    """Export predictions for PyTorch Geometric GNN models saved as .pt/.pth.
+
+    Expects the split file to contain the per-split smiles arrays (e.g. "test_smiles").
+    If the saved model is a state_dict, the `model_class` (e.g. "GCN") will be
+    inferred from the filename when possible or must be provided.
+    """
+    if torch is None or PyGDataLoader is None or smiles_to_nx_graph is None:
+        raise ImportError("PyTorch / PyG not available in this environment")
+
+    session_logger = _get_session_logger()
+
+    # Load split (support pickle or joblib like other helpers)
+    split_obj = None
+    load_errors: list[str] = []
+    try:
+        import pickle as _pickle
+
+        with open(split_file_path, "rb") as f:
+            split_obj = _pickle.load(f)
+    except Exception as exc:  # noqa: BLE001
+        load_errors.append(f"pickle: {type(exc).__name__}: {exc}")
+
+    if split_obj is None:
+        try:
+            split_obj = joblib.load(split_file_path)
+        except Exception as exc:  # noqa: BLE001
+            load_errors.append(f"joblib: {type(exc).__name__}: {exc}")
+
+    if split_obj is None:
+        raise ValueError(f"Could not load split file '{split_file_path}': {'; '.join(load_errors)}")
+
+    smiles_key = f"{split}_smiles"
+    labels_key = f"{split}_labels"
+    if smiles_key not in split_obj:
+        raise ValueError(f"Split file '{split_file_path}' does not contain '{smiles_key}'. Provide a split file with per-split SMILES.")
+
+    smiles_list = list(split_obj[smiles_key])
+    labels = list(split_obj[labels_key]) if labels_key in split_obj else [None] * len(smiles_list)
+
+    # Build Data objects
+    data_list = []
+    for s, lbl in zip(smiles_list, labels):
+        nx_g = smiles_to_nx_graph(s)
+        pyg = nx_graph_to_pyg_data(nx_g, lbl if lbl is not None else 0)
+        if pyg is not None:
+            data_list.append(pyg)
+
+    if not data_list:
+        raise ValueError("No valid graph data could be created from the provided SMILES.")
+
+    loader = PyGDataLoader(data_list, batch_size=batch_size)
+
+    # Infer model class if not provided
+    model_stem = Path(model_path).stem
+    possible = ["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"]
+    if model_class is None:
+        for name in possible:
+            if name.lower() in model_stem.lower():
+                model_class = name
+                break
+    if model_class is None:
+        model_class = "GCN"
+
+    if not hasattr(_gnn_models, model_class):
+        raise ValueError(f"Unknown GNN model class '{model_class}'. Available: {', '.join([n for n in possible if hasattr(_gnn_models, n)])}")
+
+    ModelCls = getattr(_gnn_models, model_class)
+
+    num_classes = len(sorted(set([lbl for lbl in labels if lbl is not None]))) or 2
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = ModelCls(node_features_dim=4, hidden_channels=hidden_channels, num_classes=num_classes).to(device)
+
+    # Load state
+    state = torch.load(model_path, map_location=device)
+    try:
+        if isinstance(state, dict):
+            # Accept either raw state_dict or checkpoint with 'state_dict'
+            sd = state.get("state_dict") if "state_dict" in state else state
+            model.load_state_dict(sd)
+        else:
+            # If a full model object was saved
+            model = state.to(device)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Failed to load model state: {exc}")
+
+    # Inference
+    all_preds: list[int] = []
+    all_probs: list[list[float]] = []
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            out = model(batch.x, batch.edge_index, batch.batch)
+            probs = F.softmax(out, dim=1).cpu().tolist()
+            preds = out.argmax(dim=1).cpu().tolist()
+            all_probs.extend(probs)
+            all_preds.extend(preds)
+
+    # Build DataFrame
+    import pandas as pd
+
+    df_out = pd.DataFrame({
+        "smiles": smiles_list,
+        "true_label": labels,
+        "predicted_label": all_preds,
+    })
+    n_classes = len(all_probs[0]) if all_probs else 0
+    for c in range(n_classes):
+        df_out[f"prob_class_{c}"] = [p[c] for p in all_probs]
+
+    metrics_dict = evaluate_classification(labels=labels, predictions=all_preds, probabilities=all_probs, model_id=model_stem)
+
+    if save_path is None:
+        out_dir = session_logger.session_dir / "results"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base = f"{model_stem}_{split}"
+        save_path = str(out_dir / f"{base}_predictions.csv")
+        metrics_path = str(out_dir / f"{base}_metrics.pkl")
+    else:
+        save_path = str(Path(save_path).resolve())
+        metrics_path = str(Path(save_path).with_suffix("").as_posix() + "_metrics.pkl")
+
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    df_out.to_csv(save_path, index=False)
+    joblib.dump(metrics_dict, metrics_path)
+
+    return {
+        "csv_path": save_path,
+        "metrics_path": metrics_path,
+        "metrics": metrics_dict,
+        "n_samples": len(labels),
+        "columns": list(df_out.columns),
+    }
 
 
 def build_model_from_arrays(
