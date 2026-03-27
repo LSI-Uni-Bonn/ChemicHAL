@@ -40,3 +40,6 @@ src/chemagent/servers/results/chembl_activity_data_O00329_P42336_test_prediction
 src/chemagent/servers/results/molanchor_test_1.png
 src/chemagent/servers/results/chembl_activity_data_O00329_P42336_test_predictions_metrics.pkl
 
+data/gnn_dataset/
+session/
+src/chemagent/servers/data/gnn_dataset/
