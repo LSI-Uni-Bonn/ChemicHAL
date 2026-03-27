@@ -152,7 +152,7 @@ MODEL_INFO: dict[str, dict] = {
         "extra_deps":  [],
     },
     "DNN": {
-        "description": "Feed-forward PyTorch neural network wrapped as a scikit-learn estimator; supports classification, class-weighted classification, and regression.",
+        "description": "Feed-forward PyTorch neural network; supports classification, class-weighted classification, and regression.",
         "task":        "both",
         "extra_deps":  ["torch"],
     },

@@ -510,126 +510,126 @@ def build_model_from_arrays(
     )
 
 
-def run_pipeline(
-    file_path: str,
-    algorithm: Literal["RFC", "RFR", "SVC", "DNN"] = "RFC",
-    task: Literal["classification", "classification-cw", "regression"] = "classification",
-    method: str = "ECFP",
-    featurizer_kwargs: Optional[dict] = None,
-    train_size: float = 0.7,
-    test_size: float = 0.3,
-    stratified: bool = True,
-    cv_fold: int = 5,
-    opt_metric: Optional[str] = "balanced_accuracy",
-    random_seed: int = 42,
-    label_col: str = "class_label",
-    smiles_col: str = "smiles",
-    id_col: Optional[str] = None,
-) -> dict[str, Any]:
-    """One-call shortcut: load → featurize → split → train+evaluate (non-blocking).
+# def run_pipeline(
+#     file_path: str,
+#     algorithm: Literal["RFC", "RFR", "SVC", "DNN"] = "RFC",
+#     task: Literal["classification", "classification-cw", "regression"] = "classification",
+#     method: str = "ECFP",
+#     featurizer_kwargs: Optional[dict] = None,
+#     train_size: float = 0.7,
+#     test_size: float = 0.3,
+#     stratified: bool = True,
+#     cv_fold: int = 5,
+#     opt_metric: Optional[str] = "balanced_accuracy",
+#     random_seed: int = 42,
+#     label_col: str = "class_label",
+#     smiles_col: str = "smiles",
+#     id_col: Optional[str] = None,
+# ) -> dict[str, Any]:
+#     """One-call shortcut: load → featurize → split → train+evaluate (non-blocking).
 
-    Steps 1-3 (load, featurize, split) run immediately; training is submitted as a
-    background job. Poll with check_training(job_id, model_save_path=model_save_path) every 30 s until done.
+#     Steps 1-3 (load, featurize, split) run immediately; training is submitted as a
+#     background job. Poll with check_training(job_id, model_save_path=model_save_path) every 30 s until done.
 
-    Args:
-        file_path: CSV dataset path (workspace-relative or absolute).
-        algorithm: "RFC" (default), "RFR", "SVC", or "DNN". See get_ml_info().
-        task: "classification" (default), "classification-cw", or "regression".
-        method: Featurization method (default "ECFP"). See list_featurizers().
-        featurizer_kwargs: Method-specific parameters forwarded to the featurizer,
-            e.g. {"n_bits": 2048, "radius": 2} for ECFP. Defaults to None (method defaults).
-        train_size: Training fraction (default 0.7).
-        test_size: Test fraction (default 0.3).
-        stratified: Stratify the split (default True).
-        cv_fold: GridSearchCV folds (default 5).
-        opt_metric: Scoring metric for GridSearchCV (default "balanced_accuracy").
-        random_seed: Random seed (default 42).
-        label_col: Target column in the CSV (default "class_label").
-        smiles_col: SMILES column in the CSV (default "smiles").
-        id_col: Compound ID column (optional).
+#     Args:
+#         file_path: CSV dataset path (workspace-relative or absolute).
+#         algorithm: "RFC" (default), "RFR", "SVC", or "DNN". See get_ml_info().
+#         task: "classification" (default), "classification-cw", or "regression".
+#         method: Featurization method (default "ECFP"). See list_featurizers().
+#         featurizer_kwargs: Method-specific parameters forwarded to the featurizer,
+#             e.g. {"n_bits": 2048, "radius": 2} for ECFP. Defaults to None (method defaults).
+#         train_size: Training fraction (default 0.7).
+#         test_size: Test fraction (default 0.3).
+#         stratified: Stratify the split (default True).
+#         cv_fold: GridSearchCV folds (default 5).
+#         opt_metric: Scoring metric for GridSearchCV (default "balanced_accuracy").
+#         random_seed: Random seed (default 42).
+#         label_col: Target column in the CSV (default "class_label").
+#         smiles_col: SMILES column in the CSV (default "smiles").
+#         id_col: Compound ID column (optional).
 
-    Returns:
-        job_id, status="running", split_file_path, dataset_id, n_samples, n_features, model_save_path.
-        Poll check_training(job_id, model_save_path=model_save_path) for the final result.
-        Always pass model_save_path to check_training — it enables on-disk fallback if the
-        server restarts and the in-memory job state is lost.
-    """
-    import uuid
-    from chemagent.ml.training_tools import _default_model_path, _run_job_in_background
+#     Returns:
+#         job_id, status="running", split_file_path, dataset_id, n_samples, n_features, model_save_path.
+#         Poll check_training(job_id, model_save_path=model_save_path) for the final result.
+#         Always pass model_save_path to check_training — it enables on-disk fallback if the
+#         server restarts and the in-memory job state is lost.
+#     """
+#     import uuid
+#     from chemagent.ml.training_tools import _default_model_path, _run_job_in_background
 
-    session_logger = _get_session_logger()
+#     session_logger = _get_session_logger()
 
-    # 1. Load
-    df, meta = load_csv(
-        file_path=file_path, label_col=label_col, smiles_col=smiles_col,
-        id_col=id_col, directory="",
-    )
-    ds_id = meta["dataset_id"]
-    _loaded_datasets[ds_id] = df
-    threading.Thread(
-        target=session_logger.save_dataframe,
-        args=(df, ds_id),
-        daemon=True,
-    ).start()
+#     # 1. Load
+#     df, meta = load_csv(
+#         file_path=file_path, label_col=label_col, smiles_col=smiles_col,
+#         id_col=id_col, directory="",
+#     )
+#     ds_id = meta["dataset_id"]
+#     _loaded_datasets[ds_id] = df
+#     threading.Thread(
+#         target=session_logger.save_dataframe,
+#         args=(df, ds_id),
+#         daemon=True,
+#     ).start()
 
-    # 2. Featurize
-    features_result = featurize_df(df, method=method, **(featurizer_kwargs or {}))
-    features = features_result[0] if isinstance(features_result, tuple) else features_result
-    _processed_datasets[ds_id] = build_processed_entry(
-        df=df, features=features, label_col=label_col
-    )
+#     # 2. Featurize
+#     features_result = featurize_df(df, method=method, **(featurizer_kwargs or {}))
+#     features = features_result[0] if isinstance(features_result, tuple) else features_result
+#     _processed_datasets[ds_id] = build_processed_entry(
+#         df=df, features=features, label_col=label_col
+#     )
 
-    # 3. Split
-    split_result = split_processed(
-        processed=_processed_datasets[ds_id],
-        split_type="random",
-        train_size=train_size,
-        val_size=0.0,
-        test_size=test_size,
-        seed=random_seed,
-        stratified=stratified,
-    )
-    out_dir = session_logger.session_dir / "splits"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    split_path = str(out_dir / f"{ds_id}_random.pkl")
-    _save_split(
-        save_dict=split_result["save_dict"],
-        dataset_id=ds_id,
-        split_type="random",
-        save_path=split_path,
-    )
+#     # 3. Split
+#     split_result = split_processed(
+#         processed=_processed_datasets[ds_id],
+#         split_type="random",
+#         train_size=train_size,
+#         val_size=0.0,
+#         test_size=test_size,
+#         seed=random_seed,
+#         stratified=stratified,
+#     )
+#     out_dir = session_logger.session_dir / "splits"
+#     out_dir.mkdir(parents=True, exist_ok=True)
+#     split_path = str(out_dir / f"{ds_id}_random.pkl")
+#     _save_split(
+#         save_dict=split_result["save_dict"],
+#         dataset_id=ds_id,
+#         split_type="random",
+#         save_path=split_path,
+#     )
 
-    # 4. Train — submit as background job (non-blocking)
-    split   = joblib.load(split_path)
-    X_train = np.array(split["train_features"])
-    y_train = np.array(split["train_labels"])
-    X_test  = np.array(split["test_features"])
-    y_test  = np.array(split["test_labels"])
+#     # 4. Train — submit as background job (non-blocking)
+#     split   = joblib.load(split_path)
+#     X_train = np.array(split["train_features"])
+#     y_train = np.array(split["train_labels"])
+#     X_test  = np.array(split["test_features"])
+#     y_test  = np.array(split["test_labels"])
 
-    model_save_path = _default_model_path(algorithm, stem=Path(split_path).stem)
-    job_id = str(uuid.uuid4())
-    _run_job_in_background(
-        job_id, _run_pipeline,
-        X_train=X_train, y_train=y_train,
-        X_test=X_test,   y_test=y_test,
-        X_val=None,      y_val=None,
-        algorithm=algorithm, task=task,
-        cv_fold=cv_fold, opt_metric=opt_metric,
-        random_seed=random_seed,
-        model_save_path=model_save_path,
-    )
+#     model_save_path = _default_model_path(algorithm, stem=Path(split_path).stem)
+#     job_id = str(uuid.uuid4())
+#     _run_job_in_background(
+#         job_id, _run_pipeline,
+#         X_train=X_train, y_train=y_train,
+#         X_test=X_test,   y_test=y_test,
+#         X_val=None,      y_val=None,
+#         algorithm=algorithm, task=task,
+#         cv_fold=cv_fold, opt_metric=opt_metric,
+#         random_seed=random_seed,
+#         model_save_path=model_save_path,
+#     )
 
-    return {
-        "job_id":          job_id,
-        "status":          "running",
-        "dataset_id":      ds_id,
-        "n_samples":       int(features.shape[0]),
-        "n_features":      int(features.shape[1]),
-        "split_file_path": split_path,
-        "model_save_path": model_save_path,
-        "message": (
-            f"Load/featurize/split completed. Training started in the background. "
-            f"Call check_training('{job_id}', model_save_path='{model_save_path}') to poll for completion. "
-            "Poll every 30 seconds until status is 'completed' or 'failed'."
-        ),
-    }
+#     return {
+#         "job_id":          job_id,
+#         "status":          "running",
+#         "dataset_id":      ds_id,
+#         "n_samples":       int(features.shape[0]),
+#         "n_features":      int(features.shape[1]),
+#         "split_file_path": split_path,
+#         "model_save_path": model_save_path,
+#         "message": (
+#             f"Load/featurize/split completed. Training started in the background. "
+#             f"Call check_training('{job_id}', model_save_path='{model_save_path}') to poll for completion. "
+#             "Poll every 30 seconds until status is 'completed' or 'failed'."
+#         ),
+#     }
