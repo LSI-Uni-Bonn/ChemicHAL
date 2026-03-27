@@ -56,7 +56,7 @@ XAI
 Utilities
   log_thought            record reasoning in the session log
   start_new_session      start a fresh session directory
-  run_pipeline           non-blocking shortcut: load → featurize → split → train
+  #run_pipeline           non-blocking shortcut: load → featurize → split → train (not used)
   generate_report        write a Markdown summary of the current session
 """
 
@@ -88,7 +88,7 @@ from chemagent.datasets.dataset_tools import (
 from chemagent.ml.ml_model_tools import (
     get_ml_info,
     export_predictions,
-    run_pipeline,
+    #run_pipeline,
 )
 from chemagent.ml.training_tools import (
     train_model,
