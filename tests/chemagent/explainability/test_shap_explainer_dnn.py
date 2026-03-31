@@ -105,6 +105,36 @@ def test_expected_value_tensor_like_is_normalized_to_float():
     assert s.expected_value == pytest.approx(0.8)
 
 
+def test_expected_values_for_predictions_multiclass_uses_predicted_class_baseline():
+    s: Any = SHAPExplainer.__new__(SHAPExplainer)
+    s.model = type("M", (), {"classes_": np.array([0, 1, 2])})()
+    s._explainer = _DummyExplainer(
+        shap_values=np.zeros((4, 6, 3), dtype=np.float32),
+        expected_value=np.array([13.0, -4.0, -12.0], dtype=np.float32),
+    )
+
+    y_pred = np.array([2, 0, 1, 2])
+    out = s.expected_values_for_predictions(y_pred)
+
+    assert out.shape == (4,)
+    assert np.allclose(out, np.array([-12.0, 13.0, -4.0, -12.0]))
+
+
+def test_expected_values_for_predictions_binary_uses_constant_class1_baseline():
+    s: Any = SHAPExplainer.__new__(SHAPExplainer)
+    s.model = type("M", (), {"classes_": np.array([0, 1])})()
+    s._explainer = _DummyExplainer(
+        shap_values=np.zeros((3, 6), dtype=np.float32),
+        expected_value=np.array([0.2, 0.8], dtype=np.float32),
+    )
+
+    y_pred = np.array([0, 1, 0])
+    out = s.expected_values_for_predictions(y_pred)
+
+    assert out.shape == (3,)
+    assert np.allclose(out, np.array([0.8, 0.8, 0.8]))
+
+
 def test_explain_per_predicted_class_handles_single_output_3d():
     s: Any = SHAPExplainer.__new__(SHAPExplainer)
     s.model = type("M", (), {"classes_": np.array([0, 1])})()

@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any, Literal, Optional, Union
 import random
+import base64
 
 import joblib
 import json
@@ -46,6 +47,32 @@ def _parse_bool(value: Union[bool, str]) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() not in ("false", "0", "no", "")
+
+
+def _persist_image_output(img: Any, img_path: Path) -> None:
+    """Persist image output from MolAnchor regardless of concrete image type."""
+    if hasattr(img, "save"):
+        img.save(str(img_path))
+        return
+
+    data = getattr(img, "data", None)
+    if isinstance(data, bytes):
+        img_path.write_bytes(data)
+        return
+
+    if isinstance(data, str):
+        if data.startswith("data:image") and "," in data:
+            payload = data.split(",", 1)[1]
+            img_path.write_bytes(base64.b64decode(payload))
+            return
+        img_path.write_text(data, encoding="utf-8")
+        return
+
+    if isinstance(img, (bytes, bytearray)):
+        img_path.write_bytes(bytes(img))
+        return
+
+    raise TypeError(f"Unsupported image object type for saving: {type(img)!r}")
 
 
 
@@ -355,7 +382,7 @@ def explain_with_molanchor(
         img_path = Path(output_path)
 
     img_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(str(img_path))
+    _persist_image_output(img, img_path)
 
     result["image_path"] = str(img_path)
     mcp_image = MCPImage(path=img_path)

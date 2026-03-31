@@ -1,0 +1,11 @@
+Add and properly implement missing XAI methods (EdgeSHAPer and Counterfactuals)
+
+Integrate with cluster for faster inference and explore larger LLMs
+
+Clean up the repository and make it available 
+
+    An “organization repository” is available for the whole lab to ease the integration of new components
+
+Make a guide for lab members for the implementation of AI agents
+
+Create a chat to session and replace timed session

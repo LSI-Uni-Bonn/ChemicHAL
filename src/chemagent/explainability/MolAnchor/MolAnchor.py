@@ -466,6 +466,18 @@ class MolecularAnchor:
         elif len(frag_ids) > 1:
             atoms_to_highlight = list(itertools.chain.from_iterable([self.mol_atom_ids[i] for i in frag_ids]))
 
-        fig = Draw.MolsToGridImage([self.mol], highlightAtomLists=[atoms_to_highlight])
+        # Highlight the original molecule with the identified anchor fragments
+        mol_to_show = [self.mol]
+        draw_options = Draw.rdMolDraw2D.MolDrawOptions()
+        # Use a monochrome atom palette so all atoms have the same base color.
+        draw_options.useBWAtomPalette()
+
+        fig = Draw.MolsToGridImage(
+            mol_to_show,
+            highlightAtomLists=[atoms_to_highlight],
+            molsPerRow=len(mol_to_show),
+            subImgSize=(500, 500),
+            drawOptions=draw_options,
+        )
 
         return fig

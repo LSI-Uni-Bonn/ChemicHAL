@@ -18,6 +18,7 @@ log_thought        — record agent reasoning / planning in the session log
 generate_report    — write a Markdown summary of the current session to disk
 generate_pdf_report — write a clean PDF with agent narrative (thoughts) and plots
 export_chat_html   — export full chat as self-contained HTML with embedded figures
+set_chat_scope     — bind session logging to a chat/window identifier
 start_new_session  — start a fresh logging session, ending the current one
 """
 
@@ -849,24 +850,56 @@ def _html_escape(text: str) -> str:
     )
 
 
+# set_chat_scope
+def set_chat_scope(
+    chat_scope_id: str,
+    start_new_session_on_change: bool = True,
+) -> dict[str, Any]:
+    """Bind logging to a chat/window identifier.
+
+    Pass a stable chat identifier (e.g. host chat UUID) at the beginning of
+    each chat window. If the scope differs from the active one, this can
+    optionally start a fresh session directory so artifacts are chat-scoped.
+
+    Args:
+        chat_scope_id: Stable non-empty chat/window identifier.
+        start_new_session_on_change:
+            When True (default), a changed scope forces a fresh session.
+
+    Returns:
+        {
+            "session_id": <id>,
+            "chat_scope_id": <scope>,
+            "previous_chat_scope_id": <scope|None>,
+            "changed": <bool>,
+            "started_new_session": <bool>
+        }
+    """
+    return session_logger.set_chat_scope(
+        chat_scope_id=chat_scope_id,
+        start_new_session_on_change=start_new_session_on_change,
+    )
+
+
 # start_new_session
-def start_new_session() -> dict[str, str]:
+def start_new_session(chat_scope_id: Optional[str] = None) -> dict[str, str | None]:
     """Start a fresh logging session, ending the current one immediately.
 
     Use this at the beginning of a new chat or experiment to ensure
     artifacts and logs are not mixed with a previous session.
-    Without calling this, sessions are automatically continued as long as
-    the last activity was within the session timeout window (default 60 min).
+    Optional ``chat_scope_id`` can be passed to bind the new session to a
+    host-provided chat/window identity.
 
     Returns:
-        {"new_session_id": <id>, "session_dir": <path>}
+        {"new_session_id": <id>, "session_dir": <path>, "chat_scope_id": <scope|None>}
     """
     # Must use the module-level singleton directly — _get_session_logger() may
     # return a different object when chemagent_mcp.py runs as __main__, so
     # calling force_new_session() on it would not affect the session_logger
     # that _register closes over.
-    new_id = session_logger.force_new_session()
+    new_id = session_logger.force_new_session(chat_scope_id=chat_scope_id)
     return {
         "new_session_id": new_id,
         "session_dir":    str(session_logger.session_dir),
+        "chat_scope_id":  session_logger.chat_scope_id,
     }

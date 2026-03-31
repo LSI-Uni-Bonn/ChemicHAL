@@ -210,7 +210,7 @@ def split_dataset(
     val_size: float = 0.0,
     test_size: float = 0.1,
     seed: Optional[int] = 42,
-    stratified: Optional[str] = None,
+    stratified: bool | str | None = None,
     save_path: Optional[str] = None,
 ) -> dict[str, Any]:
     """Split a featurized dataset into train/val/test partitions and save to .pkl.

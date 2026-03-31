@@ -247,8 +247,8 @@ def train_on_split_file(
         opt_metric: GridSearchCV scoring metric.
         cv_fold: Number of CV folds (default 5).
         random_seed: Random seed (default 42).
-        model_save_path: Where to save the model. Defaults to a models/
-                         directory under the workspace root.
+        model_save_path: Where to save the model. Defaults to a models/<ALGO>/
+                 directory under the workspace root.
         use_default_params: Skip GridSearchCV when True.
 
     Returns:
@@ -258,8 +258,8 @@ def train_on_split_file(
 
     data = joblib.load(split_file_path)
     if model_save_path is None:
-        out_dir = _workspace_root() / "data" / "models"
-        out_dir.mkdir(exist_ok=True)
+        out_dir = _workspace_root() / "data" / "models" / str(ml_algorithm)
+        out_dir.mkdir(parents=True, exist_ok=True)
         model_save_path = str(out_dir / f"{Path(split_file_path).stem}_{ml_algorithm}.pkl")
 
     _data = _DataContainer(
