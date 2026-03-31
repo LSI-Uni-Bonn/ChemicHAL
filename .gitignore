@@ -43,3 +43,6 @@ src/chemagent/servers/results/chembl_activity_data_O00329_P42336_test_prediction
 data/gnn_dataset/
 session/
 src/chemagent/servers/data/gnn_dataset/
+notebooks/debug_outputs/data_splits.csv
+data/logs/.current_session.json
+notebooks/debug_outputs/trained_model.pkl

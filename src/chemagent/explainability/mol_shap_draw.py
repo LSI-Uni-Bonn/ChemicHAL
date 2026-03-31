@@ -26,7 +26,7 @@ from rdkit import Chem, Geometry
 from rdkit.Chem import Draw  # type: ignore[attr-defined]
 from rdkit.Chem import rdDepictor, rdFingerprintGenerator
 
-DEFAULT_COLORMAP = 'coolwarm'
+DEFAULT_COLORMAP = 'coolwarm' # Blue for negative SHAP values, red for positive, white for zero
 
 
 def get_ecfp_morgan_generator_bit_info(smiles: str, radius: int = 2, n_bits: int = 2048) -> Dict:
@@ -207,7 +207,7 @@ def get_atom_wise_weight_map(
     ps = Draw.ContourParams()
     ps.fillGrid = True
     ps.gridResolution = 0.1
-    ps.extraGridPadding = 2.0
+    ps.extraGridPadding = 0.1#2.0
 
     if isinstance(cmap, str):
         cmap = plt.get_cmap(cmap)

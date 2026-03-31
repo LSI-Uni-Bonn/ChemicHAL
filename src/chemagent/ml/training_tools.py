@@ -44,7 +44,7 @@ _jobs: dict[str, dict[str, Any]] = {}
 # Helpers
 def _default_model_path(algorithm: str, stem: str = "") -> str:
     session_logger = _get_session_logger()
-    out_dir = session_logger.session_dir / "models"
+    out_dir = session_logger.session_dir / "models" / str(algorithm)
     out_dir.mkdir(parents=True, exist_ok=True)
     name = f"{stem}_{algorithm}.pkl" if stem else f"trained_model_{algorithm}.pkl"
     return str(out_dir / name)
@@ -154,7 +154,7 @@ def train_model(
         cv_fold: GridSearchCV folds (default 5).
         opt_metric: Scoring metric for GridSearchCV (default "balanced_accuracy").
         random_seed: Random seed (default 42).
-        model_save_path: Output .pkl path. Defaults to session models/ dir.
+        model_save_path: Output .pkl path. Defaults to session models/<ALGO>/ dir.
 
     Returns:
         job_id, status="running", model_save_path, message with polling instruction.

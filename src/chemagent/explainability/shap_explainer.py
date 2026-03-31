@@ -162,7 +162,18 @@ class SHAPExplainer:
 
     @property
     def expected_value(self) -> float:
-        """Base value (mean model output) for the positive class / regression."""
+        """Backward-compatible scalar baseline.
+
+        For binary classification this returns class-1 baseline, for single-output
+        models it returns the only baseline, and for multiclass it returns the
+        first class baseline (legacy behaviour).
+        """
+        ev = self.expected_values
+        return float(ev[1]) if ev.size == 2 else float(ev[0])
+
+    @property
+    def expected_values(self) -> np.ndarray:
+        """All SHAP base values as a 1-D float array."""
         ev = self._explainer.expected_value
         if ev is None:
             raise TypeError("SHAP explainer returned None for expected_value")
@@ -172,13 +183,42 @@ class SHAPExplainer:
 
         ev = self._to_numpy(ev)
 
-        if isinstance(ev, (list, np.ndarray)):
-            ev = np.atleast_1d(ev)
-            return float(ev[1]) if len(ev) == 2 else float(ev[0])
+        if isinstance(ev, (list, tuple, np.ndarray)):
+            ev_arr = np.atleast_1d(np.asarray(ev, dtype=float)).reshape(-1)
+            if ev_arr.size == 0:
+                raise TypeError("SHAP explainer returned empty expected_value")
+            return ev_arr
         if isinstance(ev, (int, float, np.number)):
-            return float(ev)
+            return np.array([float(ev)], dtype=float)
 
         raise TypeError(f"Unsupported type for SHAP expected_value: {type(ev)!r}")
+
+    def expected_values_for_predictions(self, y_pred: np.ndarray) -> np.ndarray:
+        """Return per-instance baselines aligned to predicted class labels.
+
+        For multiclass outputs (len(expected_values) > 2), this selects each
+        instance baseline from the predicted class.
+        For binary and single-output models, it returns a constant vector using
+        the backward-compatible scalar baseline.
+        """
+        y_pred_arr = np.asarray(y_pred)
+        if y_pred_arr.ndim == 0:
+            y_pred_arr = y_pred_arr.reshape(1)
+
+        ev = self.expected_values
+        if ev.size <= 2:
+            return np.full(y_pred_arr.shape[0], self.expected_value, dtype=float)
+
+        classes = list(getattr(self.model, "classes_", range(ev.size)))
+        class_to_idx = {c: i for i, c in enumerate(classes)}
+        try:
+            idx = np.array([class_to_idx[p] for p in y_pred_arr], dtype=int)
+        except KeyError as err:
+            raise ValueError(
+                f"Predicted class {err.args[0]!r} not found in model classes {classes}."
+            ) from err
+
+        return ev[idx]
 
     @classmethod
     def from_model_path(
@@ -239,7 +279,7 @@ class SHAPExplainer:
         if SHAPExplainer._is_dnn_model(model):
             if background is None:
                 raise ValueError(
-                    f"background data is required for DNN SHAP explainer (model={model_name!r}). "
+                    f"background data is required for DNN SHAP explainers (model={model_name!r}). "
                     "Pass the training feature matrix as the 'background' argument."
                 )
             sampled_bg = SHAPExplainer._sample_background(background, max_background=128)
@@ -320,22 +360,34 @@ def explain_with_shap(
     # Predicted labels for the explain subset — used for per-class SHAP selection
     y_pred_explain = y_pred[mask]
 
-    explainer    = SHAPExplainer(model, background=X_train)
-    shap_values  = explainer.explain_per_predicted_class(X_explain, y_pred_explain)
-    expected_val = explainer.expected_value
+    explainer                 = SHAPExplainer(model, background=X_train)
+    shap_values               = explainer.explain_per_predicted_class(X_explain, y_pred_explain)
+    expected_values_by_class  = explainer.expected_values
+    expected_values_selected  = explainer.expected_values_for_predictions(y_pred_explain)
+    expected_value_mode       = "predicted_class" if expected_values_by_class.size > 2 else "class_1_or_single"
+    class_labels              = np.array(getattr(model, "classes_", np.arange(expected_values_by_class.size)))
+    expected_val              = (
+        float(expected_values_selected.mean())
+        if expected_values_selected.size > 0
+        else float(explainer.expected_value)
+    )
 
     smiles_key = f"{split}_smiles"
     labels_key = f"{split}_labels"
     cid_key    = f"{split}_cid"
 
     save_dict: dict[str, Any] = {
-        "shap_values":     shap_values,
-        "expected_value":  expected_val,
-        "model_path":      model_path,
-        "split_file_path": split_file_path,
-        "split":           split,
-        "n_bits":          n_bits,
-        "correct_only":    correct_only,
+        "shap_values":              shap_values,
+        "expected_value":           expected_val,
+        "expected_values_by_class": expected_values_by_class,
+        "expected_values_selected": expected_values_selected,
+        "expected_value_classes":   class_labels,
+        "expected_value_mode":      expected_value_mode,
+        "model_path":               model_path,
+        "split_file_path":          split_file_path,
+        "split":                    split,
+        "n_bits":                   n_bits,
+        "correct_only":             correct_only,
     }
     if smiles_key in split_data:
         save_dict["smiles"] = np.array(split_data[smiles_key])[mask]
@@ -355,15 +407,19 @@ def explain_with_shap(
     joblib.dump(save_dict, save_path)
 
     return {
-        "shap_values_path": save_path,
-        "n_samples":        int(shap_values.shape[0]),
-        "n_samples_total":  int(X_all.shape[0]),
-        "n_correct":        n_correct,
-        "correct_only":     correct_only,
-        "n_features":       int(shap_values.shape[1]),
-        "expected_value":   float(expected_val),
-        "mean_abs_shap":    float(np.abs(shap_values).mean()),
-        "has_smiles":       smiles_key in split_data,
+        "shap_values_path":          save_path,
+        "n_samples":                 int(shap_values.shape[0]),
+        "n_samples_total":           int(X_all.shape[0]),
+        "n_correct":                 n_correct,
+        "correct_only":              correct_only,
+        "n_features":                int(shap_values.shape[1]),
+        "expected_value":            float(expected_val),
+        "expected_values_by_class":  expected_values_by_class.tolist(),
+        "expected_values_selected":  expected_values_selected.tolist(),
+        "expected_value_classes":    class_labels.tolist(),
+        "expected_value_mode":       expected_value_mode,
+        "mean_abs_shap":             float(np.abs(shap_values).mean()),
+        "has_smiles":                smiles_key in split_data,
         "next_step": (
             f"Call plot_shap_mol('{save_path}') to visualise "
             "atom-level SHAP heatmaps for individual compounds."
@@ -456,22 +512,34 @@ def explain_smiles_with_shap(
     y_pred = model.predict(X)
 
     #SHAP
-    explainer    = SHAPExplainer(model, background=background)
-    shap_values  = explainer.explain_per_predicted_class(X, y_pred)
-    expected_val = explainer.expected_value
+    explainer                 = SHAPExplainer(model, background=background)
+    shap_values               = explainer.explain_per_predicted_class(X, y_pred)
+    expected_values_by_class  = explainer.expected_values
+    expected_values_selected  = explainer.expected_values_for_predictions(y_pred)
+    expected_value_mode       = "predicted_class" if expected_values_by_class.size > 2 else "class_1_or_single"
+    class_labels              = np.array(getattr(model, "classes_", np.arange(expected_values_by_class.size)))
+    expected_val              = (
+        float(expected_values_selected.mean())
+        if expected_values_selected.size > 0
+        else float(explainer.expected_value)
+    )
 
     #Save
     save_dict: dict[str, Any] = {
-        "shap_values":    shap_values,
-        "expected_value": expected_val,
-        "model_path":     model_path,
-        "smiles":         np.array(smiles),
-        "labels":         y_pred,          # predicted class; no ground truth
-        "method":         method,
-        "n_bits":         base_kwargs.get("n_bits", n_bits),
-        "radius":         base_kwargs.get("radius", radius),
-        "featurizer_kwargs": base_kwargs,
-        "source":         "explain_smiles",
+        "shap_values":              shap_values,
+        "expected_value":           expected_val,
+        "expected_values_by_class": expected_values_by_class,
+        "expected_values_selected": expected_values_selected,
+        "expected_value_classes":   class_labels,
+        "expected_value_mode":      expected_value_mode,
+        "model_path":               model_path,
+        "smiles":                   np.array(smiles),
+        "labels":                   y_pred,          # predicted class; no ground truth
+        "method":                   method,
+        "n_bits":                   base_kwargs.get("n_bits", n_bits),
+        "radius":                   base_kwargs.get("radius", radius),
+        "featurizer_kwargs":        base_kwargs,
+        "source":                   "explain_smiles",
     }
     if split_file_path is not None:
         save_dict["split_file_path"] = split_file_path
@@ -487,16 +555,20 @@ def explain_smiles_with_shap(
     joblib.dump(save_dict, save_path)
 
     return {
-        "shap_values_path": save_path,
-        "n_samples":        int(shap_values.shape[0]),
-        "n_features":       int(shap_values.shape[1]),
-        "expected_value":   float(expected_val),
-        "prediction":      y_pred.tolist()[0],
-        "mean_abs_shap":    float(np.abs(shap_values).mean()),
-        "shap_sum":         float(shap_values.sum()),
-        "method":           method,
-        "has_smiles":       True,
-        "note":             "Labels in output file are model predictions, not ground truth.",
+        "shap_values_path":          save_path,
+        "n_samples":                 int(shap_values.shape[0]),
+        "n_features":                int(shap_values.shape[1]),
+        "expected_value":            float(expected_val),
+        "expected_values_by_class":  expected_values_by_class.tolist(),
+        "expected_values_selected":  expected_values_selected.tolist(),
+        "expected_value_classes":    class_labels.tolist(),
+        "expected_value_mode":       expected_value_mode,
+        "prediction":                y_pred.tolist()[0],
+        "mean_abs_shap":             float(np.abs(shap_values).mean()),
+        "shap_sum":                  float(shap_values.sum()),
+        "method":                    method,
+        "has_smiles":                True,
+        "note":                      "Labels in output file are model predictions, not ground truth.",
         "next_step": (
             f"Call plot_shap_mol('{save_path}') to render "
             "atom-level SHAP heatmaps. "
