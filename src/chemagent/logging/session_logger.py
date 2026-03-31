@@ -43,6 +43,7 @@ Usage (in chemagent_mcp.py):
 from __future__ import annotations
 
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -56,8 +57,9 @@ if TYPE_CHECKING:
 
 # ── tuneable constants ──────────────────────────────────────────────────────
 MAX_ARRAY_ROWS        = 20    # lists with more rows → shape summary
-SESSION_TIMEOUT_MINS  = 480   # minutes of inactivity before a new session starts
+SESSION_TIMEOUT_MINS  = float("inf")  # no inactivity rollover by default
 _CURRENT_SESSION_FILE = ".current_session.json"  # marker file inside log_dir
+_CHAT_SCOPE_ENV_VAR   = "CHEMAGENT_CHAT_SCOPE_ID"
 
 # Result dict keys whose values are file paths → copied into the session dir.
 _PATH_KEY_SUBDIR: dict[str, str] = {
@@ -114,6 +116,14 @@ def _get_git_username() -> str:
     # Sanitise: lowercase, collapse unsafe chars to underscore
     safe = re.sub(r"[^\w.-]", "_", raw).strip("_").lower()
     return safe or "unknown"
+
+
+def _normalise_chat_scope(chat_scope_id: Any) -> str | None:
+    """Return a normalised chat-scope identifier, or None when unset."""
+    if chat_scope_id is None:
+        return None
+    text = str(chat_scope_id).strip()
+    return text or None
 
 
 def _summarise_value(value: Any, depth: int = 0) -> Any:
@@ -174,9 +184,8 @@ class SessionLogger:
     **Session continuity** — the active session ID is persisted in
     ``<log_dir>/.current_session.json``.  When the MCP server is restarted
     (e.g. between prompts in the same LM Studio chat) the same session is
-    reused as long as the last activity was within *session_timeout_mins*
-    minutes.  A new session is only started after that timeout expires or
-    when no marker file exists.
+    reused as long as the marker exists and the optional *chat_scope_id*
+    matches.  Inactivity timeout rollover is disabled by default.
 
     Thread-safe: all writes and copies are serialised through a Lock.
 
@@ -185,14 +194,20 @@ class SessionLogger:
     log_dir:
         Root directory for all session subdirectories.  Created automatically.
     session_timeout_mins:
-        Minutes of inactivity before a new session is started (default 60).
+        Minutes of inactivity before a new session is started.
+        ``float("inf")`` (default) disables timeout-based rollover.
+    chat_scope_id:
+        Optional stable identifier of the active chat/window. When provided,
+        the logger only resumes marker sessions whose chat scope matches.
     """
 
     def __init__(
         self,
         log_dir: Path | str,
-        session_timeout_mins: int = SESSION_TIMEOUT_MINS,
+        session_timeout_mins: int | float = SESSION_TIMEOUT_MINS,
+        chat_scope_id: str | None = None,
     ) -> None:
+        import os
         import time as _time
         import uuid as _uuid
 
@@ -200,6 +215,9 @@ class SessionLogger:
         log_root.mkdir(parents=True, exist_ok=True)
 
         self.username    = _get_git_username()
+        self.chat_scope_id = _normalise_chat_scope(chat_scope_id)
+        if self.chat_scope_id is None:
+            self.chat_scope_id = _normalise_chat_scope(os.environ.get(_CHAT_SCOPE_ENV_VAR))
         marker_file      = log_root / _CURRENT_SESSION_FILE
         resumed          = False
 
@@ -209,12 +227,22 @@ class SessionLogger:
                 marker = json.loads(marker_file.read_text(encoding="utf-8"))
                 last_seen   = float(marker.get("last_seen", 0))
                 age_minutes = (_time.time() - last_seen) / 60
-                if age_minutes < session_timeout_mins:
-                    candidate_dir = log_root / f"session_{marker['session_id']}"
-                    if candidate_dir.exists():
-                        self.session_id   = marker["session_id"]
-                        self._session_dir = candidate_dir
-                        resumed           = True
+                marker_scope = _normalise_chat_scope(marker.get("chat_scope_id"))
+                timeout_disabled = (
+                    session_timeout_mins is None
+                    or (isinstance(session_timeout_mins, (int, float)) and math.isinf(float(session_timeout_mins)))
+                )
+                timeout_ok = timeout_disabled or age_minutes < float(session_timeout_mins)
+                scope_ok = self.chat_scope_id is None or marker_scope == self.chat_scope_id
+
+                candidate_dir = log_root / f"session_{marker['session_id']}"
+                if timeout_ok and scope_ok and candidate_dir.exists():
+                    self.session_id   = marker["session_id"]
+                    self._session_dir = candidate_dir
+                    # Preserve marker scope when no explicit scope is supplied.
+                    if self.chat_scope_id is None:
+                        self.chat_scope_id = marker_scope
+                    resumed           = True
             except Exception:  # noqa: BLE001 — corrupt marker → start fresh
                 pass
 
@@ -244,6 +272,7 @@ class SessionLogger:
             "type":        "session_resumed" if resumed else "session_open",
             "timestamp":   self._now(),
             "username":    self.username,
+            "chat_scope_id": self.chat_scope_id,
             "session_dir": str(self._session_dir),
             "log_file":    str(self._log_file),
         }
@@ -256,7 +285,7 @@ class SessionLogger:
         """Root of this session's artifact directory."""
         return self._session_dir
 
-    def force_new_session(self) -> str:
+    def force_new_session(self, chat_scope_id: str | None = None) -> str:
         """Discard the current session and start a brand-new one immediately.
 
         Deletes the ``.current_session.json`` marker, re-initialises all
@@ -264,7 +293,9 @@ class SessionLogger:
         Returns the new session_id.
         """
         import uuid as _uuid
-        import time as _time
+
+        if chat_scope_id is not None:
+            self.chat_scope_id = _normalise_chat_scope(chat_scope_id)
 
         # Invalidate marker so __init__ logic won't resume it
         try:
@@ -296,10 +327,46 @@ class SessionLogger:
             "type":        "session_open",
             "timestamp":   self._now(),
             "username":    self.username,
+            "chat_scope_id": self.chat_scope_id,
             "session_dir": str(self._session_dir),
             "log_file":    str(self._log_file),
         })
         return self.session_id
+
+    def set_chat_scope(
+        self,
+        chat_scope_id: str,
+        start_new_session_on_change: bool = False,
+    ) -> dict[str, Any]:
+        """Set the active chat scope and optionally rotate the session on change."""
+        scope = _normalise_chat_scope(chat_scope_id)
+        if scope is None:
+            raise ValueError("chat_scope_id must be a non-empty string")
+
+        previous_scope = self.chat_scope_id
+        changed = previous_scope != scope
+        started_new_session = False
+
+        if changed and start_new_session_on_change:
+            self.force_new_session(chat_scope_id=scope)
+            started_new_session = True
+        else:
+            self.chat_scope_id = scope
+            self._touch_marker(force=True)
+            if changed:
+                self.log_event(
+                    "chat_scope_updated",
+                    previous_chat_scope_id=previous_scope,
+                    chat_scope_id=self.chat_scope_id,
+                )
+
+        return {
+            "session_id": self.session_id,
+            "chat_scope_id": self.chat_scope_id,
+            "previous_chat_scope_id": previous_scope,
+            "changed": changed,
+            "started_new_session": started_new_session,
+        }
 
     # ── logging API ─────────────────────────────────────────────────────────
 
@@ -521,6 +588,7 @@ class SessionLogger:
         marker = {
             "session_id": self.session_id,
             "username":   self.username,
+            "chat_scope_id": self.chat_scope_id,
             "last_seen":  now,
         }
         # Write outside the main lock to avoid deadlock (called from _write)

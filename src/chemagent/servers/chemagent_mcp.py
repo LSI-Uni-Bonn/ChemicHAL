@@ -1,4 +1,4 @@
-"""chemagent_mcp.py — single consolidated FastMCP server (23 tools).
+"""chemagent_mcp.py — single consolidated FastMCP server (24 tools).
 
 STANDARD WORKFLOW (data stays on disk — preferred):
     find_datasets()                                          # discover CSVs
@@ -55,6 +55,7 @@ XAI
 
 Utilities
   log_thought            record reasoning in the session log
+  set_chat_scope         bind session logging to a host chat/window identifier
   start_new_session      start a fresh session directory
   #run_pipeline           non-blocking shortcut: load → featurize → split → train (not used)
   generate_report        write a Markdown summary of the current session
@@ -125,6 +126,7 @@ from chemagent.servers.session_tools import (
     generate_report,
     generate_pdf_report,
     export_chat_html,
+    set_chat_scope,
     start_new_session,
 )
 
@@ -213,6 +215,7 @@ _register(log_answer)
 _register(generate_report)
 _register(generate_pdf_report)
 _register(export_chat_html)
+_register(set_chat_scope)
 _register(start_new_session)
 
 
