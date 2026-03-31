@@ -1,4 +1,4 @@
-"""chemagent_mcp.py — single consolidated FastMCP server (23 tools).
+"""chemagent_mcp.py — single consolidated FastMCP server (27 tools).
 
 STANDARD WORKFLOW (data stays on disk — preferred):
     find_datasets()                                          # discover CSVs
@@ -40,6 +40,12 @@ Plots
   plot_regression_results        actual vs predicted, residuals, error distribution (from predictions CSV)
   show_plot                      display a saved PNG directly in the chat UI
 
+GNN
+  prepare_gnn_dataset     convert split .pkl + SMILES CSV to train/val/test graph datasets
+  train_gnn_model_mcp     train a GNN (GCN, GraphSAGE, GAT, etc.) on graph datasets (non-blocking job)
+  check_gnn_training      poll a background GNN training job
+  load_gnn_model_mcp      load a trained GNN model from disk and validate
+
 XAI
   explain_with_shap              compute per-compound SHAP values from a model + split .pkl
   explain_smiles                 compute SHAP values for SMILES strings typed directly in chat (no split file needed)
@@ -52,6 +58,9 @@ XAI
   visualize_counterfactuals      draw query compound + counterfactuals as a molecule grid image
   explain_with_molce             contrastive R-group + scaffold attribution — why class A and not class B?
   identify_recurrent_molce_rules global MolCE: aggregate top-3 R-group + scaffold rules across a compound class
+  explain_gnn_with_edgeshaper    edge-level Shapley values (explainability) for GNN predictions
+  visualize_edgeshaper_results   render edge importance heatmaps on molecular structures
+  get_edgeshaper_info            reference information about EdgeSHAPer parameters and methods
 
 Utilities
   log_thought            record reasoning in the session log
@@ -98,6 +107,7 @@ from chemagent.ml.gnn_training_tools import (
     prepare_gnn_dataset,
     train_gnn_model_mcp,
     check_gnn_training,
+    load_gnn_model_mcp,
 )
 from chemagent.plots.display import show_plot
 from chemagent.plots.plot_tools import plot_classification_results, plot_regression_results
@@ -115,6 +125,11 @@ from chemagent.explainability.counterfactual_tools import (
 from chemagent.explainability.molce_tools import (
     explain_with_molce,
     identify_recurrent_molce_rules,
+)
+from chemagent.explainability.edgeshaper_tools import (
+    explain_gnn_with_edgeshaper,
+    visualize_edgeshaper_results,
+    get_edgeshaper_info,
 )
 from chemagent.servers.session_tools import (
     mcp,
@@ -165,6 +180,7 @@ _register(check_training)
 _register(prepare_gnn_dataset)
 _register(train_gnn_model_mcp)
 _register(check_gnn_training)
+_register(load_gnn_model_mcp)
 
 
 # ===========================================================================
@@ -202,6 +218,9 @@ _register(generate_counterfactuals)
 _register(visualize_counterfactuals)
 _register(explain_with_molce)
 _register(identify_recurrent_molce_rules)
+_register(explain_gnn_with_edgeshaper)
+_register(visualize_edgeshaper_results)
+_register(get_edgeshaper_info)
 
 
 # ===========================================================================

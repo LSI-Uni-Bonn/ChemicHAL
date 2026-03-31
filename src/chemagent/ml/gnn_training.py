@@ -268,6 +268,7 @@ def train_gnn_model(
     smiles_list: list[str],
     model_class: type = GCN,
     model_save_path: Optional[str] = None,
+    node_features_dim: int = 4,
     hidden_channels: int = 64,
     epochs: int = 100,
     lr: float = 0.001,
@@ -321,7 +322,7 @@ def train_gnn_model(
     # Initialize model
     num_classes = len(set(train_dataset.labels) | set(val_dataset.labels) | set(test_dataset.labels))
     model = model_class(
-        node_features_dim=4,  # atomic_num, formal_charge, num_hs, is_aromatic
+        node_features_dim=node_features_dim,  # atomic_num, formal_charge, num_hs, is_aromatic
         hidden_channels=hidden_channels,
         num_classes=num_classes,
     ).to(device)
@@ -377,10 +378,43 @@ def train_gnn_model(
     }
 
 
+def load_gnn_model(model_class: type, node_features_dim: int, hidden_channels: int, num_classes: int, model_path: str, device: Optional[str] = None) -> torch.nn.Module:
+    """Load a trained GNN model from a saved state dict.
+
+    Parameters
+    ----------
+    model_class :
+        GNN model class (GCN, GraphSAGE, GAT, etc.).
+    model_path :
+        Path to saved model state dict.
+    device :
+        torch device string (default: auto-detect cuda/cpu).
+    Returns
+    -------
+    Loaded GNN model instance with weights from the specified path.
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Initialize model architecture (must match training configuration)
+    model = model_class(
+        node_features_dim=node_features_dim,
+        hidden_channels=hidden_channels,  # Must match training hidden_channels
+        num_classes=num_classes,       # Must match number of classes in training data
+    ).to(device)
+
+    # Load state dict
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    return model
+
 __all__ = [
     "smiles_to_nx_graph",
     "nx_graph_to_pyg_data",
     "SmilesGraphDataset",
     "load_and_prepare_gnn_dataset",
     "train_gnn_model",
+    "load_gnn_model",
 ]

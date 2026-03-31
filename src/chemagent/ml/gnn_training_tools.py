@@ -5,13 +5,15 @@ Registered via ``_register()`` in ``chemagent_mcp.py``.
 Functions
 ---------
 prepare_gnn_dataset     — prepare train/val/test datasets from split .pkl and SMILES
-train_gnn_model         — train a GNN model on prepared dataset (non-blocking job)
+train_gnn_model_mcp     — train a GNN model on prepared dataset (non-blocking job)
 check_gnn_training      — poll a background GNN training job
+load_gnn_model_mcp      — load a trained GNN model from disk and validate
 
 Internal helpers
 ----------------
 _gnn_jobs               — shared dict of background GNN job state
 _run_gnn_job_in_background — thread launcher for GNN training
+_GNN_MODEL_MAP          — mapping of model names to classes
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from chemagent.ml.gnn_models import GCN, GAT, GC_GNN, GIN, GINE, GraphSAGE
-from chemagent.ml.gnn_training import load_and_prepare_gnn_dataset, train_gnn_model
+from chemagent.ml.gnn_training import load_and_prepare_gnn_dataset, train_gnn_model, load_gnn_model
 from chemagent.session_utils import get_session_logger as _get_session_logger
 
 
@@ -322,8 +324,99 @@ def check_gnn_training(
         }
 
 
+def load_gnn_model_mcp(
+    model_class_name: Literal["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"],
+    node_features_dim: int,
+    hidden_channels: int,
+    num_classes: int,
+    model_path: str,
+    device: Optional[str] = None,
+) -> dict[str, Any]:
+    """Load a trained GNN model from disk and verify it loads correctly.
+
+    Loads a GNN model from a saved state dict and performs a validation step
+    to ensure the weights were loaded correctly.
+
+    Parameters
+    ----------
+    model_class_name :
+        GNN architecture name: GCN, GraphSAGE, GAT, GC_GNN, GINE, or GIN.
+    node_features_dim :
+        Input node feature dimension (typically 4 for atomic features).
+    hidden_channels :
+        Hidden dimension (must match the training configuration).
+    num_classes :
+        Number of output classes (must match the training data).
+    model_path :
+        Path to saved model state dict (.pt file).
+    device :
+        torch device string ('cuda' or 'cpu'); auto-detects if None.
+
+    Returns
+    -------
+    Dict with:
+        - "status": "completed" or "failed"
+        - "model_path": path to the loaded model (if successful)
+        - "model_class": architecture name (if successful)
+        - "device": device used (if successful)
+        - "error": error message (if failed)
+    """
+    import torch
+
+    session_logger = _get_session_logger()
+
+    try:
+        # Resolve model class
+        if model_class_name not in _GNN_MODEL_MAP:
+            err_msg = (
+                f"Unknown model class: {model_class_name}. "
+                f"Available: {', '.join(_GNN_MODEL_MAP.keys())}"
+            )
+            return {"status": "failed", "error": err_msg}
+
+        model_class = _GNN_MODEL_MAP[model_class_name]
+
+        # Load model
+        model = load_gnn_model(
+            model_class=model_class,
+            node_features_dim=node_features_dim,
+            hidden_channels=hidden_channels,
+            num_classes=num_classes,
+            model_path=model_path,
+            device=device,
+        )
+
+        # Determine device
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        session_logger.log_event(
+            "gnn_model_loaded",
+            model_class=model_class_name,
+            model_path=model_path,
+            device=device,
+        )
+
+        return {
+            "status": "completed",
+            "model_path": str(model_path),
+            "model_class": model_class_name,
+            "device": device,
+        }
+    except Exception as exc:
+        session_logger.log_event(
+            "gnn_model_load_failed",
+            error=f"{type(exc).__name__}: {str(exc)}",
+        )
+        return {
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {str(exc)}",
+        }
+
+
 __all__ = [
     "prepare_gnn_dataset",
     "train_gnn_model_mcp",
     "check_gnn_training",
+    "load_gnn_model_mcp",
 ]
