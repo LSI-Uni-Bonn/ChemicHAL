@@ -51,6 +51,7 @@ def _show_mol_as_pil(
     rotate: float = 0,
     alt_dummy: bool = False,
     highlight_subs: bool = False,
+    ref_mol: Optional["Chem.Mol"] = None,
     size: tuple = (400, 350),
 ) -> Optional["PIL.Image.Image"]:
     """Render *mol* to a PIL Image using RDKit Cairo drawing with optional atom highlighting.
@@ -61,24 +62,22 @@ def _show_mol_as_pil(
     - ``corestructure`` + ``highlight_subs=True``: highlights substituent atoms (non-core).
     - ``original_cpd``: highlights atoms that differ from the MCS with the original.
     - ``alt_dummy=True``: renders dummy atoms as attachment-point wedges.
+    - ``ref_mol``: align *mol* 2D coordinates to match this reference molecule
+      before drawing (shared substructure used for alignment).
     """
     try:
         from rdkit.Chem.Draw import MolDraw2DCairo
         from rdkit.Chem import AllChem, rdFMCS
+        from rdkit.Chem import rdDepictor
+        from rdkit.Chem.Draw import rdMolDraw2D
         from PIL import Image as PILImage
         from io import BytesIO
 
-        d2d = MolDraw2DCairo(size[0], size[1])
-        dopts = d2d.drawOptions()
-        dopts.useBWAtomPalette()
-        dopts.prepareMolsBeforeDrawing = True
-        dopts.dummiesAreAttachments = alt_dummy
-        dopts.rotate = rotate
-        dopts.clearBackground = True
-        if legend:
-            dopts.legendFontSize = 14
-            dopts.legendFraction = 0.3
-
+        # --- Compute highlight atoms on raw mol BEFORE PrepareMolForDrawing ---
+        # PrepareMolForDrawing kekulizes aromaticity which breaks MCS/substructure
+        # matching against aromatic reference molecules. Atom indices are preserved
+        # (no atoms added when addChiralHs=False), so precomputed indices stay valid.
+        mol = Chem.RWMol(mol)
         atoms_to_highlight = list(highlightAtoms) if highlightAtoms else []
 
         if corestructure is not None:
@@ -87,7 +86,7 @@ def _show_mol_as_pil(
             core = Chem.RemoveHs(core)
             core.UpdatePropertyCache(strict=True)
             Chem.SanitizeMol(core)
-            core_match = set(mol.GetSubstructMatch(Chem.MolFromSmarts(Chem.MolToSmiles(core))))
+            core_match = set(mol.GetSubstructMatch(Chem.MolFromSmiles(Chem.MolToSmiles(core))))
             all_idx = {atom.GetIdx() for atom in mol.GetAtoms()}
             if not highlight_subs:
                 atoms_to_highlight = list(core_match)
@@ -102,6 +101,34 @@ def _show_mol_as_pil(
 
         if substructure_smiles is not None:
             atoms_to_highlight = list(mol.GetSubstructMatch(Chem.MolFromSmarts(substructure_smiles)))
+
+        # --- 2D coordinate alignment and drawing preparation ---
+        if ref_mol is not None:
+            rdDepictor.SetPreferCoordGen(True)
+            rdDepictor.Compute2DCoords(ref_mol)
+            try:
+                rdDepictor.GenerateDepictionMatching2DStructure(
+                    mol, ref_mol, acceptFailure=False
+                )
+            except Exception:
+                rdDepictor.GenerateDepictionMatching2DStructure(
+                    mol, ref_mol, acceptFailure=True
+                )
+        mol = rdMolDraw2D.PrepareMolForDrawing(mol, addChiralHs=False)
+        if not mol.GetNumConformers():
+            rdDepictor.Compute2DCoords(mol)
+
+        d2d = MolDraw2DCairo(size[0], size[1])
+        dopts = d2d.drawOptions()
+        dopts.useBWAtomPalette()
+        dopts.prepareMolsBeforeDrawing = True
+        dopts.dummiesAreAttachments = alt_dummy
+        dopts.rotate = rotate
+        dopts.clearBackground = True
+        if legend:
+            n_lines = legend.count("\n") + 1
+            dopts.legendFontSize = 14
+            dopts.legendFraction = min(0.05 * n_lines + 0.12, 0.40)
 
         d2d.DrawMolecule(mol, legend=legend, highlightAtoms=atoms_to_highlight)
         d2d.FinishDrawing()
@@ -206,9 +233,78 @@ class _MolContrastWrapper:
     def get_contrastive_cores(
         self, mol, foil_class: int, similarity_threshold: Optional[float] = None
     ):
-        return self._mc.get_contrastive_cores(
+        from rdkit.Chem import AllChem
+
+        df = self._mc.get_contrastive_cores(
             mol, foil_class, similarity_threshold=similarity_threshold
         )
+
+        # Remove any row whose scaffold is identical to the original core so
+        # the original core is never returned as a contrastive explanation.
+        try:
+            original_core, _ = self._mc.decompose_molecule(mol, original=True)
+            du = Chem.MolFromSmiles("*")
+            orig_stripped = AllChem.ReplaceSubstructs(
+                original_core, du, Chem.MolFromSmiles("[H]"), True
+            )[0]
+            orig_stripped = Chem.RemoveHs(orig_stripped)
+            Chem.SanitizeMol(orig_stripped)
+            orig_smi = Chem.MolToSmiles(orig_stripped)
+
+            def _stripped_smi(core_smi: str) -> str:
+                m = Chem.MolFromSmiles(core_smi)
+                if m is None:
+                    return ""
+                m = AllChem.ReplaceSubstructs(m, du, Chem.MolFromSmiles("[H]"), True)[0]
+                m = Chem.RemoveHs(m)
+                Chem.SanitizeMol(m)
+                return Chem.MolToSmiles(m)
+
+            mask = [_stripped_smi(smi) != orig_smi for smi in df.index]
+            df = df[mask]
+        except Exception:
+            pass
+
+        return df
+
+    def build_core_foil(
+        self,
+        mol: "Chem.Mol",
+        core_smiles: str,
+        similarity_threshold: Optional[float] = None,
+    ) -> "tuple[Optional[Chem.Mol], Optional[Chem.Mol]]":
+        """Build a foil by attaching the original R-groups onto a new core scaffold.
+
+        Mirrors the approach used in the MolCE notebook:
+
+            scaffolds = CE.get_scaffolds(original_core, similarity_threshold)
+            gen = CE.ext_core_rgroup_enumeration(original_r, scaffolds)
+            for prod, core in zip(gen, scaffolds):
+                if Chem.MolToSmiles(core) == target_core_smiles:
+                    visualise(prod, corestructure=core, highlight_subs=True)
+
+        Returns (foil_mol, annotated_core) so the caller can pass the
+        annotated core (which carries ``[*:N]`` dummy atoms) directly to
+        ``_show_mol_as_pil`` as ``corestructure``, matching the notebook style.
+        Returns (None, None) on failure.
+        """
+        try:
+            original_core, rgroups = self._mc.decompose_molecule(mol, original=True)
+            if not rgroups:
+                return None, None
+
+            scaffolds = self._mc.get_scaffolds(original_core, similarity_threshold)
+            if not scaffolds:
+                return None, None
+
+            gen = self._mc.ext_core_rgroup_enumeration(rgroups, scaffolds)
+            for prod, core in zip(gen, scaffolds):
+                if Chem.MolToSmiles(core) == core_smiles:
+                    return prod, core
+
+            return None, None
+        except Exception:
+            return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +494,7 @@ def explain_with_molce(
     # Pre-render query molecule (reused in both grids)
     from rdkit.Chem.Scaffolds import MurckoScaffold
     original_core = MurckoScaffold.GetScaffoldForMol(mol)
-    query_pil = _show_mol_as_pil(mol, legend=f"Query\npred={predicted_class}")
+    query_pil = _show_mol_as_pil(mol, legend=f"Original\npredicted_class={predicted_class}")
 
     # ==== R-group foil grid — same core, contrastive substituents highlighted ====
     img_path_rgroups: Optional[Path] = None
@@ -409,8 +505,7 @@ def explain_with_molce(
             pil = _show_mol_as_pil(
                 foil_mol,
                 legend=f"Rank {rec['rank']} | site {rec['r_group_site']}\ncontrast={rec['contrast_score']:.3f}",
-                corestructure=original_core,
-                highlight_subs=True,
+                original_cpd=mol,
             )
             if pil is not None:
                 rgroup_foil_pils.append(pil)
@@ -442,23 +537,32 @@ def explain_with_molce(
                 "contrast_score": float(row["contrast"]),
             })
 
-        # Draw core foil grid — foil molecule with contrastive core highlighted
+        # Draw core foil grid — original, extracted core, then foils with substituents highlighted
+        original_core_pil = _show_mol_as_pil(original_core, legend="Extracted core")
+
         core_foil_pils = []
         for rec in scaffold_records:
-            foil_mol = _try_build_core_foil(mol, rec["core_smiles"])
-            contrastive_core_mol = Chem.MolFromSmiles(rec["core_smiles"])
-            if foil_mol is not None and contrastive_core_mol is not None:
+            foil_mol, annotated_core = mc.build_core_foil(
+                mol, rec["core_smiles"], similarity_threshold=similarity_threshold
+            )
+            if foil_mol is not None:
                 pil = _show_mol_as_pil(
                     foil_mol,
                     legend=f"Rank {rec['rank']}\ncontrast={rec['contrast_score']:.3f}",
-                    corestructure=contrastive_core_mol,
+                    corestructure=annotated_core,
+                    highlight_subs=True,
                     alt_dummy=True,
+                    ref_mol=mol,
                 )
                 if pil is not None:
                     core_foil_pils.append(pil)
 
         try:
-            all_core_pils = ([query_pil] if query_pil is not None else []) + core_foil_pils
+            all_core_pils = (
+                ([query_pil] if query_pil is not None else [])
+                + ([original_core_pil] if original_core_pil is not None else [])
+                + core_foil_pils
+            )
             if all_core_pils:
                 img_path_scaffolds = base_path.parent / f"{base_path.name}_scaffolds.png"
                 _make_mol_grid(all_core_pils, cols=len(all_core_pils)).save(str(img_path_scaffolds))
@@ -775,7 +879,7 @@ def identify_recurrent_molce_rules(
         if m is not None:
             pil = _show_mol_as_pil(
                 m,
-                legend=f"Rank {rank} substituent\nmean contrast: {float(row['mean_contrast']):.3f}  (n={int(row['occurrences'])})",
+                legend=f"Rank {rank} substituent\n\nmean contrast: {float(row['mean_contrast']):.3f}  (n={int(row['occurrences'])})",
             )
             if pil is not None:
                 rgroup_pils.append(pil)
@@ -845,63 +949,6 @@ def identify_recurrent_molce_rules(
 # ---------------------------------------------------------------------------
 # Private helpers — attempt to reconstruct foil molecules for visualization
 # ---------------------------------------------------------------------------
-
-def _try_build_core_foil(query_mol: Chem.Mol, new_core_smiles: str) -> Optional[Chem.Mol]:
-    """Attempt to build a foil molecule by swapping the scaffold of *query_mol*.
-
-    Keeps the original R-groups and attaches them to the new core.  Used for
-    visualization only — returns ``None`` on any failure.
-    """
-    try:
-        import re
-        from rdkit.Chem import AllChem
-        from rdkit.Chem.Scaffolds import MurckoScaffold
-        from rdkit.Chem import rdRGroupDecomposition
-
-        # Decompose query into core + R-groups
-        core = MurckoScaffold.GetScaffoldForMol(query_mol)
-        rgd, _ = rdRGroupDecomposition.RGroupDecompose([core], [query_mol], asRows=False)
-        if len(rgd) < 2:
-            return None
-
-        rgd.pop("Core")
-        original_rgroups = []
-        for i in range(len(rgd)):
-            smi = Chem.MolToSmiles(rgd[f"R{i + 1}"][0])
-            smi = re.sub(r":\d+", "", smi)
-            if smi.count("*") == 1:
-                original_rgroups.append(Chem.MolFromSmiles(smi))
-            else:
-                original_rgroups.append(None)
-
-        # Parse the new core (may contain [*:N] attachment markers)
-        new_core = Chem.MolFromSmiles(new_core_smiles)
-        if new_core is None:
-            return None
-
-        # Attach original R-groups to the new core
-        tm = Chem.RWMol(new_core)
-        for i, r in enumerate(original_rgroups):
-            if r is not None:
-                subbed = re.sub(r"\*", f"[*:{i + 1}]", Chem.MolToSmiles(r))
-                r_re = Chem.MolFromSmiles(subbed)
-                if r_re is not None:
-                    tm.InsertMol(r_re)
-
-        prod = Chem.molzip(tm)
-        if prod is None:
-            return None
-
-        du = Chem.MolFromSmiles("*")
-        prod = AllChem.ReplaceSubstructs(prod, du, Chem.MolFromSmiles("[H]"), True)[0]
-        prod = Chem.RemoveHs(prod)
-        prod.UpdatePropertyCache(strict=True)
-        Chem.SanitizeMol(prod)
-        return prod
-
-    except Exception:
-        return None
-
 
 def _try_build_foil(
     query_mol: Chem.Mol,

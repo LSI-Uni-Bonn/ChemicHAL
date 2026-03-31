@@ -57,13 +57,56 @@ def find_all_tagged_atoms(mol, n_subs, tag = "sub_tag"):
 def annotate_sub_sites(core, scaffolds, n_subs):
 
     assert len(scaffolds) != 0
-    
+
     original_core = tag_substitution_atom(core)
 
-    generic_core_scaffold = MurckoScaffold.MakeScaffoldGeneric(original_core)
-    # make representation more generic
-    generic_core_scaffold = MurckoScaffold.GetScaffoldForMol(generic_core_scaffold)
-    generic_core_scaffold = get_reduced_skeleton(generic_core_scaffold)
+    # Build the generic scaffold before reduction so sub_tags are still present.
+    generic_core_unreduced = MurckoScaffold.MakeScaffoldGeneric(original_core)
+    generic_core_unreduced = MurckoScaffold.GetScaffoldForMol(generic_core_unreduced)
+
+    # Label every atom with its pre-reduction index so we can trace survivors.
+    rw_pre = Chem.RWMol(generic_core_unreduced)
+    for atom in rw_pre.GetAtoms():
+        atom.SetIntProp("_pre_idx", atom.GetIdx())
+    generic_core_unreduced = Chem.Mol(rw_pre)
+
+    # Reduced skeleton used for substructure matching.
+    generic_core_scaffold = get_reduced_skeleton(Chem.RWMol(generic_core_unreduced))
+
+    # Build mapping: sub_tag value (0..n_subs-1) -> atom idx in generic_core_scaffold.
+    # For tags that survived reduction the atom is found directly.
+    # For tags removed by reduction we walk the pre-reduction neighbors and find
+    # which neighbor survived into the reduced skeleton (by _pre_idx).
+    pre_idx_to_reduced = {
+        atom.GetIntProp("_pre_idx"): atom.GetIdx()
+        for atom in generic_core_scaffold.GetAtoms()
+        if atom.HasProp("_pre_idx")
+    }
+
+    sub_tag_to_reduced = {}
+    linker_tags = set()  # tag values whose original atom was removed by reduction
+    for tag_val in range(n_subs):
+        # Check if the tag survived directly.
+        for atom in generic_core_scaffold.GetAtoms():
+            if atom.HasProp("sub_tag") and atom.GetProp("sub_tag") == str(tag_val):
+                sub_tag_to_reduced[tag_val] = atom.GetIdx()
+                break
+        if tag_val in sub_tag_to_reduced:
+            continue
+        # Tag was removed by reduction — find the pre-reduction atom and trace
+        # to a surviving neighbor whose topology is unchanged.
+        for atom in generic_core_unreduced.GetAtoms():
+            if atom.HasProp("sub_tag") and atom.GetProp("sub_tag") == str(tag_val):
+                for nb in atom.GetNeighbors():
+                    nb_pre = nb.GetIntProp("_pre_idx")
+                    if nb_pre in pre_idx_to_reduced:
+                        sub_tag_to_reduced[tag_val] = pre_idx_to_reduced[nb_pre]
+                        linker_tags.add(tag_val)
+                        break
+                break
+
+    if len(sub_tag_to_reduced) != n_subs:
+        return []  # cannot locate all substitution sites on the reduced skeleton
 
     subbed_scaffolds = []
     skipped_cores = []
@@ -85,8 +128,30 @@ def annotate_sub_sites(core, scaffolds, n_subs):
         if len(core_match) == 0:
             continue
 
-        sub_sites = [list(core_match).index(i) for i in find_all_tagged_atoms(generic_core_scaffold, n_subs)]
-        sub_atoms_core = [example_core_scaffold.GetAtomWithIdx(i).GetIntProp("orig_idx") for i in sub_sites]
+        try:
+            sub_sites = [list(core_match).index(sub_tag_to_reduced[tag_val])
+                         for tag_val in range(n_subs)]
+        except ValueError:
+            continue  # a substitution-site atom is not part of this match
+
+        # For each tag, get the orig_idx in the full example_core molecule.
+        # For linker_tags the mapped atom is a ring atom (the surviving neighbor of
+        # the removed linker); the correct attachment point is the degree-2 non-ring
+        # neighbor of that ring atom in the full molecule — i.e. the linker atom that
+        # exists in the contrastive scaffold but was also collapsed by reduction.
+        sub_atoms_core = []
+        for tag_val, site_idx in zip(range(n_subs), sub_sites):
+            orig_idx = example_core_scaffold.GetAtomWithIdx(site_idx).GetIntProp("orig_idx")
+            if tag_val in linker_tags:
+                # Walk neighbors in the full example_core for a degree-2 non-ring atom.
+                linker_idx = None
+                for nb in example_core.GetAtomWithIdx(orig_idx).GetNeighbors():
+                    if nb.GetDegree() == 2 and not nb.IsInRing():
+                        linker_idx = nb.GetIdx()
+                        break
+                sub_atoms_core.append(linker_idx if linker_idx is not None else orig_idx)
+            else:
+                sub_atoms_core.append(orig_idx)
 
         rwm = Chem.RWMol(example_core)
 
