@@ -23,19 +23,21 @@ from typing import Any, Dict, List, Literal, Optional
 import joblib
 import numpy as np
 
-from chemagent.splitting import random_split, scaffold_split
+from chemagent.splitting import random_split, scaffold_split, analogue_series_split
 from .loader import workspace_root
 
 
 
 def split_processed(
     processed: Dict[str, Any],
-    split_type: Literal["random", "scaffold"] = "random",
+    split_type: Literal["random", "scaffold", "analogue_series"] = "random",
     train_size: float = 0.8,
     val_size: float = 0.1,
     test_size: float = 0.1,
     seed: Optional[int] = 42,
     stratified: bool = False,
+    n_attempts: int = 10,
+    n_cpds_tolerance: int = 5,
 ) -> Dict[str, Any]:
     """Split a processed dataset dict into train / val / test partitions.
 
@@ -43,16 +45,23 @@ def split_processed(
     ----------
     processed:
         Dict with keys ``features``, ``labels``, ``label_column``, and
-        optionally ``smiles`` and ``cid`` — produced by
+        optionally ``smiles``, ``cid``, and ``core`` — produced by
         :func:`~chemagent.datasets.featurizer.build_processed_entry`.
     split_type:
-        ``"random"`` (default) or ``"scaffold"``.
+        ``"random"`` (default), ``"scaffold"``, or ``"analogue_series"``.
     train_size, val_size, test_size:
-        Split proportions; must sum to 1.0.
+        Split proportions; must sum to 1.0.  For ``"analogue_series"``
+        only *test_size* is used (no validation set is produced).
     seed:
         Random seed for reproducibility (default 42).
     stratified:
         Preserve class proportions (random splits only).
+    n_attempts:
+        ``"analogue_series"`` only — number of random shuffles to try
+        before accepting the best result (default 10).
+    n_cpds_tolerance:
+        ``"analogue_series"`` only — maximum allowed deviation (in
+        compounds) between actual and target test size (default 5).
 
     Returns
     -------
@@ -65,7 +74,8 @@ def split_processed(
     Raises
     ------
     ValueError
-        If scaffold split is requested but no SMILES are available.
+        If scaffold split is requested but no SMILES are available, or
+        analogue_series split is requested but no core column is available.
     """
     features  = processed["features"]
     labels    = processed["labels"]
@@ -95,6 +105,19 @@ def split_processed(
             seed=seed,
             labels=labels.tolist() if stratified else None,
             stratified=stratified,
+        )
+    elif split_type == "analogue_series":
+        if "core" not in processed:
+            raise ValueError(
+                "Analogue series split requires a 'core' array in the processed dict. "
+                "Ensure core_col was set when calling build_processed_entry()."
+            )
+        split_indices = analogue_series_split(
+            cores=processed["core"].tolist(),
+            test_size=test_size,
+            seed=seed,
+            n_attempts=n_attempts,
+            n_cpds_tolerance=n_cpds_tolerance,
         )
     else:
         raise ValueError(f"Unknown split_type: {split_type!r}")
@@ -135,6 +158,10 @@ def split_processed(
         save_dict["train_cid"] = processed["cid"][train_idx]
         save_dict["val_cid"]   = processed["cid"][val_idx]
         save_dict["test_cid"]  = processed["cid"][test_idx]
+    if "core" in processed:
+        save_dict["train_core"] = processed["core"][train_idx]
+        save_dict["val_core"]   = processed["core"][val_idx]
+        save_dict["test_core"]  = processed["core"][test_idx]
 
     return {
         "train_idx":  train_idx,
