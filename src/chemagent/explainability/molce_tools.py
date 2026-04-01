@@ -321,6 +321,7 @@ def explain_with_molce(
     core_dict_path: Optional[str] = None,
     similarity_threshold: Optional[float] = None,
     output_path: Optional[str] = None,
+    include_anti_contrastive: bool = False,
 ) -> list:
     """Run MolCE contrastive attribution for a single compound (R-groups and scaffolds).
 
@@ -367,6 +368,12 @@ def explain_with_molce(
         Base path for output images (.png).  Two images are saved:
         ``<base>_rgroups.png`` and ``<base>_scaffolds.png``.
         Defaults to ``session_dir/plots/molce_<session_id>``.
+    include_anti_contrastive : bool, optional
+        When True, also return the top-3 anti-contrastive substituents and
+        scaffolds — those that *reinforce* the predicted class (negative
+        contrastive scores).  They are appended to the image grids and
+        reported under ``anti_contrastive_rgroups`` / ``anti_contrastive_scaffolds``
+        in the JSON output.  Default False.
 
     Returns
     -------
@@ -377,9 +384,15 @@ def explain_with_molce(
         JSON fields:
         - smiles, predicted_class, foil_class
         - contrastive_rgroups: top-3 R-group attributions (rank, r_group_smiles,
-          r_group_site, contrast_score)
+          r_group_site, contrast_score) — positive scores, shift toward foil class
+        - anti_contrastive_rgroups: top-3 R-groups that *reinforce* the predicted
+          class (rank, r_group_smiles, r_group_site, contrast_score) — negative scores
+          (only present when include_anti_contrastive=True)
         - contrastive_scaffolds: top-3 scaffold attributions (rank, core_smiles,
-          contrast_score)
+          contrast_score) — positive scores, shift toward foil class
+        - anti_contrastive_scaffolds: top-3 scaffolds that reinforce the predicted
+          class (rank, core_smiles, contrast_score) — negative scores
+          (only present when include_anti_contrastive=True)
         - num_rgroups_evaluated, num_scaffolds_evaluated
         - image_path_rgroups, image_path_scaffolds
         - status: "completed"
@@ -491,6 +504,17 @@ def explain_with_molce(
             "contrast_score": float(row["contrast"]),
         })
 
+    # Anti-contrastive: substituents that reinforce the predicted class (negative scores)
+    anti_rgroup_records = []
+    if include_anti_contrastive:
+        for rank, (_, row) in enumerate(rgroup_df[rgroup_df["contrast"] < 0].tail(3).iloc[::-1].iterrows(), start=1):
+            anti_rgroup_records.append({
+                "rank": rank,
+                "r_group_smiles": str(row["R-group"]),
+                "r_group_site": int(row["R_group_site"]),
+                "contrast_score": float(row["contrast"]),
+            })
+
     # Pre-render query molecule (reused in both grids)
     from rdkit.Chem.Scaffolds import MurckoScaffold
     original_core = MurckoScaffold.GetScaffoldForMol(mol)
@@ -510,8 +534,25 @@ def explain_with_molce(
             if pil is not None:
                 rgroup_foil_pils.append(pil)
 
+    # Anti-contrastive R-group foils (negative scores — reinforce predicted class)
+    anti_rgroup_foil_pils = []
+    for rec in anti_rgroup_records:
+        foil_mol = _try_build_foil(mol, rec["r_group_smiles"], rec["r_group_site"])
+        if foil_mol is not None:
+            pil = _show_mol_as_pil(
+                foil_mol,
+                legend=f"Anti-{rec['rank']} | site {rec['r_group_site']}\ncontrast={rec['contrast_score']:.3f}",
+                original_cpd=mol,
+            )
+            if pil is not None:
+                anti_rgroup_foil_pils.append(pil)
+
     try:
-        all_rgroup_pils = ([query_pil] if query_pil is not None else []) + rgroup_foil_pils
+        all_rgroup_pils = (
+            ([query_pil] if query_pil is not None else [])
+            + rgroup_foil_pils
+            + anti_rgroup_foil_pils
+        )
         if all_rgroup_pils:
             img_path_rgroups = base_path.parent / f"{base_path.name}_rgroups.png"
             _make_mol_grid(all_rgroup_pils, cols=len(all_rgroup_pils)).save(str(img_path_rgroups))
@@ -521,6 +562,7 @@ def explain_with_molce(
 
     # ==== Scaffold attribution — contrastive cores highlighted ====
     scaffold_records: list[dict] = []
+    anti_scaffold_records: list[dict] = []
     img_path_scaffolds: Optional[Path] = None
     num_scaffolds_evaluated = 0
 
@@ -536,6 +578,17 @@ def explain_with_molce(
                 "core_smiles": str(row["index"] if "index" in row.index else row.iloc[0]),
                 "contrast_score": float(row["contrast"]),
             })
+
+        # Anti-contrastive scaffolds (negative scores — reinforce predicted class)
+        if include_anti_contrastive:
+            for rank, (_, row) in enumerate(
+                core_df[core_df["contrast"] < 0].tail(3).iloc[::-1].iterrows(), start=1
+            ):
+                anti_scaffold_records.append({
+                    "rank": rank,
+                    "core_smiles": str(row["index"] if "index" in row.index else row.iloc[0]),
+                    "contrast_score": float(row["contrast"]),
+                })
 
         # Draw core foil grid — original, extracted core, then foils with substituents highlighted
         original_core_pil = _show_mol_as_pil(original_core, legend="Extracted core")
@@ -557,11 +610,30 @@ def explain_with_molce(
                 if pil is not None:
                     core_foil_pils.append(pil)
 
+        # Anti-contrastive scaffold foils
+        anti_core_foil_pils = []
+        for rec in anti_scaffold_records:
+            foil_mol, annotated_core = mc.build_core_foil(
+                mol, rec["core_smiles"], similarity_threshold=similarity_threshold
+            )
+            if foil_mol is not None:
+                pil = _show_mol_as_pil(
+                    foil_mol,
+                    legend=f"Anti-{rec['rank']}\ncontrast={rec['contrast_score']:.3f}",
+                    corestructure=annotated_core,
+                    highlight_subs=True,
+                    alt_dummy=True,
+                    ref_mol=mol,
+                )
+                if pil is not None:
+                    anti_core_foil_pils.append(pil)
+
         try:
             all_core_pils = (
                 ([query_pil] if query_pil is not None else [])
                 + ([original_core_pil] if original_core_pil is not None else [])
                 + core_foil_pils
+                + anti_core_foil_pils
             )
             if all_core_pils:
                 img_path_scaffolds = base_path.parent / f"{base_path.name}_scaffolds.png"
@@ -578,7 +650,9 @@ def explain_with_molce(
         "predicted_class": int(predicted_class),
         "foil_class": foil_class,
         "contrastive_rgroups": rgroup_records,
+        **({"anti_contrastive_rgroups": anti_rgroup_records} if include_anti_contrastive else {}),
         "contrastive_scaffolds": scaffold_records,
+        **({"anti_contrastive_scaffolds": anti_scaffold_records} if include_anti_contrastive else {}),
         "num_rgroups_evaluated": len(rgroup_df),
         "num_scaffolds_evaluated": num_scaffolds_evaluated,
         "image_path_rgroups": str(img_path_rgroups) if img_path_rgroups else None,
@@ -604,6 +678,7 @@ def identify_recurrent_molce_rules(
     core_dict_path: Optional[str] = None,
     similarity_threshold: Optional[float] = None,
     output_path: Optional[str] = None,
+    include_anti_contrastive: bool = False,
 ) -> list:
     """Global MolCE analysis: aggregate the top-3 contrastive R-group and scaffold rules.
 
@@ -654,6 +729,12 @@ def identify_recurrent_molce_rules(
         Base path for output images (.png).  Two images are saved:
         ``<base>_rgroups.png`` and ``<base>_scaffolds.png``.
         Defaults to ``session_dir/plots/molce_global_<session_id>``.
+    include_anti_contrastive : bool, optional
+        When True, also return the top-3 anti-contrastive substituents and
+        scaffolds — those that *reinforce* the fact class (negative mean
+        contrastive scores).  They are appended to the image grids and
+        reported under ``anti_rgroup_rules`` / ``anti_scaffold_rules`` in
+        the JSON output.  Default False.
 
     Returns
     -------
@@ -666,9 +747,15 @@ def identify_recurrent_molce_rules(
         - compounds_analyzed, compounds_failed
         - total_rgroup_evaluations, total_scaffold_evaluations
         - rgroup_rules: top-3 dicts (r_group_smiles, mean_contrast,
-          std_contrast, occurrences, r_group_site_most_common)
+          std_contrast, occurrences, r_group_site_most_common) — positive scores
+        - anti_rgroup_rules: top-3 R-groups reinforcing the fact class (same
+          fields, negative mean_contrast) — only present when
+          include_anti_contrastive=True
         - scaffold_rules: top-3 dicts (core_smiles, mean_contrast,
-          std_contrast, occurrences)
+          std_contrast, occurrences) — positive scores
+        - anti_scaffold_rules: top-3 scaffolds reinforcing the fact class (same
+          fields, negative mean_contrast) — only present when
+          include_anti_contrastive=True
         - image_path_rgroups, image_path_scaffolds
         - status: "completed"
 
@@ -830,9 +917,14 @@ def identify_recurrent_molce_rules(
         .reset_index(drop=True)
     )
     top_rgroups = grouped_r.head(3)
+    anti_top_rgroups = (
+        grouped_r[grouped_r["mean_contrast"] < 0].tail(3).iloc[::-1].reset_index(drop=True)
+        if include_anti_contrastive else pd.DataFrame()
+    )
 
     # ---- Aggregate scaffolds ----
     top_scaffolds = pd.DataFrame()
+    anti_top_scaffolds = pd.DataFrame()
     total_scaffold_evals = 0
 
     if all_scaffold_rows:
@@ -854,6 +946,10 @@ def identify_recurrent_molce_rules(
             .reset_index(drop=True)
         )
         top_scaffolds = grouped_c.head(3)
+        anti_top_scaffolds = (
+            grouped_c[grouped_c["mean_contrast"] < 0].tail(3).iloc[::-1].reset_index(drop=True)
+            if include_anti_contrastive else pd.DataFrame()
+        )
 
     # ---- Base output path ----
     if output_path is None:
@@ -884,6 +980,17 @@ def identify_recurrent_molce_rules(
             if pil is not None:
                 rgroup_pils.append(pil)
 
+    # Anti-contrastive R-group grid entries
+    for rank, (_, row) in enumerate(anti_top_rgroups.iterrows(), start=1):
+        m = _mol_from_fragment(str(row["r_group_smiles"]))
+        if m is not None:
+            pil = _show_mol_as_pil(
+                m,
+                legend=f"Anti-{rank} substituent\n\nmean contrast: {float(row['mean_contrast']):.3f}  (n={int(row['occurrences'])})",
+            )
+            if pil is not None:
+                rgroup_pils.append(pil)
+
     try:
         if rgroup_pils:
             img_path_rgroups = base_path.parent / f"{base_path.name}_rgroups.png"
@@ -893,8 +1000,8 @@ def identify_recurrent_molce_rules(
         img_path_rgroups = None
 
     # ---- Scaffold molecule grid ----
+    scaffold_pils = []
     if not top_scaffolds.empty:
-        scaffold_pils = []
         for rank, (_, row) in enumerate(top_scaffolds.iterrows(), start=1):
             m = _mol_from_fragment(str(row["core_smiles"]))
             if m is not None:
@@ -905,13 +1012,24 @@ def identify_recurrent_molce_rules(
                 if pil is not None:
                     scaffold_pils.append(pil)
 
-        try:
-            if scaffold_pils:
-                img_path_scaffolds = base_path.parent / f"{base_path.name}_scaffolds.png"
-                _make_mol_grid(scaffold_pils, cols=len(scaffold_pils)).save(str(img_path_scaffolds))
-                output_images.append(MCPImage(path=img_path_scaffolds))
-        except Exception:
-            img_path_scaffolds = None
+    if not anti_top_scaffolds.empty:
+        for rank, (_, row) in enumerate(anti_top_scaffolds.iterrows(), start=1):
+            m = _mol_from_fragment(str(row["core_smiles"]))
+            if m is not None:
+                pil = _show_mol_as_pil(
+                    m,
+                    legend=f"Anti-{rank} core\nmean contrast: {float(row['mean_contrast']):.3f}  (n={int(row['occurrences'])})",
+                )
+                if pil is not None:
+                    scaffold_pils.append(pil)
+
+    try:
+        if scaffold_pils:
+            img_path_scaffolds = base_path.parent / f"{base_path.name}_scaffolds.png"
+            _make_mol_grid(scaffold_pils, cols=len(scaffold_pils)).save(str(img_path_scaffolds))
+            output_images.append(MCPImage(path=img_path_scaffolds))
+    except Exception:
+        img_path_scaffolds = None
 
     # ---- Serialize results ----
     def _serialize(df: pd.DataFrame) -> list[dict]:
@@ -926,7 +1044,12 @@ def identify_recurrent_molce_rules(
     for r in rgroup_rules_out:
         r["r_group_site_most_common"] = int(r.get("r_group_site_most_common", 0))
 
+    anti_rgroup_rules_out = _serialize(anti_top_rgroups)
+    for r in anti_rgroup_rules_out:
+        r["r_group_site_most_common"] = int(r.get("r_group_site_most_common", 0))
+
     scaffold_rules_out = _serialize(top_scaffolds) if not top_scaffolds.empty else []
+    anti_scaffold_rules_out = _serialize(anti_top_scaffolds) if not anti_top_scaffolds.empty else []
 
     metadata: dict[str, Any] = {
         "fact_class": fact_class,
@@ -937,7 +1060,9 @@ def identify_recurrent_molce_rules(
         "total_rgroup_evaluations": total_rgroup_evals,
         "total_scaffold_evaluations": total_scaffold_evals,
         "rgroup_rules": rgroup_rules_out,
+        **({"anti_rgroup_rules": anti_rgroup_rules_out} if include_anti_contrastive else {}),
         "scaffold_rules": scaffold_rules_out,
+        **({"anti_scaffold_rules": anti_scaffold_rules_out} if include_anti_contrastive else {}),
         "image_path_rgroups": str(img_path_rgroups) if img_path_rgroups else None,
         "image_path_scaffolds": str(img_path_scaffolds) if img_path_scaffolds else None,
         "status": "completed",
