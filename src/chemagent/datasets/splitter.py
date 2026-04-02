@@ -42,8 +42,8 @@ def split_processed(
     Parameters
     ----------
     processed:
-        Dict with keys ``features``, ``labels``, ``label_column``, and
-        optionally ``smiles`` and ``cid`` — produced by
+        Dict with key ``labels`` and optionally ``features``, ``smiles`` and
+        ``cid`` — produced by
         :func:`~chemagent.datasets.featurizer.build_processed_entry`.
     split_type:
         ``"random"`` (default) or ``"scaffold"``.
@@ -67,9 +67,9 @@ def split_processed(
     ValueError
         If scaffold split is requested but no SMILES are available.
     """
-    features  = processed["features"]
-    labels    = processed["labels"]
-    n_samples = len(features)
+    labels = np.asarray(processed["labels"])
+    features = processed.get("features")
+    n_samples = len(labels)
 
     if split_type == "random":
         split_indices = random_split(
@@ -118,15 +118,16 @@ def split_processed(
         },
     }
 
-    # Build the save_dict (feature arrays keyed by partition prefix)
+    # Build the save_dict. Features are optional for GNN-oriented splits.
     save_dict: Dict[str, Any] = {
-        "train_features": features[train_idx],
         "train_labels":   labels[train_idx],
-        "val_features":   features[val_idx],
         "val_labels":     labels[val_idx],
-        "test_features":  features[test_idx],
         "test_labels":    labels[test_idx],
     }
+    if features is not None:
+        save_dict["train_features"] = features[train_idx]
+        save_dict["val_features"] = features[val_idx]
+        save_dict["test_features"] = features[test_idx]
     if "smiles" in processed:
         save_dict["train_smiles"] = processed["smiles"][train_idx]
         save_dict["val_smiles"]   = processed["smiles"][val_idx]

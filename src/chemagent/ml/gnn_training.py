@@ -6,11 +6,13 @@ and provides training loops for PyTorch Geometric GNN models.
 
 from __future__ import annotations
 
+import hashlib
 import pickle
 from typing import Optional
 
 import joblib
 import networkx as nx
+from tqdm.auto import tqdm
 import torch
 from rdkit import Chem
 from sklearn.model_selection import train_test_split
@@ -153,6 +155,23 @@ class SmilesGraphDataset(InMemoryDataset):
         torch.save((data, slices), self.processed_paths[0])
 
 
+def _build_dataset_cache_name(prefix: str, smiles: list[str], labels: list[int]) -> str:
+    """Build a stable cache key so processed graphs track split content.
+
+    This avoids reusing stale `*_processed.pt` files when switching datasets
+    (e.g., multiclass -> binary), which can otherwise produce out-of-range
+    labels for the current model head and trigger CUDA device-side asserts.
+    """
+    hasher = hashlib.sha1()
+    for smi, lbl in zip(smiles, labels):
+        hasher.update(smi.encode("utf-8", errors="ignore"))
+        hasher.update(b"|")
+        hasher.update(str(int(lbl)).encode("ascii"))
+        hasher.update(b"\n")
+    digest = hasher.hexdigest()[:12]
+    return f"{prefix}_{len(smiles)}_{digest}"
+
+
 def load_and_prepare_gnn_dataset(
     split_file_path: str,
     smiles_list: Optional[list[str]] = None,
@@ -243,21 +262,22 @@ def load_and_prepare_gnn_dataset(
         stratify=train_labels,
     )
 
-    # Create datasets
+    # Create datasets with content-derived names so cache files are refreshed
+    # when split/dataset content changes.
     train_dataset = SmilesGraphDataset(
         train_smiles,
         train_labels,
-        name="train",
+        name=_build_dataset_cache_name("train", train_smiles, train_labels),
     )
     val_dataset = SmilesGraphDataset(
         val_smiles,
         val_labels,
-        name="val",
+        name=_build_dataset_cache_name("val", val_smiles, val_labels),
     )
     test_dataset = SmilesGraphDataset(
         test_smiles,
         test_labels,
-        name="test",
+        name=_build_dataset_cache_name("test", test_smiles, test_labels),
     )
 
     return train_dataset, val_dataset, test_dataset
@@ -321,6 +341,11 @@ def train_gnn_model(
 
     # Initialize model
     num_classes = len(set(train_dataset.labels) | set(val_dataset.labels) | set(test_dataset.labels))
+    if num_classes < 2:
+        raise ValueError(
+            "Need at least 2 classes for classification training. "
+            f"Detected {num_classes} class from split labels."
+        )
     model = model_class(
         node_features_dim=node_features_dim,  # atomic_num, formal_charge, num_hs, is_aromatic
         hidden_channels=hidden_channels,
@@ -332,33 +357,84 @@ def train_gnn_model(
 
     # Training loop
     best_val_acc = 0.0
-    for epoch in range(epochs):
+    for epoch in tqdm(range(epochs)):
         model.train()
-        train_loss = 0.0
+
+        train_loss_sum = 0.0
+        train_correct = 0
+        train_total = 0
 
         for batch in train_loader:
             batch = batch.to(device)
             optimizer.zero_grad()
             out = model(batch.x, batch.edge_index, batch.batch)
-            loss = criterion(out, batch.y.view(-1))
+            targets = batch.y.view(-1).long()
+            max_target = int(targets.max().item()) if targets.numel() > 0 else -1
+            min_target = int(targets.min().item()) if targets.numel() > 0 else 0
+            if min_target < 0 or max_target >= out.shape[1]:
+                raise ValueError(
+                    "Invalid class label detected for CrossEntropyLoss: "
+                    f"label range=[{min_target}, {max_target}], "
+                    f"model_num_classes={out.shape[1]}. "
+                    "This often indicates stale cached graph datasets under data/gnn_dataset/processed."
+                )
+
+            loss = criterion(out, targets)
+            batch_n = int(targets.numel())
             loss.backward()
             optimizer.step()
-            train_loss += loss.item()
+
+            preds = out.argmax(dim=1)
+            train_correct += (preds == targets).sum().item()
+            train_total += batch_n
+            train_loss_sum += loss.item() * batch_n
+
+        train_loss = train_loss_sum / train_total if train_total > 0 else 0.0
+        train_acc = train_correct / train_total if train_total > 0 else 0.0
 
         # Validation
         model.eval()
-        val_acc = 0.0
+        val_loss_sum = 0.0
+        val_correct = 0
+        val_total = 0
         with torch.no_grad():
             for batch in val_loader:
                 batch = batch.to(device)
                 out = model(batch.x, batch.edge_index, batch.batch)
-                val_acc += (out.argmax(dim=1) == batch.y.view(-1)).sum().item()
+                targets = batch.y.view(-1).long()
+                batch_n = int(targets.numel())
+                loss = criterion(out, targets)
 
-        val_acc /= len(val_dataset) if len(val_dataset) > 0 else 1.0
+                preds = out.argmax(dim=1)
+                val_correct += (preds == targets).sum().item()
+                val_total += batch_n
+                val_loss_sum += loss.item() * batch_n
+
+        val_loss = val_loss_sum / val_total if val_total > 0 else 0.0
+        val_acc = val_correct / val_total if val_total > 0 else 0.0
+
+        # Save best model by validation accuracy
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             if model_save_path:
                 torch.save(model.state_dict(), model_save_path)
+
+        # Log epoch summary via the session logger to avoid writing to stdout.
+        try:
+            from chemagent.session_utils import get_session_logger as _get_session_logger
+            logger = _get_session_logger()
+            logger.log_event(
+                "gnn_epoch",
+                epoch=epoch + 1,
+                epochs=epochs,
+                train_loss=round(float(train_loss), 6),
+                train_acc=round(float(train_acc), 6),
+                val_loss=round(float(val_loss), 6),
+                val_acc=round(float(val_acc), 6),
+            )
+        except Exception:
+            # Fallback: avoid printing to stdout in MCP server context.
+            pass
 
     # Test evaluation
     model.eval()
@@ -367,7 +443,7 @@ def train_gnn_model(
         for batch in test_loader:
             batch = batch.to(device)
             out = model(batch.x, batch.edge_index, batch.batch)
-            test_acc += (out.argmax(dim=1) == batch.y.view(-1)).sum().item()
+            test_acc += (out.argmax(dim=1) == batch.y.view(-1).long()).sum().item()
 
     test_acc /= len(test_dataset) if len(test_dataset) > 0 else 1.0
 

@@ -2,10 +2,9 @@ from matplotlib.colors import Colormap
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D
-from rdkit_heatmaps import utils
-from rdkit_heatmaps.heatmaps import ValueGrid
-from rdkit_heatmaps.heatmaps import color_canvas
-from rdkit_heatmaps.functions import GaussFunction2D
+from .utils import *
+from .heatmaps import ValueGrid, color_canvas
+from .functions import GaussFunction2D
 from typing import *
 
 
@@ -89,7 +88,7 @@ def mapvalues2mol(mol: Chem.Mol,
         raise ValueError("len(bond_weights) is not equal to number of bonds in mol")
 
     # Setting up the grid
-    xl, yl = utils.get_mol_lims(mol)  # Limit of molecule
+    xl, yl = get_mol_lims(mol)  # Limit of molecule
     xl, yl = list(xl), list(yl)
 
     # Extent of the canvas is approximated by size of molecule scaled by ratio of canvas height and width.
@@ -109,8 +108,8 @@ def mapvalues2mol(mol: Chem.Mol,
         xl[0] -= (mol_width_new - mol_width) / 2
         xl[1] += (mol_width_new - mol_width) / 2
 
-    xl = utils.pad(xl, padding[0])  # Increasing size of x-axis
-    yl = utils.pad(yl, padding[1])  # Increasing size of y-axis
+    xl = pad(xl, padding[0])  # Increasing size of x-axis
+    yl = pad(yl, padding[1])  # Increasing size of y-axis
     v_map = ValueGrid(xl, yl, grid_resolution[0], grid_resolution[1])
 
     conf = mol.GetConformer(0)
@@ -227,7 +226,7 @@ def get_depiction_limits(mol: Chem.Mol,
         raise ValueError("len(bond_weights) is not equal to number of bonds in mol")
 
     # Setting up the grid
-    xl, yl = utils.get_mol_lims(mol)  # Limit of molecule
+    xl, yl = get_mol_lims(mol)  # Limit of molecule
     xl, yl = list(xl), list(yl)
 
     # Extent of the canvas is approximated by size of molecule scaled by ratio of canvas height and width.
@@ -247,8 +246,8 @@ def get_depiction_limits(mol: Chem.Mol,
         xl[0] -= (mol_width_new - mol_width) / 2
         xl[1] += (mol_width_new - mol_width) / 2
 
-    xl = utils.pad(xl, padding[0])  # Increasing size of x-axis
-    yl = utils.pad(yl, padding[1])  # Increasing size of y-axis
+    xl = pad(xl, padding[0])  # Increasing size of x-axis
+    yl = pad(yl, padding[1])  # Increasing size of y-axis
     v_map = ValueGrid(xl, yl, grid_resolution[0], grid_resolution[1])
 
     conf = mol.GetConformer(0)

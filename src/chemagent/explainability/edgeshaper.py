@@ -22,21 +22,16 @@ import numpy as np
 from numpy.random import default_rng
 
 import matplotlib.pyplot as plt
-# from tqdm import tqdm
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from rdkit import Chem
 from rdkit.Chem import Draw
 
-# edgeshaper_viz_utils wraps the visualization helpers used by EdgeSHAPer.
-# Keep imports routed through that module so this file can still load when
-# optional visualization dependencies are unavailable.
-try:
-    from chemagent.explainability.edgeshaper_viz_utils.molmapping import mapvalues2mol
-    from chemagent.explainability.edgeshaper_viz_utils.utils import transform2png
-    _HAS_EDGESHAPER_VIZ_UTILS = True
-except Exception:
-    _HAS_EDGESHAPER_VIZ_UTILS = False
+
+from chemagent.explainability.edgeshaper_viz_utils.molmapping import mapvalues2mol
+from chemagent.explainability.edgeshaper_viz_utils.utils import transform2png
+    
+
 
 ###EdgeSHAPer as a class###
 
@@ -826,11 +821,6 @@ class Edgeshaper:
         Aggregates multiple graph edges to single molecular bonds when present.
         """
         assert(self.explained) #make sure that the explanation has been computed
-
-        if not _HAS_EDGESHAPER_VIZ_UTILS:
-            raise ImportError(
-                "EdgeSHAPer visualization helpers are unavailable. Check the edgeshaper_viz_utils dependencies to enable visualization."
-            )
 
         img_expl = None
         img_pert_pos = None

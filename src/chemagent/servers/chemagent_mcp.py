@@ -44,6 +44,7 @@ GNN
   prepare_gnn_dataset     convert split .pkl + SMILES CSV to train/val/test graph datasets
   train_gnn_model_mcp     train a GNN (GCN, GraphSAGE, GAT, etc.) on graph datasets (non-blocking job)
   check_gnn_training      poll a background GNN training job
+    load_gnn_model          MCP-safe GNN loader alias (preferred when LLM calls this exact name)
   load_gnn_model_mcp      load a trained GNN model from disk and validate
 
 XAI
@@ -108,6 +109,7 @@ from chemagent.ml.gnn_training_tools import (
     prepare_gnn_dataset,
     train_gnn_model_mcp,
     check_gnn_training,
+    load_gnn_model,
     load_gnn_model_mcp,
 )
 from chemagent.plots.display import show_plot
@@ -182,6 +184,7 @@ _register(check_training)
 _register(prepare_gnn_dataset)
 _register(train_gnn_model_mcp)
 _register(check_gnn_training)
+_register(load_gnn_model)
 _register(load_gnn_model_mcp)
 
 
