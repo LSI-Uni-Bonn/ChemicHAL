@@ -52,5 +52,7 @@ notebooks/data/gnn_dataset/processed/pre_transform.pt
 notebooks/data/gnn_dataset/processed/test_processed.pt
 notebooks/data/gnn_dataset/processed/train_processed.pt
 notebooks/data/gnn_dataset/processed/val_processed.pt
+.claude/settings.json
+
 scripts/edit_csv_invert_labels_add_cid.py
 notebooks/data/gnn_dataset/

@@ -147,6 +147,7 @@ def build_processed_entry(
     label_col: Optional[str] = None,
     smiles_col: Optional[str] = None,
     id_col: Optional[str] = None,
+    core_col: Optional[str] = None,
     bit_info: Optional[Dict[int, Any]] = None,
 ) -> Dict[str, Any]:
     """Assemble the processed-dataset dict stored in ``_processed_datasets``.
@@ -160,6 +161,10 @@ def build_processed_entry(
         2-D feature array, shape ``(n_samples, n_features)``.
     label_col, smiles_col, id_col:
         Override column names; fall back to ``df.attrs`` values.
+    core_col:
+        Column containing analogue-series core / scaffold identifiers.
+        When provided, the ``"core"`` key is added to the processed dict so
+        that ``split_processed`` can use ``split_type="analogue_series"``.
     bit_info:
         Optional bit information dictionary for ECFP fingerprints.
         Maps bit indices to atom environment tuples (for explainability tools like MolAnchor).
@@ -168,11 +173,12 @@ def build_processed_entry(
     -------
     dict
         Keys: ``features``, ``labels``, ``label_column``, and optionally
-        ``smiles``, ``cid``, and ``bit_info``.
+        ``smiles``, ``cid``, ``core``, and ``bit_info``.
     """
     lc = label_col  or df.attrs.get("label_col",  "class_label")
     sc = smiles_col or df.attrs.get("smiles_col", None)
     ic = id_col     or df.attrs.get("id_col",     None)
+    cc = core_col   or df.attrs.get("core_col",   None)
 
     entry: Dict[str, Any] = {
         "features":     features,
@@ -183,6 +189,8 @@ def build_processed_entry(
         entry["smiles"] = df[sc].values
     if ic and ic in df.columns:
         entry["cid"] = df[ic].values
+    if cc and cc in df.columns:
+        entry["core"] = df[cc].values
     if bit_info is not None:
         entry["bit_info"] = bit_info
     return entry

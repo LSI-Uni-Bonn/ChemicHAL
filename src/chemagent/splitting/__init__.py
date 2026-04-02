@@ -17,14 +17,16 @@ Usage
     stats = get_split_statistics(idx)
 """
 
-from .random_split   import random_split
-from .scaffold_split import scaffold_split
+from .random_split          import random_split
+from .scaffold_split        import scaffold_split
+from .analogue_series_split import analogue_series_split
 from .statistics     import get_split_statistics, class_distribution
 from .utils          import validate_split_sizes, set_random_seed, generate_murcko_scaffold
 
 __all__ = [
     "random_split",
     "scaffold_split",
+    "analogue_series_split",
     "get_split_statistics",
     "class_distribution",
     "validate_split_sizes",
