@@ -19,13 +19,11 @@ import sys
 from pathlib import Path
 from typing import Any, Literal, Optional, Union
 import json
-from io import BytesIO
 
 import torch
 import numpy as np
 import joblib
 from rdkit import Chem
-from mcp.server.fastmcp import Image as MCPImage
 
 _SRC = Path(__file__).resolve().parents[2]
 if str(_SRC) not in sys.path:
@@ -370,7 +368,7 @@ def visualize_edgeshaper_results(
     """Visualize EdgeSHAPer explanations as molecular heatmaps.
 
     Creates RDKit-based heatmap image(s) showing edge importance on the molecular
-    structure. Returns image(s) for inline display in chat.
+    structure. Returns a serializable summary plus saved image paths.
 
     Parameters
     ----------
@@ -387,8 +385,8 @@ def visualize_edgeshaper_results(
     -------
     dict with:
         - status: "completed" or "failed"
-        - images: list of MCPImage objects for inline display
         - image_paths: list of filesystem paths to saved PNG files (if save_results=True)
+        - note: text hint explaining how to display the saved plot with show_plot
         - error: error message if status is "failed"
         - num_edges: total edges in the GNN graph
         - num_bonds: total bonds in the molecule
@@ -401,8 +399,8 @@ def visualize_edgeshaper_results(
     ...     edge_index_json='[[0, 1, 2], [1, 2, 0]]'
     ... )
     >>> if result["status"] == "completed":
-    ...     for img in result["images"]:
-    ...         display(img)  # Or use MCP image display
+    ...     print(result["image_paths"][0])
+    ...     # Then call show_plot(result["image_paths"][0]) in MCP-compatible chat UIs
     """
     try:
         # Parse JSON inputs
@@ -473,17 +471,11 @@ def visualize_edgeshaper_results(
             img_pil = transform2png(canvas.GetDrawingText())
             plt.clf()
 
-            # Convert PIL image to bytes for MCP
-            img_bytes = BytesIO()
-            img_pil.save(img_bytes, format="PNG")
-            img_bytes.seek(0)
-            mcp_image = MCPImage(data=img_bytes.getvalue(), format="png")
-
             result = {
                 "status": "completed",
-                "images": [mcp_image],
                 "num_edges": num_edges,
                 "num_bonds": num_bonds,
+                "note": "Use show_plot(image_paths[0]) to render the saved PNG inline.",
             }
 
             # Save PNG to session if requested
@@ -497,15 +489,17 @@ def visualize_edgeshaper_results(
                 viz_path = viz_dir / f"edgeshaper_heatmap_{timestamp}.png"
                 img_pil.save(viz_path, dpi=(300, 300))
                 result["image_paths"] = [str(viz_path)]
+            else:
+                result["image_paths"] = []
 
             return result
 
         except ImportError:
             result = {
                 "status": "completed",
-                "images": [],
                 "num_edges": num_edges,
                 "num_bonds": num_bonds,
+                "image_paths": [],
                 "note": "EdgeSHAPer visualization dependencies are not available; heatmap visualization skipped. Ensure edgeshaper_viz_utils and its visualization dependencies are installed.",
             }
             return result
@@ -515,7 +509,7 @@ def visualize_edgeshaper_results(
         return {
             "status": "failed",
             "error": error_msg,
-            "images": [],
+            "image_paths": [],
         }
 
 
