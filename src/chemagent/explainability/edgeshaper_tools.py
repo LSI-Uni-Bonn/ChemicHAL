@@ -25,6 +25,7 @@ import torch
 import numpy as np
 import joblib
 from rdkit import Chem
+from mcp.server.fastmcp import Image as MCPImage
 
 _SRC = Path(__file__).resolve().parents[2]
 if str(_SRC) not in sys.path:
@@ -585,7 +586,7 @@ def visualize_edgeshaper_results(
     phi_edges_json: str,
     edge_index_json: str,
     save_results: bool = True,
-) -> dict[str, Any]:
+) -> Any:
     """Visualize EdgeSHAPer explanations as molecular heatmaps.
 
     Creates RDKit-based heatmap image(s) showing edge importance on the molecular
@@ -604,13 +605,11 @@ def visualize_edgeshaper_results(
 
     Returns
     -------
-    dict with:
-        - status: "completed" or "failed"
-        - image_paths: list of filesystem paths to saved PNG files (if save_results=True)
-        - note: text hint explaining how to display the saved plot with show_plot
-        - error: error message if status is "failed"
-        - num_edges: total edges in the GNN graph
-        - num_bonds: total bonds in the molecule
+    If a PNG is generated and saved:
+        [MCPImage(...), summary_json] so the plot can render inline directly.
+
+    Otherwise:
+        dict with status/error and metadata fields.
 
     Examples
     --------
@@ -702,7 +701,7 @@ def visualize_edgeshaper_results(
                 "num_bonds": num_bonds,
                 "matched_directed_edges": matched_directed_edges,
                 "matched_bonds": matched_bonds,
-                "note": "Use show_plot(image_paths[0]) to render the saved PNG inline.",
+                "note": "A PNG visualization was generated; whether it appears inline depends on the MCP client.",
             }
 
             if num_edges > 0 and matched_directed_edges < max(2, int(0.5 * num_edges)):
@@ -722,8 +721,13 @@ def visualize_edgeshaper_results(
                 viz_path = viz_dir / f"edgeshaper_heatmap_{timestamp}.png"
                 img_pil.save(viz_path, dpi=(300, 300))
                 result["image_paths"] = [str(viz_path)]
+                result["rendered_inline"] = True
+
+                # Return the image first, then the JSON metadata.
+                return [MCPImage(data=viz_path.read_bytes(), format="png"), json.dumps(result, indent=2)]
             else:
                 result["image_paths"] = []
+                result["rendered_inline"] = False
 
             return result
 

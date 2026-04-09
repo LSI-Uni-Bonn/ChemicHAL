@@ -48,8 +48,8 @@ GNN
   load_gnn_model_mcp      load a trained GNN model from disk and validate
 
 XAI
-  explain_with_shap              compute per-compound SHAP values from a model + split .pkl
-  explain_smiles                 compute SHAP values for SMILES strings typed directly in chat (no split file needed)
+  explain_with_shap              compute per-compound SHAP values from tabular sklearn models (.pkl/.joblib)
+  explain_smiles                 compute SHAP values for chat SMILES with tabular sklearn models
   plot_shap_mol                  render atom-level SHAP heatmaps on molecular structures
   explain_with_molanchor         identify molecular anchors (critical fragments) for a single prediction
   identify_recurrent_anchor_rules batch MolAnchor + compute substructure & anchor occurrence metrics
@@ -59,8 +59,8 @@ XAI
   visualize_counterfactuals      draw query compound + counterfactuals as a molecule grid image
   explain_with_molce             contrastive R-group + scaffold attribution — why class A and not class B?
   identify_recurrent_molce_rules global MolCE: aggregate top-3 R-group + scaffold rules across a compound class
-  explain_gnn_with_edgeshaper    edge-level Shapley values (explainability) for GNN predictions
-  visualize_edgeshaper_results   render edge importance heatmaps on molecular structures
+  explain_gnn_with_edgeshaper    edge-level Shapley values (required tool for GNN prediction explanations)
+  visualize_edgeshaper_results   generate edge importance heatmaps on molecular structures and save a PNG artifact
   get_edgeshaper_info            reference information about EdgeSHAPer parameters and methods
 
 Utilities

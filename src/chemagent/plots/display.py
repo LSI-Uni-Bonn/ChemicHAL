@@ -33,10 +33,11 @@ def show_plot(plot_path: str) -> list:
     Returns:
         A list of [{"plot": path}, Image] so the image renders inline alongside
         a text confirmation in MCP-compatible chat UIs.
+        The image is returned as inline PNG bytes for maximum cross-client reliability.
     """
     p = Path(plot_path)
     if not p.exists():
         p = WORKSPACE_ROOT / plot_path
     if not p.exists():
         raise FileNotFoundError(f"Plot file not found: {plot_path}")
-    return [{"plot": str(p)}, Image(path=str(p))]
+    return [{"plot": str(p)}, Image(data=p.read_bytes(), format="png")]

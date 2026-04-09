@@ -3,6 +3,12 @@ chemagent.explainability.shap_explainer
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Thin wrapper that selects the right SHAP explainer for a trained sklearn model.
 
+Important routing rule for LLM tool callers
+-------------------------------------------
+These SHAP helpers are for tabular sklearn-style models saved as .pkl/.joblib
+(RFC/RFR/SVC/DNN tabular path). They are not for GNN checkpoints (.pt/.pth).
+For GNN explanations, use explain_gnn_with_edgeshaper.
+
 Supported models
 ----------------
 * RandomForestClassifier / RandomForestRegressor  →  ``shap.TreeExplainer``
@@ -308,7 +314,7 @@ def explain_with_shap(
     correct_only: bool = True,
     save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compute per-compound, per-feature SHAP values for a trained model.
+    """Compute per-compound, per-feature SHAP values for a trained tabular model.
 
     Loads the model and split from disk, predicts on the chosen partition,
     optionally filters to correctly predicted instances, computes SHAP values,
@@ -319,6 +325,11 @@ def explain_with_shap(
     Pass correct_only=False to explain all instances.
 
     Workflow: check_training → THIS TOOL → plot_shap_mol
+
+    Routing note:
+        Use this only for tabular sklearn models (.pkl/.joblib) trained on
+        fingerprint features. If the model is a GNN checkpoint (.pt/.pth),
+        use explain_gnn_with_edgeshaper instead.
 
     Args:
         model_path: Path to .pkl model from train_model() / check_training().
@@ -437,7 +448,7 @@ def explain_smiles_with_shap(
     featurizer_kwargs: Optional[dict] = None,
     save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compute SHAP values for one or more SMILES strings without a pre-built split file.
+    """Compute SHAP values for one or more SMILES strings with a tabular model.
 
     Use this when you have a SMILES string from the chat UI and want to understand
     the model's prediction — no labelled split file or ground-truth label needed.
@@ -452,6 +463,10 @@ def explain_smiles_with_shap(
     the predicted class.
 
     Workflow: check_training → THIS TOOL → plot_shap_mol
+
+    Routing note:
+        This tool is for tabular sklearn models (.pkl/.joblib). For GNN
+        prediction explanations, use explain_gnn_with_edgeshaper.
 
     Args:
         model_path: Path to .pkl model from train_model() / check_training().
