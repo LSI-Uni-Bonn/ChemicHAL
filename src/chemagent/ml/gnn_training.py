@@ -121,6 +121,8 @@ class SmilesGraphDataset(InMemoryDataset):
         Dataset identifier for caching.
     """
 
+    CACHE_SCHEMA_VERSION = "v2"
+
     def __init__(
         self,
         smiles_list: list[str],
@@ -134,15 +136,32 @@ class SmilesGraphDataset(InMemoryDataset):
         super().__init__(root)
         # PyTorch 2.6 defaults to weights_only=True, which blocks loading
         # arbitrary dataset objects saved by InMemoryDataset processing.
-        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
+        loaded = torch.load(self.processed_paths[0], weights_only=False)
+        self.metadata: dict = {}
+
+        if isinstance(loaded, tuple) and len(loaded) >= 2:
+            self.data, self.slices = loaded[0], loaded[1]
+            if len(loaded) >= 3 and isinstance(loaded[2], dict):
+                self.metadata = loaded[2]
+        else:
+            raise ValueError(
+                f"Unsupported processed dataset format in {self.processed_paths[0]}"
+            )
+
+        if isinstance(self.metadata.get("smiles_list"), list):
+            self.smiles_list = list(self.metadata["smiles_list"])
+        if isinstance(self.metadata.get("labels"), list):
+            self.labels = list(self.metadata["labels"])
 
     @property
     def processed_file_names(self) -> list[str]:
-        return [f"{self.name}_processed.pt"]
+        return [f"{self.name}_{self.CACHE_SCHEMA_VERSION}_processed.pt"]
 
     def process(self) -> None:
         """Convert SMILES to PyG Data objects and cache."""
         data_list = []
+        kept_smiles: list[str] = []
+        kept_labels: list[int] = []
 
         for smiles, label in zip(self.smiles_list, self.labels):
             nx_graph = smiles_to_nx_graph(smiles)
@@ -150,9 +169,16 @@ class SmilesGraphDataset(InMemoryDataset):
 
             if pyg_data is not None:
                 data_list.append(pyg_data)
+                kept_smiles.append(smiles)
+                kept_labels.append(int(label))
 
         data, slices = self.collate(data_list)
-        torch.save((data, slices), self.processed_paths[0])
+        metadata = {
+            "smiles_list": kept_smiles,
+            "labels": kept_labels,
+            "dataset_name": self.name,
+        }
+        torch.save((data, slices, metadata), self.processed_paths[0])
 
 
 def _build_dataset_cache_name(prefix: str, smiles: list[str], labels: list[int]) -> str:
