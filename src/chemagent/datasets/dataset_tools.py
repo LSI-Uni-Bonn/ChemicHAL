@@ -239,7 +239,8 @@ def split_dataset(
         save_path: Output .pkl path. Defaults to session splits/ dir. Pass "" to skip.
 
     Returns:
-        train/val/test metadata, statistics, saved_to path, next_step hint.
+        split_file_path (alias: saved_to), train/val/test metadata,
+        statistics, and next_step hint.
     """
     # Accept bool, "true"/"false", "True"/"False", or None (→ False)
     if isinstance(stratified, str):
@@ -356,6 +357,10 @@ def split_dataset(
         )
 
     result: dict[str, Any] = {
+        # Keep this first so LLM tool callers can reliably chain downstream calls.
+        "split_file_path": saved_to,
+        # Backward-compatible alias used by existing callers.
+        "saved_to":   saved_to,
         "train":      _split_meta(train_idx),
         "val":        _split_meta(val_idx),
         "test":       _split_meta(test_idx),
@@ -364,7 +369,6 @@ def split_dataset(
         "has_features": "features" in processed,
         "statistics": statistics,
         "seed":       seed,
-        "saved_to":   saved_to,
         "next_step": (
             f"Call train_model(split_file_path='{saved_to}', "
             "algorithm='RFC', task='classification', opt_metric='balanced_accuracy') "

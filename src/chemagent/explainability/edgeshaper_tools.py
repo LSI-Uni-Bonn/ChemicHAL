@@ -6,6 +6,7 @@ Registered via ``_register()`` in ``chemagent_mcp.py``.
 
 Functions
 ---------
+select_compound_for_edgeshaper — choose a correctly predicted GNN test compound for EdgeSHAPer
 explain_gnn_with_edgeshaper    — compute edge importance scores for a GNN model on a test compound
 visualize_edgeshaper_results   — render atom/edge-level SHAP heatmaps on molecular structures
 
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional, Union
 import json
 import pickle
+import random
 
 import torch
 import numpy as np
@@ -239,6 +241,330 @@ def _build_graph_from_smiles(compound_smiles: str) -> tuple[torch.Tensor, torch.
     return x, edge_index, edge_weight
 
 
+def _load_edgeshaper_model(
+    model: Optional[Any],
+    model_path: Optional[str],
+    model_class_name: Literal["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"] = "GCN",
+    node_features_dim: int = 4,
+    hidden_channels: Optional[int] = None,
+    num_classes: Optional[int] = None,
+    device: str = "cpu",
+) -> torch.nn.Module:
+    """Load a GNN model object or reconstruct it from a state dict checkpoint."""
+    if model is None:
+        if not model_path:
+            raise ValueError("Provide either 'model' or 'model_path'.")
+        model_file = Path(model_path)
+        if not model_file.exists():
+            raise FileNotFoundError(f"Model not found: {model_file}")
+        loaded_obj = torch.load(model_file, map_location=device, weights_only=False)
+        model = loaded_obj
+
+        if isinstance(loaded_obj, dict):
+            model_map = {
+                "GCN": GCN,
+                "GraphSAGE": GraphSAGE,
+                "GAT": GAT,
+                "GC_GNN": GC_GNN,
+                "GINE": GINE,
+                "GIN": GIN,
+            }
+            if model_class_name not in model_map:
+                raise ValueError(
+                    f"Unknown model_class_name '{model_class_name}'. "
+                    f"Available: {list(model_map.keys())}"
+                )
+
+            inferred_hidden = hidden_channels
+            if inferred_hidden is None:
+                for k in ("conv1.bias", "conv1.lin.weight", "conv1.lin_l.weight", "conv1.att_src"):
+                    if k in loaded_obj and hasattr(loaded_obj[k], "shape"):
+                        inferred_hidden = int(loaded_obj[k].shape[0])
+                        break
+            if inferred_hidden is None:
+                raise ValueError(
+                    "Could not infer hidden_channels from state_dict. "
+                    "Pass hidden_channels explicitly."
+                )
+
+            inferred_classes = num_classes
+            if inferred_classes is None and "lin.weight" in loaded_obj:
+                inferred_classes = int(loaded_obj["lin.weight"].shape[0])
+            if inferred_classes is None:
+                raise ValueError(
+                    "Could not infer num_classes from state_dict. "
+                    "Pass num_classes explicitly."
+                )
+
+            model = model_map[model_class_name](
+                node_features_dim=node_features_dim,
+                hidden_channels=inferred_hidden,
+                num_classes=inferred_classes,
+            )
+            model.load_state_dict(loaded_obj)
+
+    if not isinstance(model, torch.nn.Module):
+        raise TypeError(
+            "'model' must be a loaded torch.nn.Module instance with .eval(). "
+            f"Got {type(model)!r}."
+        )
+
+    model = model.to(device)
+    model.eval()
+    return model
+
+
+def _get_graph_count(graph_data: Any) -> int:
+    """Best-effort graph count for supported serialized graph containers."""
+    if isinstance(graph_data, tuple) and len(graph_data) >= 2 and isinstance(graph_data[1], dict):
+        slices = graph_data[1]
+        if "x" in slices:
+            return int(slices["x"].numel() - 1)
+
+    if isinstance(graph_data, (list, tuple)) and graph_data:
+        return len(graph_data)
+
+    if hasattr(graph_data, "__len__") and hasattr(graph_data, "__getitem__"):
+        try:
+            return len(graph_data)
+        except TypeError:
+            pass
+
+    if hasattr(graph_data, "x") and hasattr(graph_data, "edge_index"):
+        return 1
+
+    raise ValueError(
+        "Unsupported graph_data format. Expected a collated tuple, a list of graph objects, "
+        "an InMemoryDataset-like object, or a single graph object."
+    )
+
+
+def _extract_graph_label(graph_data: Any, compound_idx: int) -> int:
+    """Extract the class label for a graph at a given index."""
+    if isinstance(graph_data, tuple) and len(graph_data) >= 2 and isinstance(graph_data[1], dict):
+        data_obj, slices = graph_data[0], graph_data[1]
+        if "y" not in slices:
+            raise ValueError("Collated graph data is missing required slices for 'y'.")
+
+        y_slices = slices["y"]
+        n_graphs = int(y_slices.numel() - 1)
+        if compound_idx >= n_graphs:
+            raise IndexError(
+                f"compound_idx {compound_idx} out of range for dataset of size {n_graphs}."
+            )
+
+        y_start = int(y_slices[compound_idx].item())
+        y_end = int(y_slices[compound_idx + 1].item())
+        y_raw = data_obj.y[y_start:y_end]
+        if y_raw.numel() == 0:
+            raise ValueError(f"No label data found for compound_idx={compound_idx}.")
+        return int(y_raw.view(-1)[0].item())
+
+    if isinstance(graph_data, (list, tuple)) and graph_data:
+        if compound_idx >= len(graph_data):
+            raise IndexError(
+                f"compound_idx {compound_idx} out of range for dataset of size {len(graph_data)}."
+            )
+        selected = graph_data[compound_idx]
+        if not hasattr(selected, "y"):
+            raise ValueError("Selected graph object is missing 'y'.")
+        return int(selected.y.view(-1)[0].item())
+
+    if hasattr(graph_data, "__len__") and hasattr(graph_data, "__getitem__"):
+        try:
+            n_graphs = len(graph_data)
+            if n_graphs > 0:
+                if compound_idx >= n_graphs:
+                    raise IndexError(
+                        f"compound_idx {compound_idx} out of range for dataset of size {n_graphs}."
+                    )
+                selected = graph_data[compound_idx]
+                if hasattr(selected, "y"):
+                    return int(selected.y.view(-1)[0].item())
+        except TypeError:
+            pass
+
+    if hasattr(graph_data, "y"):
+        if compound_idx != 0:
+            raise IndexError(
+                "Loaded graph_data contains a single graph, but compound_idx is "
+                f"{compound_idx}. Use compound_idx=0 or provide a multi-graph dataset file."
+            )
+        return int(graph_data.y.view(-1)[0].item())
+
+    raise ValueError("Could not extract a class label from the provided graph_data.")
+
+
+def _predict_gnn_logits(
+    model: torch.nn.Module,
+    x: torch.Tensor,
+    edge_index: torch.Tensor,
+    edge_weight: Optional[torch.Tensor],
+    device: str,
+) -> torch.Tensor:
+    """Run a GNN forward pass for a single graph and return logits."""
+    x = x.to(device)
+    edge_index = edge_index.to(device)
+    batch = torch.zeros(x.shape[0], dtype=torch.long, device=device)
+    if edge_weight is not None:
+        edge_weight = edge_weight.to(device)
+
+    with torch.no_grad():
+        logits = model(x, edge_index, batch, edge_weight=edge_weight)
+
+    if logits.ndim == 1:
+        logits = logits.unsqueeze(0)
+    return logits
+
+
+def select_compound_for_edgeshaper(
+    model: Optional[Any] = None,
+    model_path: Optional[str] = None,
+    graph_data_path: str | None = None,
+    split: Literal["train", "val", "test"] = "test",
+    split_file_path: Optional[str] = None,
+    model_class_name: Literal["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"] = "GCN",
+    node_features_dim: int = 4,
+    hidden_channels: Optional[int] = None,
+    num_classes: Optional[int] = None,
+    target_class: Optional[int] = None,
+    seed: Optional[int] = None,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+) -> dict[str, Any]:
+    """Select a correctly predicted GNN compound for EdgeSHAPer analysis.
+
+    LLM agent routing note: use this helper only when the downstream explainability
+    workflow is EdgeSHAPer. It selects a valid graph-level test example that the
+    model predicts correctly, so you can pass the returned graph to
+    explain_gnn_with_edgeshaper(). Do not use it to replace the explicit
+    compound_idx / compound_smiles workflow; that direct-input path remains
+    available in the explainer.
+
+    Parameters
+    ----------
+    model : torch.nn.Module, optional
+        Loaded GNN model object. Takes precedence over model_path.
+    model_path : str, optional
+        Path to a serialized model or state_dict checkpoint.
+    graph_data_path : str
+        Path to a processed GNN graph dataset (.pt).
+    split : str, optional
+        Split name used for metadata fallback (default: "test").
+    split_file_path : str, optional
+        Optional split .pkl file for SMILES fallback metadata.
+    target_class : int, optional
+        If provided, restrict selection to correctly predicted compounds of this class.
+    seed : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    dict
+        Graph-selection metadata with keys including compound_idx, compound_smiles,
+        true_label, predicted_label, prediction_confidence, selection_source, and status.
+    """
+    logger = _get_session_logger()
+
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    try:
+        model = _load_edgeshaper_model(
+            model=model,
+            model_path=model_path,
+            model_class_name=model_class_name,
+            node_features_dim=node_features_dim,
+            hidden_channels=hidden_channels,
+            num_classes=num_classes,
+            device=device,
+        )
+
+        if not graph_data_path:
+            raise ValueError("graph_data_path is required for EdgeSHAPer compound selection.")
+
+        graph_file = Path(graph_data_path)
+        if not graph_file.exists():
+            raise FileNotFoundError(f"Graph data not found: {graph_file}")
+
+        graph_data = torch.load(graph_file, map_location=device, weights_only=False)
+        graph_smiles = _extract_graph_smiles(graph_data)
+        split_smiles = _load_split_smiles(split_file_path, split) if split_file_path else None
+        n_graphs = _get_graph_count(graph_data)
+
+        correct_candidates: list[dict[str, Any]] = []
+        for idx in range(n_graphs):
+            x, edge_index, edge_weight, _ = _extract_graph_components(graph_data, idx)
+            true_label = _extract_graph_label(graph_data, idx)
+            if target_class is not None and true_label != target_class:
+                continue
+
+            logits = _predict_gnn_logits(model, x, edge_index, edge_weight, device)
+            predicted_label = int(logits.argmax(dim=1).item())
+            if hasattr(torch, "softmax") and logits.shape[1] > 1:
+                confidence = float(torch.softmax(logits, dim=1).max(dim=1).values.item())
+            else:
+                confidence = float(torch.sigmoid(logits).view(-1)[0].item())
+
+            if predicted_label != true_label:
+                continue
+
+            smiles = None
+            if graph_smiles is not None and idx < len(graph_smiles):
+                smiles = graph_smiles[idx]
+            elif split_smiles is not None and idx < len(split_smiles):
+                smiles = split_smiles[idx]
+            if smiles is None:
+                smiles = f"compound_{idx}"
+
+            correct_candidates.append(
+                {
+                    "compound_idx": int(idx),
+                    "compound_smiles": smiles,
+                    "true_label": int(true_label),
+                    "predicted_label": int(predicted_label),
+                    "prediction_confidence": confidence,
+                    "selection_source": "graph_data",
+                }
+            )
+
+        if not correct_candidates:
+            class_note = f" for class {target_class}" if target_class is not None else ""
+            raise ValueError(
+                f"No correctly predicted compounds found in the '{split}' graph set{class_note}."
+            )
+
+        selected = random.choice(correct_candidates)
+        result = {
+            **selected,
+            "split": split,
+            "total_candidates": len(correct_candidates),
+            "status": "completed",
+        }
+
+        logger.log_event(
+            "edgeshaper_compound_selected",
+            split=split,
+            total_candidates=len(correct_candidates),
+            compound_idx=result["compound_idx"],
+            compound_smiles=result["compound_smiles"],
+            true_label=result["true_label"],
+            predicted_label=result["predicted_label"],
+            selection_source=result["selection_source"],
+        )
+
+        return result
+
+    except Exception as exc:
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+        logger.log_event("edgeshaper_compound_selection_failed", error=error_msg)
+        return {
+            "status": "failed",
+            "error": error_msg,
+            "job_id": f"edgeshaper_select_failed_{int(np.random.random() * 1e9)}",
+        }
+
+
 def explain_gnn_with_edgeshaper(
     model: Optional[Any] = None,
     model_path: Optional[str] = None,
@@ -389,68 +715,15 @@ def explain_gnn_with_edgeshaper(
                             f" Could not find default path for split '{split}': {default_graph_path}"
                         )
 
-        # Resolve model either from a loaded object or from model_path.
-        if model is None:
-            if not model_path:
-                raise ValueError("Provide either 'model' or 'model_path'.")
-            model_file = Path(model_path)
-            if not model_file.exists():
-                raise FileNotFoundError(f"Model not found: {model_file}")
-            loaded_obj = torch.load(model_file, map_location=device, weights_only=False)
-            model = loaded_obj
-
-            # If checkpoint is state_dict-like, reconstruct the architecture.
-            if isinstance(loaded_obj, dict):
-                model_map = {
-                    "GCN": GCN,
-                    "GraphSAGE": GraphSAGE,
-                    "GAT": GAT,
-                    "GC_GNN": GC_GNN,
-                    "GINE": GINE,
-                    "GIN": GIN,
-                }
-                if model_class_name not in model_map:
-                    raise ValueError(
-                        f"Unknown model_class_name '{model_class_name}'. "
-                        f"Available: {list(model_map.keys())}"
-                    )
-
-                inferred_hidden = hidden_channels
-                if inferred_hidden is None:
-                    for k in ("conv1.bias", "conv1.lin.weight", "conv1.lin_l.weight", "conv1.att_src"):
-                        if k in loaded_obj and hasattr(loaded_obj[k], "shape"):
-                            inferred_hidden = int(loaded_obj[k].shape[0])
-                            break
-                if inferred_hidden is None:
-                    raise ValueError(
-                        "Could not infer hidden_channels from state_dict. "
-                        "Pass hidden_channels explicitly."
-                    )
-
-                inferred_classes = num_classes
-                if inferred_classes is None and "lin.weight" in loaded_obj:
-                    inferred_classes = int(loaded_obj["lin.weight"].shape[0])
-                if inferred_classes is None:
-                    raise ValueError(
-                        "Could not infer num_classes from state_dict. "
-                        "Pass num_classes explicitly."
-                    )
-
-                model = model_map[model_class_name](
-                    node_features_dim=node_features_dim,
-                    hidden_channels=inferred_hidden,
-                    num_classes=inferred_classes,
-                )
-                model.load_state_dict(loaded_obj)
-
-        # Validate model object: must be a full torch.nn.Module.
-        if not isinstance(model, torch.nn.Module):
-            raise TypeError(
-                "'model' must be a loaded torch.nn.Module instance with .eval(). "
-                f"Got {type(model)!r}."
-            )
-        model = model.to(device)
-        model.eval()
+        model = _load_edgeshaper_model(
+            model=model,
+            model_path=model_path,
+            model_class_name=model_class_name,
+            node_features_dim=node_features_dim,
+            hidden_channels=hidden_channels,
+            num_classes=num_classes,
+            device=device,
+        )
 
         if selection_source != "smiles:external":
             # Load graph data

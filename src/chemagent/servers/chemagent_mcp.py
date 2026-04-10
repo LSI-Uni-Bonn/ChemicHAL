@@ -1,4 +1,4 @@
-"""chemagent_mcp.py — single consolidated FastMCP server (27 tools).
+"""chemagent_mcp.py — single consolidated FastMCP server (41 tools).
 
 STANDARD WORKFLOW (data stays on disk — preferred):
     find_datasets()                                          # discover CSVs
@@ -59,6 +59,7 @@ XAI
   visualize_counterfactuals      draw query compound + counterfactuals as a molecule grid image
   explain_with_molce             contrastive R-group + scaffold attribution — why class A and not class B?
   identify_recurrent_molce_rules global MolCE: aggregate top-3 R-group + scaffold rules across a compound class
+  select_compound_for_edgeshaper  randomly select a correctly predicted graph compound for EdgeSHAPer analysis
   explain_gnn_with_edgeshaper    edge-level Shapley values (required tool for GNN prediction explanations)
   visualize_edgeshaper_results   generate edge importance heatmaps on molecular structures and save a PNG artifact
   get_edgeshaper_info            reference information about EdgeSHAPer parameters and methods
@@ -130,6 +131,7 @@ from chemagent.explainability.molce_tools import (
     identify_recurrent_molce_rules,
 )
 from chemagent.explainability.edgeshaper_tools import (
+  select_compound_for_edgeshaper,
     explain_gnn_with_edgeshaper,
     visualize_edgeshaper_results,
     get_edgeshaper_info,
@@ -223,6 +225,7 @@ _register(generate_counterfactuals)
 _register(visualize_counterfactuals)
 _register(explain_with_molce)
 _register(identify_recurrent_molce_rules)
+_register(select_compound_for_edgeshaper)
 _register(explain_gnn_with_edgeshaper)
 _register(visualize_edgeshaper_results)
 _register(get_edgeshaper_info)

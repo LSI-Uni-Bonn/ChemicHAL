@@ -12,6 +12,7 @@ from typing import Optional
 
 import joblib
 import networkx as nx
+import numpy as np
 from tqdm.auto import tqdm
 import torch
 from rdkit import Chem
@@ -20,6 +21,7 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 
 from chemagent.ml.gnn_models import GCN, GAT, GC_GNN, GIN, GINE, GraphSAGE
+from chemagent.ml.metrics import classification_metrics, multiclass_metrics
 
 
 
@@ -349,8 +351,61 @@ def train_gnn_model(
     Dictionary with keys:
         - "best_val_acc": Best validation accuracy across epochs.
         - "test_acc": Final test accuracy.
+        - "train_evaluation": Train metrics (same family as tabular models).
+        - "val_evaluation": Validation metrics.
+        - "test_evaluation": Test metrics.
         - "model_path": Path where model was saved (or None).
     """
+
+    def _evaluate_loader(loader: DataLoader) -> dict:
+        labels_all: list[int] = []
+        preds_all: list[int] = []
+        probs_all: list[list[float]] = []
+
+        model.eval()
+        with torch.no_grad():
+            for batch in loader:
+                batch = batch.to(device)
+                logits = model(batch.x, batch.edge_index, batch.batch)
+                probs = torch.softmax(logits, dim=1)
+                preds = probs.argmax(dim=1)
+
+                labels_all.extend(batch.y.view(-1).long().detach().cpu().tolist())
+                preds_all.extend(preds.detach().cpu().tolist())
+                probs_all.extend(probs.detach().cpu().tolist())
+
+        if not labels_all:
+            return {"status": "empty", "n_samples": 0}
+
+        labels_np = np.array(labels_all)
+        preds_np = np.array(preds_all)
+        probs_np = np.array(probs_all)
+        n_classes = len(np.unique(labels_np))
+
+        if n_classes == 2:
+            return classification_metrics(
+                labels=labels_np,
+                pred=preds_np,
+                y_proba=probs_np,
+                model_id=getattr(model_class, "__name__", "GNN"),
+                model_type="gnn",
+            )
+
+        return multiclass_metrics(
+            labels=labels_np,
+            pred=preds_np,
+            model_id=getattr(model_class, "__name__", "GNN"),
+            model_type="gnn",
+        )
+
+    def _extract_accuracy(eval_result: dict) -> float:
+        if "Accuracy" in eval_result:
+            return float(eval_result["Accuracy"])
+        if "overall_metrics" in eval_result and isinstance(eval_result["overall_metrics"], dict):
+            if "Accuracy" in eval_result["overall_metrics"]:
+                return float(eval_result["overall_metrics"]["Accuracy"])
+        return 0.0
+
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -462,20 +517,23 @@ def train_gnn_model(
             # Fallback: avoid printing to stdout in MCP server context.
             pass
 
-    # Test evaluation
-    model.eval()
-    test_acc = 0.0
-    with torch.no_grad():
-        for batch in test_loader:
-            batch = batch.to(device)
-            out = model(batch.x, batch.edge_index, batch.batch)
-            test_acc += (out.argmax(dim=1) == batch.y.view(-1).long()).sum().item()
+    # Full split metrics (parity with tabular model outputs)
+    train_evaluation = _evaluate_loader(train_loader)
+    val_evaluation = _evaluate_loader(val_loader)
+    test_evaluation = _evaluate_loader(test_loader)
 
-    test_acc /= len(test_dataset) if len(test_dataset) > 0 else 1.0
+    # Preserve backward-compatible scalar accuracy fields.
+    test_acc = _extract_accuracy(test_evaluation)
 
     return {
         "best_val_acc": float(best_val_acc),
         "test_acc": float(test_acc),
+        "train_evaluation": train_evaluation,
+        "val_evaluation": val_evaluation,
+        "test_evaluation": test_evaluation,
+        "n_train": int(len(train_dataset)),
+        "n_val": int(len(val_dataset)),
+        "n_test": int(len(test_dataset)),
         "model_path": model_save_path,
     }
 

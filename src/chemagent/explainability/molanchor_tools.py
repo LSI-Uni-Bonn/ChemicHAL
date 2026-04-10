@@ -10,7 +10,7 @@ explain_with_molanchor            — identify molecular anchors (fragments) cri
 explain_batch_with_molanchor      — run analysis on all correctly predicted compounds of a given class
 identify_recurrent_anchor_rules    — compute substructure & anchor occurrence metrics to identify robust rules
 visualize_molanchor_anchors        — draw molecular structure with identified anchors highlighted
-select_compound_for_xai           — randomly select a correctly predicted compound for analysis
+select_compound_for_xai           — MolAnchor-only selector for a correctly predicted compound
 get_molanchor_info                — reference information about MolAnchor parameters and methods
 
 The MolAnchor methodology identifies which molecular fragments (substructures) are
@@ -295,6 +295,11 @@ def explain_with_molanchor(
     Identify molecular anchors (critical fragments) for a model prediction using MolAnchor,
     and automatically visualize the anchors highlighted on the compound structure.
 
+    LLM agent routing note: this tool is for MolAnchor only. Use it when you want
+    fragment-level anchors on a single SMILES input and are prepared to work with
+    the MolAnchor visualisation/metadata output. Do not route SHAP, MolCE, or
+    EdgeSHAPer requests here.
+
     The image is rendered directly in the chat window (LM Studio). Metadata —
     including anchor SMILES, precision, fragment count — is returned as a JSON string
     alongside the image.
@@ -397,10 +402,15 @@ def select_compound_for_xai(
     seed: Optional[int] = None,
 ) -> dict[str, Any]:
     """
-    Randomly select a correctly predicted compound of a specified class for XAI analysis.
-    
-    This tool helps identify good test cases for explainability analysis (e.g., MolAnchor)
-    by finding compounds that the model predicted correctly and belong to a specific class.
+    Select a correctly predicted compound for MolAnchor analysis only.
+
+    LLM agent routing note: use this helper only when the downstream explainability
+    workflow is MolAnchor. It is a dataset/model selector for choosing a valid
+    compound to hand into MolAnchor, not a generic pre-processing step for SHAP,
+    MolCE, or EdgeSHAPer workflows.
+
+    The tool finds compounds that the model predicted correctly and belong to a
+    specified class, so MolAnchor can run on a high-confidence example.
     
     Parameters
     ----------
@@ -532,6 +542,10 @@ def explain_batch_with_molanchor(
 ) -> dict[str, Any]:
     """
     Run MolAnchor analysis for all correctly predicted compounds of a given class.
+
+    LLM agent routing note: this tool is for MolAnchor only. Use it for batch
+    fragment-anchor analysis over a split/model pair, not for SHAP, MolCE, or
+    EdgeSHAPer workflows.
     
     This tool analyzes which molecular fragments are consistently critical across multiple
     compounds for a model's predictions. It systematically identifies anchors for all

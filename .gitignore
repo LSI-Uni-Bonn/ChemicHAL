@@ -58,3 +58,4 @@ scripts/edit_csv_invert_labels_add_cid.py
 notebooks/data/gnn_dataset/
 splits/chembl_binary_gnn.pkl
 splits/chembl_binary_random.pkl
+data/processed/

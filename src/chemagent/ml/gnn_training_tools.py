@@ -324,6 +324,9 @@ def check_gnn_training(
         - "status": "running", "completed", or "failed"
         - "best_val_acc": best validation accuracy (if completed)
         - "test_acc": test accuracy (if completed)
+        - "train_evaluation": train split metrics (if completed)
+        - "val_evaluation": validation split metrics (if completed)
+        - "test_evaluation": test split metrics (if completed)
         - "model_path": path to saved model (if completed)
         - "error": error message (if failed)
     """
@@ -342,6 +345,12 @@ def check_gnn_training(
             "status": "completed",
             "best_val_acc": result.get("best_val_acc"),
             "test_acc": result.get("test_acc"),
+            "train_evaluation": result.get("train_evaluation"),
+            "val_evaluation": result.get("val_evaluation"),
+            "test_evaluation": result.get("test_evaluation"),
+            "n_train": result.get("n_train"),
+            "n_val": result.get("n_val"),
+            "n_test": result.get("n_test"),
             "model_path": result.get("model_path"),
         }
     elif job["status"] == "failed":
