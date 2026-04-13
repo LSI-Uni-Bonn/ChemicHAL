@@ -41,8 +41,7 @@ def split_processed(
 ) -> Dict[str, Any]:
     """Split a processed dataset dict into train / val / test partitions.
 
-    Parameters
-    ----------
+    Args:
     processed:
         Dict with key ``labels`` and optionally ``features``, ``smiles``, ``cid``, and ``core`` — produced by
         :func:`~chemagent.datasets.featurizer.build_processed_entry`.
@@ -62,16 +61,14 @@ def split_processed(
         ``"analogue_series"`` only — maximum allowed deviation (in
         compounds) between actual and target test size (default 5).
 
-    Returns
-    -------
+    Returns:
     dict
         Keys:
         ``train_idx``, ``val_idx``, ``test_idx`` (index arrays),
         ``statistics`` (counts / percentages),
         ``save_dict`` (ready to pass to :func:`save_split`).
 
-    Raises
-    ------
+    Raises:
     ValueError
         If scaffold split is requested but no SMILES are available, or
         analogue_series split is requested but no core column is available.
@@ -180,8 +177,7 @@ def save_split(
 ) -> str:
     """Serialise a split dict to a ``.pkl`` file.
 
-    Parameters
-    ----------
+    Args:
     save_dict:
         Dict to persist (from :func:`split_processed`).
     dataset_id:
@@ -192,8 +188,7 @@ def save_split(
         Explicit file path. Defaults to
         ``data/splits/<dataset_id>_<split_type>.pkl`` under the workspace root.
 
-    Returns
-    -------
+    Returns:
     str
         Absolute path of the saved file.
     """

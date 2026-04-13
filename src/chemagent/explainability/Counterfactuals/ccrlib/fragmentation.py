@@ -512,7 +512,7 @@ def fragment(smi: str, max_cuts: int, mode="MMP", get_removable_bonds=get_acycli
         # Failure occurs when time limit is exceeded
         # return number of cuts generated so far for statistical purposes
         return len(cuts)
-    # return valid framgentations as core/substituents dictionary in case of success
+    # return valid fragmentations as core/substituents dictionary in case of success
     return cuts
 
 

@@ -53,8 +53,7 @@ def plot_actual_vs_predicted(
 
     Annotates R² and MAE in the plot.
 
-    Parameters
-    ----------
+    Args:
     y_true:
         Ground-truth target values.
     y_pred:
@@ -70,8 +69,7 @@ def plot_actual_vs_predicted(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
@@ -133,8 +131,7 @@ def plot_residuals(
     A horizontal zero line is drawn.  Systematic curvature indicates
     model mis-specification.
 
-    Parameters
-    ----------
+    Args:
     y_true:
         Ground-truth values.
     y_pred:
@@ -146,8 +143,7 @@ def plot_residuals(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
@@ -193,8 +189,7 @@ def plot_residual_histogram(
 ) -> Figure:
     """Histogram + KDE of prediction residuals (y_true − y_pred).
 
-    Parameters
-    ----------
+    Args:
     y_true:
         Ground-truth values.
     y_pred:
@@ -208,8 +203,7 @@ def plot_residual_histogram(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
@@ -252,8 +246,7 @@ def plot_error_distribution(
 ) -> Figure:
     """Histogram + KDE of absolute prediction errors |y_true − y_pred|.
 
-    Parameters
-    ----------
+    Args:
     y_true:
         Ground-truth values.
     y_pred:
@@ -265,8 +258,7 @@ def plot_error_distribution(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()

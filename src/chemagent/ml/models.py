@@ -81,8 +81,7 @@ PARAM_GRIDS: dict[str, dict[str, list]] = {
 def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
     """Return an unfitted scikit-learn estimator for *algorithm*.
 
-    Parameters
-    ----------
+    Args:
     algorithm:
         Registered key, e.g. ``"RFC"``.
     reg_class:
@@ -91,8 +90,7 @@ def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
     random_seed:
         Forwarded to the estimator's ``random_state`` parameter.
 
-    Raises
-    ------
+    Raises:
     ValueError
         If *algorithm* is not defined in this function.
     """

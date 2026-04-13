@@ -44,8 +44,7 @@ def ECFP(
     ECFP4 = radius=2 (default, most common)
     ECFP6 = radius=3
 
-    Parameters
-    ----------
+    Args:
     smiles_list:
         List of SMILES strings, e.g. ``["CCO", "CC(=O)O", "c1ccccc1"]``.
     n_bits:
@@ -59,8 +58,7 @@ def ECFP(
         If ``True``, also return bit information (which bits correspond to which atom environments).
         Required for MolAnchor explainability. Only works with the first molecule in smiles_list.
 
-    Returns
-    -------
+    Returns:
     List
         One fingerprint per molecule, each a ``list[int]`` of length *n_bits*
         (or a sparse fingerprint object when *sparse=True*).
@@ -68,8 +66,7 @@ def ECFP(
         (fingerprints_list, bit_info_dict) where bit_info_dict maps bit indices 
         to atom environment tuples (atom_idx, radius).
 
-    Raises
-    ------
+    Raises:
     ValueError
         If any SMILES string is invalid.
     """
@@ -100,18 +97,15 @@ def MACCS(smiles_list: List[str]) -> List[List[int]]:
     structural fragments. They are fixed-length, interpretable, and well-suited
     for substructure-based similarity searches.
 
-    Parameters
-    ----------
+    Args:
     smiles_list:
         List of SMILES strings.
 
-    Returns
-    -------
+    Returns:
     List[List[int]]
         One 166-element integer list per molecule.
 
-    Raises
-    ------
+    Raises:
     ValueError
         If any SMILES string is invalid.
     """

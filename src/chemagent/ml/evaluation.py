@@ -34,8 +34,7 @@ from .metrics import (
 class Model_Evaluation:
     """Collect predictions and compute evaluation reports.
 
-    Parameters
-    ----------
+    Args:
     labels:
         Ground-truth labels (classification) or values (regression).
     y_pred:
@@ -52,8 +51,7 @@ class Model_Evaluation:
         Task type: ``"classification"``, ``"classification-cw"``, or
         ``"regression"``.
 
-    Attributes
-    ----------
+    Attributes:
     pred_performance_class:
         ``pandas.DataFrame`` with classification metrics, or ``None`` for
         regression tasks.
@@ -110,8 +108,7 @@ class Model_Evaluation:
 
         Delegates to :func:`~chemagent.ml.metrics.classification_metrics`.
 
-        Returns
-        -------
+        Returns:
         pandas.DataFrame
         """
         return self._build_classification_df()
@@ -121,8 +118,7 @@ class Model_Evaluation:
 
         Includes overall metrics, per-class metrics, and the confusion matrix.
 
-        Returns
-        -------
+        Returns:
         dict
         """
         assert self.y_pred is not None, "No classification predictions available"
@@ -137,8 +133,7 @@ class Model_Evaluation:
     def prediction_performance_regression(self) -> dict:
         """Return regression metrics (MAE, MSE, RMSE, R², Pearson r).
 
-        Returns
-        -------
+        Returns:
         dict
         """
         assert (

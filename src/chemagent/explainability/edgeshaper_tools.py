@@ -440,8 +440,7 @@ def select_compound_for_edgeshaper(
     compound_idx / compound_smiles workflow; that direct-input path remains
     available in the explainer.
 
-    Parameters
-    ----------
+    Args:
     model : torch.nn.Module, optional
         Loaded GNN model object. Takes precedence over model_path.
     model_path : str, optional
@@ -457,8 +456,7 @@ def select_compound_for_edgeshaper(
     seed : int, optional
         Random seed for reproducibility.
 
-    Returns
-    -------
+    Returns:
     dict
         Graph-selection metadata with keys including compound_idx, compound_smiles,
         true_label, predicted_label, prediction_confidence, selection_source, and status.
@@ -593,8 +591,7 @@ def explain_gnn_with_edgeshaper(
     approximations for edge importance to explain the model's prediction on a
     specific compound using vectorized batch processing (faster than sequential).
 
-    Parameters
-    ----------
+    Args:
     model : torch.nn.Module, optional
         Loaded GNN model object. Must be a full model instance (not a state_dict)
         so that ``model.eval()`` and forward inference can be executed.
@@ -633,8 +630,7 @@ def explain_gnn_with_edgeshaper(
     save_results : bool, optional
         If True, saves results to session directory (default: True)
 
-    Returns
-    -------
+    Returns:
     dict with:
         - job_id: unique identifier for this explanation
         - status: "completed" or "failed"
@@ -649,8 +645,7 @@ def explain_gnn_with_edgeshaper(
         - result_save_path: path to saved results JSON (if save_results=True)
         - error: error message if status is "failed"
 
-    Examples
-    --------
+    Examples:
     Use an already loaded model object:
 
     >>> loaded_model = load_gnn_model(...)
@@ -865,8 +860,7 @@ def visualize_edgeshaper_results(
     Creates RDKit-based heatmap image(s) showing edge importance on the molecular
     structure. Returns a serializable summary plus saved image paths.
 
-    Parameters
-    ----------
+    Args:
     smiles : str
         SMILES string of the molecule to visualize
     phi_edges_json : str
@@ -876,16 +870,14 @@ def visualize_edgeshaper_results(
     save_results : bool, optional
         If True, saves PNG files to session directory (default: True)
 
-    Returns
-    -------
+    Returns:
     If a PNG is generated and saved:
         [MCPImage(...), summary_json] so the plot can render inline directly.
 
     Otherwise:
         dict with status/error and metadata fields.
 
-    Examples
-    --------
+    Examples:
     >>> result = visualize_edgeshaper_results(
     ...     smiles="CCO",
     ...     phi_edges_json='[0.1, -0.05, 0.2]',

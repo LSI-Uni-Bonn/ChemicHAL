@@ -32,8 +32,7 @@ DEFAULT_COLORMAP = 'coolwarm' # Blue for negative SHAP values, red for positive,
 def get_ecfp_morgan_generator_bit_info(smiles: str, radius: int = 2, n_bits: int = 2048) -> Dict:
     """Compute ECFP bit information for a SMILES string.
 
-    Parameters
-    ----------
+    Args:
     smiles:
         SMILES string of the molecule.
     radius:
@@ -41,8 +40,7 @@ def get_ecfp_morgan_generator_bit_info(smiles: str, radius: int = 2, n_bits: int
     n_bits:
         Size of the bit vector (default 2048).
 
-    Returns
-    -------
+    Returns:
     dict
         Bit-info map ``{bit_index: [(center_atom, radius), ...]}``,
         as returned by ``rdFingerprintGenerator.AdditionalOutput.GetBitInfoMap()``.
@@ -64,16 +62,14 @@ def get_ecfp_morgan_generator_bit_info(smiles: str, radius: int = 2, n_bits: int
 def bit_to_atom_mapping(mol: Chem.Mol, dict_bit_info: dict) -> Dict[int, List[List[int]]]:
     """Map fingerprint bits to the atom indices that encode them.
 
-    Parameters
-    ----------
+    Args:
     mol:
         RDKit molecule object.
     dict_bit_info:
         Bit-info map for *mol*, as returned by
         :func:`get_ecfp_morgan_generator_bit_info`.
 
-    Returns
-    -------
+    Returns:
     dict
         ``{bit: [[atom_idx, ...], ...]}`` — each inner list is the set of
         atom indices that contribute to one match of that bit.
@@ -100,16 +96,14 @@ def assign_prediction_importance(bit_dict: Dict[int, List[List[int]]], weights: 
     Each bit's SHAP value is split equally across all atoms that encode it
     (across all environment matches and all atoms within each match).
 
-    Parameters
-    ----------
+    Args:
     bit_dict:
         Bit-to-atom mapping for one molecule, as returned by
         :func:`bit_to_atom_mapping`.
     weights:
         1-D array of per-bit SHAP values, shape ``(n_features,)``.
 
-    Returns
-    -------
+    Returns:
     dict
         ``{atom_idx: cumulative_shap_contribution}``.
     """
@@ -129,8 +123,7 @@ def shap_to_atom_weight(mol: Chem.Mol, dict_bit_info: dict, shapley_values: np.n
     contribute to that bit.  The final atom weight is the sum of all such
     contributions.
 
-    Parameters
-    ----------
+    Args:
     mol:
         RDKit molecule object.
     dict_bit_info:
@@ -139,8 +132,7 @@ def shap_to_atom_weight(mol: Chem.Mol, dict_bit_info: dict, shapley_values: np.n
     shapley_values:
         1-D array of per-bit SHAP values, shape ``(n_features,)``.
 
-    Returns
-    -------
+    Returns:
     list of float
         Per-atom SHAP weights, length ``mol.GetNumAtoms()``.
     """
@@ -159,8 +151,7 @@ def get_atom_wise_weight_map(
 ) -> Union[Image.Image, Draw.MolDraw2D]:
     """Render a Gaussian-smoothed atom-weight heatmap on a molecule image.
 
-    Parameters
-    ----------
+    Args:
     mol:
         RDKit molecule object to draw.
     weights:
@@ -173,8 +164,7 @@ def get_atom_wise_weight_map(
         If ``True`` (default), return a :class:`PIL.Image.Image`.
         If ``False``, return the raw :class:`rdkit.Chem.Draw.MolDraw2D` object.
 
-    Returns
-    -------
+    Returns:
     PIL.Image.Image or Draw.MolDraw2D
         Molecule image with atom-importance heatmap overlay.
     """
@@ -228,14 +218,12 @@ def get_atom_wise_weight_map(
 def convert_draw2d_to_png(draw2d: Draw.MolDraw2D) -> Image.Image:
     """Convert a ``MolDraw2D`` drawing to a :class:`PIL.Image.Image`.
 
-    Parameters
-    ----------
+    Args:
     draw2d:
         A finalised :class:`rdkit.Chem.Draw.MolDraw2D` object
         (``FinishDrawing()`` must have been called beforehand).
 
-    Returns
-    -------
+    Returns:
     PIL.Image.Image
         PNG image decoded from the drawing's byte buffer.
     """

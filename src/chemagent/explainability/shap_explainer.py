@@ -70,8 +70,7 @@ _TREE_MODEL_NAMES: frozenset[str] = frozenset(
 class SHAPExplainer:
     """Compute SHAP values for a trained sklearn estimator.
 
-    Parameters
-    ----------
+    Args:
     model:
         Fitted scikit-learn estimator.
     background:
@@ -92,13 +91,11 @@ class SHAPExplainer:
     def explain(self, X: np.ndarray) -> np.ndarray:
         """Compute SHAP values for *X*.
 
-        Parameters
-        ----------
+        Args:
         X:
             Feature matrix, shape ``(n_samples, n_features)``.
 
-        Returns
-        -------
+        Returns:
         np.ndarray, shape ``(n_samples, n_features)``
             For binary classifiers the values correspond to the positive
             class (index 1).  For regressors a single 2-D array is returned.
@@ -133,15 +130,13 @@ class SHAPExplainer:
         For 2-D output (regression or already-reduced classifiers) the
         array is returned unchanged.
 
-        Parameters
-        ----------
+        Args:
         X:
             Feature matrix, shape ``(n_samples, n_features)``.
         y_pred:
             Predicted class labels, shape ``(n_samples,)``.
 
-        Returns
-        -------
+        Returns:
         np.ndarray, shape ``(n_samples, n_features)``
         """
         X_in = self.model.as_torch_tensor(X) if self._is_dnn else X
@@ -234,8 +229,7 @@ class SHAPExplainer:
     ) -> "SHAPExplainer":
         """Load model from *model_path* and build the explainer.
 
-        Parameters
-        ----------
+        Args:
         model_path:
             Path to a ``joblib``-serialised sklearn model (``.pkl``).
         background:

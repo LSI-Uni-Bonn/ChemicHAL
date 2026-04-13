@@ -47,8 +47,7 @@ def scaffold_split(
     groups are assigned greedily based on per-class deficits to keep
     class ratios balanced.
 
-    Parameters
-    ----------
+    Args:
     smiles_list:
         List of SMILES strings (one per sample).
     train_size:
@@ -66,14 +65,12 @@ def scaffold_split(
         If ``True``, scaffold groups are assigned greedily to preserve
         per-class proportions.  Requires *labels* to be provided.
 
-    Returns
-    -------
+    Returns:
     Dict[str, List[int]]
         Keys ``"train"``, ``"val"``, ``"test"`` each containing a list of
         integer sample indices.
 
-    Raises
-    ------
+    Raises:
     ValueError
         If sizes are invalid, any SMILES is unparseable, *labels*
         length mismatches *smiles_list*, or *stratified* is ``True`` but

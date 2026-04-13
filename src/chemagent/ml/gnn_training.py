@@ -29,13 +29,11 @@ from chemagent.ml.metrics import classification_metrics, multiclass_metrics
 def smiles_to_nx_graph(smiles: str) -> Optional[nx.Graph]:
     """Convert SMILES string to NetworkX graph with node/edge features.
 
-    Parameters
-    ----------
+    Args:
     smiles :
         SMILES string.
 
-    Returns
-    -------
+    Returns:
     NetworkX graph with atomic and bond features, or None if parsing fails.
     """
     mol = Chem.MolFromSmiles(smiles)
@@ -68,15 +66,13 @@ def smiles_to_nx_graph(smiles: str) -> Optional[nx.Graph]:
 def nx_graph_to_pyg_data(nx_graph: Optional[nx.Graph], label: int) -> Optional[Data]:
     """Convert NetworkX graph to PyTorch Geometric Data object.
 
-    Parameters
-    ----------
+    Args:
     nx_graph :
         NetworkX graph with node/edge attributes, or None.
     label :
         Class label (0 or 1 for binary selectivity).
 
-    Returns
-    -------
+    Returns:
     PyTorch Geometric Data object, or None if graph is invalid.
     """
     if nx_graph is None or len(nx_graph) == 0:
@@ -114,8 +110,7 @@ def nx_graph_to_pyg_data(nx_graph: Optional[nx.Graph], label: int) -> Optional[D
 class SmilesGraphDataset(InMemoryDataset):
     """PyTorch Geometric in-memory dataset from SMILES and labels.
 
-    Attributes
-    ----------
+    Attributes:
     smiles_list : list
         List of SMILES strings.
     labels : list
@@ -209,8 +204,7 @@ def load_and_prepare_gnn_dataset(
 ) -> tuple[SmilesGraphDataset, SmilesGraphDataset, SmilesGraphDataset]:
     """Load split file and create train/val/test GNN datasets.
 
-    Parameters
-    ----------
+    Args:
     split_file_path :
         Path to .pkl split file with train/test indices and labels.
     smiles_list :
@@ -221,8 +215,7 @@ def load_and_prepare_gnn_dataset(
     seed :
         Random seed for reproducibility (default 42).
 
-    Returns
-    -------
+    Returns:
     Tuple of (train_dataset, val_dataset, test_dataset).
     """
     # Split files are commonly serialized with joblib in this project.
@@ -326,8 +319,7 @@ def train_gnn_model(
 ) -> dict:
     """Train a GNN model on graph-structured selectivity data.
 
-    Parameters
-    ----------
+    Args:
     split_file_path :
         Path to .pkl split file with train/test indices and labels.
     smiles_list :
@@ -347,8 +339,7 @@ def train_gnn_model(
     device :
         torch device string (default: auto-detect cuda/cpu).
 
-    Returns
-    -------
+    Returns:
     Dictionary with keys:
         - "best_val_acc": Best validation accuracy across epochs.
         - "test_acc": Final test accuracy.
@@ -548,16 +539,14 @@ def train_gnn_model(
 def load_gnn_model(model_class: type, node_features_dim: int, hidden_channels: int, num_classes: int, model_path: str, device: Optional[str] = None) -> torch.nn.Module:
     """Load a trained GNN model from a saved state dict.
 
-    Parameters
-    ----------
+    Args:
     model_class :
         GNN model class (GCN, GraphSAGE, GAT, etc.).
     model_path :
         Path to saved model state dict.
     device :
         torch device string (default: auto-detect cuda/cpu).
-    Returns
-    -------
+    Returns:
     Loaded GNN model instance with weights from the specified path.
     """
     if device is None:

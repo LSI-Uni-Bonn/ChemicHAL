@@ -27,21 +27,18 @@ from .loader import resolve_path
 def load_split_file(file_path: str) -> Dict[str, Any]:
     """Load a split ``.pkl`` file produced by :func:`~chemagent.datasets.splitter.save_split`.
 
-    Parameters
-    ----------
+    Args:
     file_path:
         Absolute path or workspace-relative path to the ``.pkl`` file.
 
-    Returns
-    -------
+    Returns:
     dict
         Keys ``"train"``, ``"val"``, ``"test"``, each containing:
         ``features`` (list), ``labels`` (list), ``n_samples`` (int),
         and optionally ``smiles`` and ``cid``.
         Plus ``"file_path"`` with the resolved absolute path.
 
-    Raises
-    ------
+    Raises:
     FileNotFoundError
         If the file does not exist.
     """
@@ -79,8 +76,7 @@ def get_ml_ready_data(
 ) -> Dict[str, Any]:
     """Build the JSON-serialisable response for :func:`get_ml_ready_data` MCP tool.
 
-    Parameters
-    ----------
+    Args:
     processed:
         Processed-dataset dict from ``_processed_datasets[dataset_id]``.
     dataset_id:
@@ -89,8 +85,7 @@ def get_ml_ready_data(
         If ``True`` (default), return feature and label arrays as plain lists.
         If ``False``, return shape / metadata only — avoids large context transfer.
 
-    Returns
-    -------
+    Returns:
     dict
         ``dataset_id``, ``shape``, ``label_column``, and conditionally
         ``features``, ``labels``, ``smiles``, ``cid``.
@@ -126,8 +121,7 @@ def get_dataset_info(
 ) -> Dict[str, Any]:
     """Build the info response dict for a dataset identified by *dataset_id*.
 
-    Parameters
-    ----------
+    Args:
     dataset_id:
         Dataset key to inspect.
     loaded_datasets:
@@ -135,8 +129,7 @@ def get_dataset_info(
     processed_datasets:
         The server's ``_processed_datasets`` registry.
 
-    Returns
-    -------
+    Returns:
     dict
         ``loaded``, ``prepared``, ``raw_data`` (if loaded), ``ml_ready``
         (if prepared).

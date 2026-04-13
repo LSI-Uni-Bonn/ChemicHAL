@@ -69,8 +69,7 @@ def _mol_to_pil(
 ):
     """Render a molecule to a PIL Image.
 
-    Parameters
-    ----------
+    Args:
     original_cpd : Chem.Mol, optional
         When provided, atoms that differ from the MCS with this molecule are
         highlighted (changed-atom highlighting).
@@ -80,8 +79,7 @@ def _mol_to_pil(
         substructure stays in the same position across the grid — same
         approach used by ``_show_mol_as_pil`` in ``molce_tools.py``.
 
-    Notes
-    -----
+    Notes:
     MCS-based highlight atom indices are computed **before** calling
     ``PrepareMolForDrawing`` because kekulisation (performed inside that
     function) can break substructure matching against aromatic query mols.
@@ -211,8 +209,7 @@ def generate_counterfactuals(
     counterfactuals, ranked by Tanimoto similarity (highest first).  Tanimoto
     is computed only for confirmed counterfactuals, not the full candidate pool.
 
-    Parameters
-    ----------
+    Args:
     query_smiles : str
         SMILES of the compound to analyse.
     model_path : str
@@ -244,8 +241,7 @@ def generate_counterfactuals(
         (default 5). Prevents combinatorial explosion when many scaffold matches
         are found.
 
-    Returns
-    -------
+    Returns:
     dict
         - query_smiles: the input SMILES
         - predicted_class: model prediction for the query
@@ -262,13 +258,11 @@ def generate_counterfactuals(
         - status: "completed", "no_counterfactuals_found", or
           "decomposition_failed"
 
-    Raises
-    ------
+    Raises:
     ValueError
         If the SMILES is invalid or model/split file cannot be loaded.
 
-    Examples
-    --------
+    Examples:
     >>> result = generate_counterfactuals(
     ...     query_smiles="c1ccc(NC(=O)c2cccc(Cl)c2)cc1",
     ...     model_path="data/logs/session_xxx/models/data_RFC.pkl",
@@ -391,8 +385,7 @@ def get_most_confident_counterfactual(
     result; the figure shows the query + up to ``top_n`` CFs sorted the same
     way.
 
-    Parameters
-    ----------
+    Args:
     cf_result : dict
         Output of ``generate_counterfactuals``.
     output_path : str, optional
@@ -402,8 +395,7 @@ def get_most_confident_counterfactual(
     top_n : int, optional
         Number of CFs to display in the figure (default 3).
 
-    Returns
-    -------
+    Returns:
     list
         ``[result_dict, MCPImage, json_metadata_str]`` where *result_dict*
         contains:
@@ -418,8 +410,7 @@ def get_most_confident_counterfactual(
           similarity-sorted ``cf_result["counterfactuals"]`` list
         - status: "found" or "no_counterfactuals"
 
-    Examples
-    --------
+    Examples:
     >>> result = generate_counterfactuals(
     ...     query_smiles="c1ccc(NC(=O)c2cccc(Cl)c2)cc1",
     ...     model_path="...",
@@ -587,8 +578,7 @@ def visualize_counterfactuals(
     Counterfactuals are ordered by Tanimoto similarity (highest first, as
     returned by ``generate_counterfactuals``).
 
-    Parameters
-    ----------
+    Args:
     cf_result : dict
         Output of ``generate_counterfactuals``.
     output_path : str, optional
@@ -598,18 +588,15 @@ def visualize_counterfactuals(
     top_n : int, optional
         Number of counterfactuals to display (default 3).
 
-    Returns
-    -------
+    Returns:
     list
         ``[MCPImage, json_metadata_str]``
 
-    Raises
-    ------
+    Raises:
     ValueError
         If the query SMILES in cf_result is invalid.
 
-    Examples
-    --------
+    Examples:
     >>> result = generate_counterfactuals(
     ...     query_smiles="c1ccc(NC(=O)c2cccc(Cl)c2)cc1",
     ...     model_path="data/logs/session_xxx/models/data_RFC.pkl",

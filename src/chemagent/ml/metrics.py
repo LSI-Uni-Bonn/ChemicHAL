@@ -25,15 +25,13 @@ def confusion_components(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Decompose a confusion matrix into FP, FN, TP, TN per class.
 
-    Parameters
-    ----------
+    Args:
     labels:
         Ground-truth class labels.
     pred:
         Predicted class labels.
 
-    Returns
-    -------
+    Returns:
     tuple[ndarray, ndarray, ndarray, ndarray]
         (FP, FN, TP, TN) — each is a 1-D array with one value per class.
     """
@@ -57,8 +55,7 @@ def classification_metrics(
 
     Handles both binary and multiclass scenarios automatically.
 
-    Parameters
-    ----------
+    Args:
     labels:
         Ground-truth class labels (1-D integer array).
     pred:
@@ -70,8 +67,7 @@ def classification_metrics(
     model_type:
         Target / dataset identifier stored in the result dict (informational).
 
-    Returns
-    -------
+    Returns:
     dict
         Dictionary of all computed metrics.
     """
@@ -144,8 +140,7 @@ def multiclass_metrics(
 ) -> dict:
     """Compute per-class and overall metrics for a multiclass problem.
 
-    Parameters
-    ----------
+    Args:
     labels:
         Ground-truth class labels.
     pred:
@@ -155,8 +150,7 @@ def multiclass_metrics(
     model_type:
         Target / dataset identifier (informational).
 
-    Returns
-    -------
+    Returns:
     dict
         Nested dict with ``"overall_metrics"``, ``"per_class_metrics"``,
         ``"confusion_matrix"``, and ``"class_labels"``.
@@ -201,8 +195,7 @@ def regression_metrics(
 ) -> dict:
     """Compute regression performance metrics.
 
-    Parameters
-    ----------
+    Args:
     labels:
         Ground-truth continuous values.
     pred:
@@ -212,8 +205,7 @@ def regression_metrics(
     model_type:
         Target / dataset identifier (informational).
 
-    Returns
-    -------
+    Returns:
     dict
         Dictionary containing MAE, MSE, RMSE, R², and Pearson r.
     """

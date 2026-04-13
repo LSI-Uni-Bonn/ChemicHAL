@@ -26,8 +26,7 @@ from .cross_validation import run_cross_validation, get_cv_best_params
 class MLModel:
     """Train a scikit-learn model with GridSearchCV hyperparameter tuning.
 
-    Parameters
-    ----------
+    Args:
     data:
         Object with `.features`, `.labels`, and `.class_labels` attributes,
         as produced by the dataset-loader pipeline.
@@ -47,8 +46,7 @@ class MLModel:
     random_seed:
         Global random seed (default 42).
 
-    Attributes
-    ----------
+    Attributes:
     model:
         Fitted scikit-learn estimator (best hyperparameters, full data).
     cv_results:

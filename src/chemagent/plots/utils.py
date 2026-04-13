@@ -52,8 +52,7 @@ def set_theme(
     Wraps :func:`seaborn.set_theme` with sensible defaults and additional
     rcParam overrides.
 
-    Parameters
-    ----------
+    Args:
     font_scale:
         Seaborn font scale factor (default 1.1).
     style:
@@ -82,8 +81,7 @@ def save_figure(
 ) -> None:
     """Save *fig* to *save_path* if a path is supplied.
 
-    Parameters
-    ----------
+    Args:
     fig:
         The :class:`matplotlib.figure.Figure` to save.
     save_path:

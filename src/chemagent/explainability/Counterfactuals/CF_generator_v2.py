@@ -56,8 +56,7 @@ class CFGenerator:
     2. Substitutes attachment points with a library of R-groups.
     3. Runs the trained model on each analog and filters for prediction class changes.
 
-    Parameters
-    ----------
+    Args:
     smiles_lst : list[str]
         SMILES of the input molecules (typically just the query compound).
     model_obj : sklearn estimator
@@ -319,8 +318,7 @@ class CFGenerator:
     def find_cfs(self) -> pd.DataFrame:
         """Generate and filter counterfactual molecules.
 
-        Returns
-        -------
+        Returns:
         pd.DataFrame
             Analogs that change the model's prediction away from ``base_class``.
             Returns an empty DataFrame if no counterfactuals are found.

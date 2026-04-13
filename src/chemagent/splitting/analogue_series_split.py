@@ -45,8 +45,7 @@ def analogue_series_split(
     If no shuffle meets the tolerance the split with the closest test size is
     returned instead.
 
-    Parameters
-    ----------
+    Args:
     cores:
         List of core/scaffold identifiers, one per sample (e.g. a Murcko
         scaffold SMILES or any group label).
@@ -61,8 +60,7 @@ def analogue_series_split(
         Maximum allowed deviation (in number of compounds) between the actual
         and target test-set size (default 5).
 
-    Returns
-    -------
+    Returns:
     Dict[str, List[int]]
         Keys ``"train"``, ``"val"``, ``"test"`` each containing a list of
         integer sample indices.  ``"val"`` is always empty.

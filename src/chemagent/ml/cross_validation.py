@@ -33,8 +33,7 @@ def run_cross_validation(
 ) -> GridSearchCV:
     """Run GridSearchCV cross-validation and return the fitted searcher.
 
-    Parameters
-    ----------
+    Args:
     model:
         Unfitted scikit-learn estimator.
     param_grid:
@@ -57,8 +56,7 @@ def run_cross_validation(
     n_jobs:
         Number of parallel jobs for ``GridSearchCV``.
 
-    Returns
-    -------
+    Returns:
     GridSearchCV
         Fitted searcher with ``best_index_`` and ``cv_results_`` populated.
     """
@@ -85,13 +83,11 @@ def run_cross_validation(
 def get_cv_best_params(cv_results: GridSearchCV) -> dict:
     """Extract the best parameter dict from a fitted ``GridSearchCV`` object.
 
-    Parameters
-    ----------
+    Args:
     cv_results:
         A fitted ``GridSearchCV`` instance.
 
-    Returns
-    -------
+    Returns:
     dict
         Best parameter combination found during cross-validation.
     """

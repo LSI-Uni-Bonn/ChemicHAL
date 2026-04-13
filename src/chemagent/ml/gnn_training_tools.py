@@ -113,8 +113,7 @@ def prepare_gnn_dataset(
 
     Reads SMILES from CSV, uses indices from split .pkl to create graph datasets.
 
-    Parameters
-    ----------
+    Args:
     split_file_path :
         Path to .pkl split file with train/test indices + labels.
     smiles_csv_path :
@@ -126,8 +125,7 @@ def prepare_gnn_dataset(
     seed :
         Random seed (default 42).
 
-    Returns
-    -------
+    Returns:
     Dict with:
         - "status": "completed" or "failed"
         - "train_dataset_path": path to train dataset cache
@@ -214,8 +212,7 @@ def train_gnn_model_mcp(
 
     Submits training to background thread; use `check_gnn_training()` to poll results.
 
-    Parameters
-    ----------
+    Args:
     split_file_path :
         Path to .pkl split file with train/test indices + labels.
     smiles_csv_path :
@@ -235,8 +232,7 @@ def train_gnn_model_mcp(
     smiles_column :
         Column name in CSV for SMILES (default "smiles").
 
-    Returns
-    -------
+    Returns:
     Dict with:
         - "job_id": unique job identifier
         - "status": "submitted"
@@ -269,7 +265,6 @@ def train_gnn_model_mcp(
     model_class = _GNN_MODEL_MAP[model_class_name]
 
     # Default save path
-    session_logger = _get_session_logger()
     out_dir = session_logger.session_dir / "models"
     out_dir.mkdir(parents=True, exist_ok=True)
     model_save_path = str(out_dir / f"gnn_{model_class_name}.pt")
@@ -311,15 +306,13 @@ def check_gnn_training(
 ) -> dict[str, Any]:
     """Poll a background GNN training job.
 
-    Parameters
-    ----------
+    Args:
     job_id :
         Job ID from `train_gnn_model_mcp()`.
     model_save_path :
         Optional path to model (fallback to disk if job state lost).
 
-    Returns
-    -------
+    Returns:
     Dict with:
         - "status": "running", "completed", or "failed"
         - "best_val_acc": best validation accuracy (if completed)
@@ -378,8 +371,7 @@ def load_gnn_model_mcp(
     Loads a GNN model from a saved state dict and performs a validation step
     to ensure the weights were loaded correctly.
 
-    Parameters
-    ----------
+    Args:
     model_class_name :
         GNN architecture name: GCN, GraphSAGE, GAT, GC_GNN, GINE, or GIN.
     node_features_dim :
@@ -393,8 +385,7 @@ def load_gnn_model_mcp(
     device :
         torch device string ('cuda' or 'cpu'); auto-detects if None.
 
-    Returns
-    -------
+    Returns:
     Dict with:
         - "status": "completed" or "failed"
         - "model_path": path to the loaded model (if successful)

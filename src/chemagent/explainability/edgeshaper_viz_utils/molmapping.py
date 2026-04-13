@@ -26,8 +26,7 @@ def mapvalues2mol(mol: Chem.Mol,
     distorted along the bond axis. The value of each pixel is determined as the sum of all function-values at the pixel
     position. Subsequently the values are mapped to a color and drawn onto the canvas.
 
-    Parameters
-    ----------
+    Args:
     mol: Chem.Mol
         RDKit molecule object which is displayed.
     atom_weights: Optional[Union[Sequence[float], np.ndarray]]
@@ -52,8 +51,7 @@ def mapvalues2mol(mol: Chem.Mol,
         Increase of heatmap size, relative to size of molecule. Usually the heatmap is increased by 100% in each axis
         by padding 50% in each side.
 
-    Returns
-    -------
+    Returns:
     rdMolDraw2D.MolDraw2D
         Drawing of molecule and corresponding heatmap.
     """
@@ -170,8 +168,7 @@ def get_depiction_limits(mol: Chem.Mol,
                          padding: Optional[Sequence[float]] = None) -> Tuple[float, float]:
     """Dry run of `mapvalues2mol` in order to obtain value limits of depiction.
 
-    Parameters
-    ----------
+    Args:
     mol: Chem.Mol
         RDKit molecule object which is displayed.
     atom_weights: Optional[Union[Sequence[float], np.ndarray]]
@@ -192,8 +189,7 @@ def get_depiction_limits(mol: Chem.Mol,
         Increase of heatmap size, relative to size of molecule. Usually the heatmap is increased by 100% in each axis
         by padding 50% in each side.
 
-    Returns
-    -------
+    Returns:
     Tuple[float, float]
         Value limits of depiction
     """

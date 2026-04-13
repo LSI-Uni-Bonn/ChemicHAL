@@ -21,13 +21,11 @@ def get_param_grid(algorithm: str) -> dict:
     Reads directly from :data:`chemagent.ml.models.PARAM_GRIDS`, so adding
     an entry there is sufficient — no changes needed here.
 
-    Parameters
-    ----------
+    Args:
     algorithm:
         Registered key, e.g. ``"RFC"``.
 
-    Returns
-    -------
+    Returns:
     dict
         Parameter grid suitable for ``GridSearchCV(param_grid=...)``.
         Returns an empty dict if *algorithm* is not registered.
@@ -42,8 +40,7 @@ def register_param_grid(algorithm: str, grid: dict) -> None:
     is reflected everywhere (``get_param_grid``, ``get_available_algorithms``,
     ``MLModel``, etc.).
 
-    Parameters
-    ----------
+    Args:
     algorithm:
         Algorithm key, e.g. ``"XGB"``.
     grid:

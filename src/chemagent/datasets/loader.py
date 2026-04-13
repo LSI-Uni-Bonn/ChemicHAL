@@ -30,15 +30,13 @@ def workspace_root() -> Path:
 def resolve_path(file_path: str, directory: str = "") -> Path:
     """Resolve *file_path* to an absolute ``Path``.
 
-    Parameters
-    ----------
+    Args:
     file_path:
         Absolute path, or filename / relative path within *directory*.
     directory:
         Optional directory prefix, resolved relative to the workspace root.
 
-    Returns
-    -------
+    Returns:
     Path
         Absolute resolved path.
     """
@@ -57,13 +55,11 @@ def resolve_path(file_path: str, directory: str = "") -> Path:
 def list_csv_files(directory: str = "data/datasets") -> Dict[str, Any]:
     """List ``.csv`` files in *directory*.
 
-    Parameters
-    ----------
+    Args:
     directory:
         Workspace-relative or absolute path to search.
 
-    Returns
-    -------
+    Returns:
     dict
         ``{"datasets": [...], "count": int, "directory": str}``
     """
@@ -87,13 +83,11 @@ def list_csv_files(directory: str = "data/datasets") -> Dict[str, Any]:
 def label_stats(labels: np.ndarray) -> Dict[str, Any]:
     """Compute basic statistics for a label array.
 
-    Parameters
-    ----------
+    Args:
     labels:
         1-D array of numeric labels.
 
-    Returns
-    -------
+    Returns:
     dict
         mean, std, min, max, unique_values.
     """
@@ -119,8 +113,7 @@ def load_csv(
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """Load a CSV file and validate requested columns.
 
-    Parameters
-    ----------
+    Args:
     file_path:
         Absolute path, filename within *directory*, or workspace-relative path.
     label_col:
@@ -138,14 +131,12 @@ def load_csv(
     directory:
         Directory prefix applied when *file_path* is not absolute.
 
-    Returns
-    -------
+    Returns:
     tuple[pd.DataFrame, dict]
         * ``df`` — parsed DataFrame with column-config stored in ``.attrs``.
         * ``meta`` — summary dict ready to return directly as an MCP response.
 
-    Raises
-    ------
+    Raises:
     FileNotFoundError
         If the resolved path does not exist.
     ValueError

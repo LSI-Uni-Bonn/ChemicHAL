@@ -3,7 +3,7 @@ import re
 from collections import defaultdict
 from typing import NamedTuple, Union, List, Tuple, Dict, Optional
 
-from rdkit import Chem, Chem as Chem
+from rdkit import Chem
 from rdkit.Chem import Mol, Atom, RWMol, BondType
 
 
@@ -52,7 +52,6 @@ def replace_element(smi_or_mol,src=0,repl=85):
                 a.SetAtomicNum(repl)
         mol.UpdatePropertyCache()
         return mol
-    pass
 
 
 def replace_substitution_sites_with_dummy_element(smi_or_mol:Union[str,Mol],el=85):
@@ -75,37 +74,6 @@ def rsite_replaced_core_supplier(cores: List[str],dummy_el=85):
         yield mol
 
 # End: Methods for SARMs
-
-"""
-# Virtual core modifications
-class VirtualCoreToCores:
-    def __init__(self, virtualize_core: Callable[[Union[str, Mol]], (Mol, Mol)]):
-        # self.core_set=dict()
-        self.vcores = dict()
-        self.virtualize_core = virtualize_core
-
-    def register_fragmentation(self, core: str, name: NamedSmiles) -> str:
-        core_mol, vcore_mol = self.virtualize_core(core)
-        virtual_core = Chem.MolToSmiles(vcore_mol)
-        # core = self.core_set.setdefault(core,core) # Internalization (could use sys.intern)
-        # virtual_core = self.core_set.setdefault(virtual_core,virtual_core) # Internalization (could use sys.intern)
-        mol_dict = self.vcores.setdefault(virtual_core, dict())
-        mol_dict[name] = core
-        return virtual_core
-"""
-
-# unused for now
-# def add_substitution_sites_to_real_core(vcore: str, rcore: str, virtualize_core: CoreAbstraction) -> str:
-#     _, vmol, vmap = get_attachment_points_and_remove_r_atoms(vcore)
-#     _, rmol, rmap = get_attachment_points_and_remove_r_atoms(rcore)
-#     rmol, rvmol = virtualize_core(rmol)
-#     vranks = Chem.CanonicalRankAtoms(vmol)
-#     rranks = Chem.CanonicalRankAtoms(rvmol)
-#     invranks = {rk: idx for idx, rk in enumerate(rranks)}
-#     rmap = {}
-#     for idx, ri in vmap.items():
-#         rmap[invranks[vranks[idx]]] = ri
-#     return add_r_atoms(rmol, rmap)
 
 ### Generic helper functions
 

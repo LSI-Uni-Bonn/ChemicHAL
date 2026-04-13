@@ -16,8 +16,7 @@ class Grid2D(abc.ABC):
     def __init__(self, x_lim: Tuple[float, float], y_lim: Tuple[float, float], x_res: int, y_res: int):
         """
 
-        Parameters
-        ----------
+        Args:
         x_lim: Tuple[float, float]
             Extend of the grid along the x-axis (xmin, xmax).
         y_lim: Tuple[float, float]
@@ -46,15 +45,13 @@ class Grid2D(abc.ABC):
     def grid_field_center(self, x_idx: int, y_idx: int) -> Tuple[float, float]:
         """Center of cell specified by index along x and y.
 
-        Parameters
-        ----------
+        Args:
         x_idx: int
              cell-index along x-axis.
         y_idx:int
              cell-index along y-axis.
 
-        Returns
-        -------
+        Returns:
         Tuple[float, float]
             Coordinates of center of cell
         """
@@ -85,8 +82,7 @@ class ValueGrid(Grid2D):
     def __init__(self, x_lim: Tuple[float, float], y_lim: Tuple[float, float], x_res: int, y_res: int, ):
         """ Initializes the ValueGrid with limits and resolution of the axes.
 
-        Parameters
-        ----------
+        Args:
         x_lim: Tuple[float, float]
             Extend of the grid along the x-axis (xmin, xmax).
         y_lim: Tuple[float, float]
@@ -107,8 +103,7 @@ class ValueGrid(Grid2D):
     def evaluate(self) -> None:
         """Evaluates each function for each cell. Values of cells are calculated as the sum of all function-values.
         Results are saved to self.values
-        Returns
-        -------
+        Returns:
         None
         """
         self.values = np.zeros((self.x_res, self.y_res))
@@ -129,13 +124,11 @@ class ValueGrid(Grid2D):
                   ) -> ColorGrid:
         """Generates a ColorGrid from self.values according to given colormap
 
-        Parameters
-        ----------
+        Args:
         c_map: Union[colors.Colormap, str]
         v_lim: Optional[Tuple[float, float]]
 
-        Returns
-        -------
+        Returns:
         ColorGrid
             ColorGrid with colors corresponding to ValueGrid
         """

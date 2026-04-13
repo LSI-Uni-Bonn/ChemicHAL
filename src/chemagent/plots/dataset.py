@@ -52,8 +52,7 @@ def plot_class_distribution(
 ) -> Figure:
     """Bar chart of class counts with percentage annotations (seaborn).
 
-    Parameters
-    ----------
+    Args:
     labels:
         Array-like of class labels (integers or strings).
     class_names:
@@ -67,8 +66,7 @@ def plot_class_distribution(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
@@ -123,8 +121,7 @@ def plot_split_statistics(
 ) -> Figure:
     """Horizontal stacked bar showing partition proportions (seaborn style).
 
-    Parameters
-    ----------
+    Args:
     split_stats:
         Dict returned by
         :func:`chemagent.splitting.statistics.get_split_statistics`.
@@ -136,8 +133,7 @@ def plot_split_statistics(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme(style="white")  # type: ignore[arg-type]
@@ -197,8 +193,7 @@ def plot_column_distribution(
 ) -> Figure:
     """Histogram + optional KDE of any numeric DataFrame column (seaborn).
 
-    Parameters
-    ----------
+    Args:
     df:
         :class:`pandas.DataFrame` containing *column*.
     column:
@@ -220,8 +215,7 @@ def plot_column_distribution(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
@@ -274,8 +268,7 @@ def plot_class_balance_splits(
 ) -> Figure:
     """Grouped bar chart — class share (%) within each data split (seaborn).
 
-    Parameters
-    ----------
+    Args:
     class_dist:
         Dict returned by
         :func:`chemagent.splitting.statistics.class_distribution`.
@@ -291,8 +284,7 @@ def plot_class_balance_splits(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     import pandas as pd
@@ -349,8 +341,7 @@ def plot_dataset_comparison(
 ) -> Figure:
     """Bar chart comparing sample counts across multiple datasets or groups.
 
-    Parameters
-    ----------
+    Args:
     counts:
         ``{group_label: count}`` mapping, e.g.
         ``{"Dataset A": 1200, "Dataset B": 980}``.
@@ -365,8 +356,7 @@ def plot_dataset_comparison(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
