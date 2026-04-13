@@ -6,6 +6,7 @@ and provides training loops for PyTorch Geometric GNN models.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import pickle
 from typing import Optional
@@ -436,6 +437,8 @@ def train_gnn_model(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = torch.nn.CrossEntropyLoss()
 
+    best_state_dict = None
+
     # Training loop
     best_val_acc = 0.0
     for epoch in tqdm(range(epochs)):
@@ -499,6 +502,7 @@ def train_gnn_model(
             best_val_acc = val_acc
             if model_save_path:
                 torch.save(model.state_dict(), model_save_path)
+            best_state_dict = copy.deepcopy(model.state_dict())
 
         # Log epoch summary via the session logger to avoid writing to stdout.
         try:
@@ -517,7 +521,10 @@ def train_gnn_model(
             # Fallback: avoid printing to stdout in MCP server context.
             pass
 
-    # Full split metrics (parity with tabular model outputs)
+    # Full split metrics from the best validation checkpoint, not the last epoch.
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+
     train_evaluation = _evaluate_loader(train_loader)
     val_evaluation = _evaluate_loader(val_loader)
     test_evaluation = _evaluate_loader(test_loader)

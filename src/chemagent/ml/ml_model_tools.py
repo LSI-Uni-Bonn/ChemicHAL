@@ -387,33 +387,70 @@ def _export_predictions_gnn(
 
     loader = PyGDataLoader(data_list, batch_size=batch_size)
 
-    # Infer model class if not provided
     model_stem = Path(model_path).stem
     possible = ["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"]
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load state/checkpoint first so we can infer architecture dimensions.
+    state = torch.load(model_path, map_location=device)
+    checkpoint: dict[str, Any] | None = state if isinstance(state, dict) else None
+    if isinstance(state, dict) and "state_dict" in state:
+        sd = state["state_dict"]
+    elif isinstance(state, dict):
+        sd = state
+    else:
+        sd = None
+
+    # Inference priority: explicit arg -> checkpoint metadata -> filename -> state_dict keys -> fallback.
+    if model_class is None and isinstance(checkpoint, dict):
+        model_class = checkpoint.get("model_class_name") or checkpoint.get("model_class")
     if model_class is None:
         for name in possible:
             if name.lower() in model_stem.lower():
                 model_class = name
                 break
+    if model_class is None and isinstance(sd, dict):
+        state_keys = list(sd.keys())
+        if any("att_src" in k or "att_dst" in k for k in state_keys):
+            model_class = "GAT"
+        elif any("lin_rel" in k or "lin_root" in k for k in state_keys):
+            model_class = "GC_GNN"
+        elif any("lin_l" in k and "lin_r" in k for k in state_keys):
+            model_class = "GraphSAGE"
     if model_class is None:
         model_class = "GCN"
 
     if not hasattr(_gnn_models, model_class):
         raise ValueError(f"Unknown GNN model class '{model_class}'. Available: {', '.join([n for n in possible if hasattr(_gnn_models, n)])}")
 
+    # Infer model dimensions from checkpoint/state dict when available.
+    node_features_dim = 4
+    inferred_num_classes = len(sorted(set([lbl for lbl in labels if lbl is not None]))) or 2
+    inferred_hidden_channels = hidden_channels
+
+    if isinstance(checkpoint, dict):
+        node_features_dim = int(checkpoint.get("node_features_dim", node_features_dim))
+        inferred_hidden_channels = int(checkpoint.get("hidden_channels", inferred_hidden_channels))
+        inferred_num_classes = int(checkpoint.get("num_classes", inferred_num_classes))
+
+    if isinstance(sd, dict) and "lin.weight" in sd:
+        lin_w = sd["lin.weight"]
+        if hasattr(lin_w, "shape") and len(lin_w.shape) == 2:
+            inferred_num_classes = int(lin_w.shape[0])
+            inferred_hidden_channels = int(lin_w.shape[1])
+
     ModelCls = getattr(_gnn_models, model_class)
+    model = ModelCls(
+        node_features_dim=node_features_dim,
+        hidden_channels=inferred_hidden_channels,
+        num_classes=inferred_num_classes,
+    ).to(device)
 
-    num_classes = len(sorted(set([lbl for lbl in labels if lbl is not None]))) or 2
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = ModelCls(node_features_dim=4, hidden_channels=hidden_channels, num_classes=num_classes).to(device)
-
-    # Load state
-    state = torch.load(model_path, map_location=device)
     try:
         if isinstance(state, dict):
-            # Accept either raw state_dict or checkpoint with 'state_dict'
-            sd = state.get("state_dict") if "state_dict" in state else state
+            # Accept either raw state_dict or checkpoint with 'state_dict'.
+            if sd is None:
+                raise RuntimeError("Checkpoint dictionary did not include a valid state dict")
             model.load_state_dict(sd)
         else:
             # If a full model object was saved
