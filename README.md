@@ -1,4 +1,11 @@
+
+<p align="center">
+  <img src="docs/assets/chemichal_logo.svg" alt="ChemicHAL logo" width=50%>
+</p>
+
 # ChemicHAL: an XAI-enhanced agent for chemoinformatics
+
+
 ## Overview
 
 ChemicHAL is an **LLM-driven agent** for chemoinformatics tasks, powered by the **Model Context Protocol (MCP)** and designed for **explainable AI (XAI)**. It enables autonomous compound selectivity prediction, molecular property modeling, and interpretability through SHAP, MolAnchor, MolCE, and EdgeShaper.

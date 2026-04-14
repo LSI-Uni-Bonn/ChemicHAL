@@ -1,0 +1,31 @@
+<svg width="190" height="125" viewBox="100 65 190 125" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect x="100" y="65" width="190" height="125" fill="#f9fafb"/>
+  
+  <!-- Leftmost Hexagon (Blue bonds) -->
+  <polygon points="120,90 145,75 170,90 170,120 145,135 120,120" 
+           fill="#eff6ff" stroke="#2563eb" stroke-width="3"/>
+  
+  <!-- Middle Hexagon (Red bonds) -->
+  <polygon points="170,90 195,75 220,90 220,120 195,135 170,120" 
+           fill="#fef2f2" stroke="#dc2626" stroke-width="3"/>
+  
+  <!-- Rightmost Hexagon (Blue bonds) -->
+  <polygon points="220,90 245,75 270,90 270,120 245,135 220,120" 
+           fill="#eff6ff" stroke="#2563eb" stroke-width="3"/>
+  
+  <!-- Green LED Eye (HAL - centered in middle hexagon) -->
+  <circle cx="195" cy="105" r="14" fill="#10b981" opacity="0.95"/>
+  <circle cx="195" cy="105" r="7" fill="#ffffff" opacity="0.7"/>
+  
+  <!-- Connecting bonds between hexagons -->
+  <line x1="170" y1="105" x2="170" y2="105" stroke="#6b7280" stroke-width="4"/>
+  <line x1="220" y1="105" x2="220" y2="105" stroke="#6b7280" stroke-width="4"/>
+  
+  <!-- Text below logo - Centered and reduced size -->
+  <text x="195" y="175" font-family="Arial, sans-serif" 
+        font-size="24" fill="#1e3a8a" font-weight="bold" text-anchor="middle">ChemicHAL</text>
+  
+  <!-- Subtle glow effect around green eye -->
+  <circle cx="195" cy="105" r="20" fill="#10b981" opacity="0.2"/>
+</svg>

@@ -34,6 +34,7 @@ ML
   train_model            non-blocking train+tune pipeline from split .pkl
   check_training         poll a background training job
   export_predictions     run inference on a split .pkl, save predictions CSV
+  compare_exported_predictions compare and aggregate predictions from multiple exported CSVs
 
 Plots
   plot_classification_results confusion matrix, ROC, PR, metric bar, threshold (from predictions CSV)
@@ -100,6 +101,7 @@ from chemagent.datasets.dataset_tools import (
 from chemagent.ml.ml_model_tools import (
     get_ml_info,
     export_predictions,
+    compare_exported_predictions,
     #run_pipeline,
 )
 from chemagent.ml.training_tools import (
@@ -169,6 +171,7 @@ _register(dataset_status)
 
 _register(get_ml_info)
 _register(export_predictions)
+_register(compare_exported_predictions)
 
 
 # ===========================================================================
