@@ -141,16 +141,16 @@ def get_ml_info() -> dict[str, Any]:
     recommended_metrics = {
         "binary_classification": {
             "optimization": ["f1", "roc_auc", "average_precision", "balanced_accuracy"],
-            "evaluation":   ["MCC", "F1", "Precision", "Recall", "AUC", "Balanced Accuracy"],
+            "evaluation":   ["MCC", "F1", "Precision", "Recall", "AUC", "BA"],
         },
         "binary_imbalanced": {
             "optimization": ["f1", "average_precision", "roc_auc"],
-            "evaluation":   ["MCC", "F1", "Precision", "Recall", "Balanced Accuracy"],
+            "evaluation":   ["MCC", "F1", "Precision", "Recall", "BA"],
             "note":         "Pass task='classification-cw' to train_model() for auto class-weighting",
         },
         "multiclass": {
             "optimization": ["f1_macro", "f1_weighted", "balanced_accuracy"],
-            "evaluation":   ["MCC", "Balanced Accuracy", "F1_macro", "F1_weighted", "Accuracy"],
+            "evaluation":   ["MCC", "BA", "F1_macro", "F1_weighted", "Accuracy"],
         },
         "regression": {
             "optimization": ["neg_mean_squared_error", "neg_mean_absolute_error", "r2"],

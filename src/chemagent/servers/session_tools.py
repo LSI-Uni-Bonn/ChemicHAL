@@ -239,14 +239,21 @@ def _brief_result(result: Any) -> str:
         return msg.split("\n")[0][:200]
     # check_training completed — surface key metrics
     if result.get("status") == "completed" and isinstance(result.get("result"), dict):
-        r  = result["result"]
-        te = r.get("test_evaluation", {}).get("overall_metrics", {})
+        r = result["result"]
+        te_raw = r.get("test_evaluation", {})
+        te = te_raw.get("overall_metrics", te_raw) if isinstance(te_raw, dict) else {}
         parts = []
-        if "cv_best_score" in r:
-            parts.append(f"CV BA={r['cv_best_score']:.3f}")
-        if "BA"       in te: parts.append(f"Test BA={te['BA']:.3f}")
-        if "MCC"      in te: parts.append(f"MCC={te['MCC']:.3f}")
-        if "Accuracy" in te: parts.append(f"Acc={te['Accuracy']:.3f}")
+        cv_score = r.get("cv_best_score")
+        if isinstance(cv_score, (int, float)):
+            parts.append(f"CV BA={cv_score:.3f}")
+
+        ba = te.get("BA", te.get("Balanced Accuracy")) if isinstance(te, dict) else None
+        if isinstance(ba, (int, float)):
+            parts.append(f"Test BA={ba:.3f}")
+        if isinstance(te, dict) and "MCC" in te:
+            parts.append(f"MCC={te['MCC']:.3f}")
+        if isinstance(te, dict) and "Accuracy" in te:
+            parts.append(f"Acc={te['Accuracy']:.3f}")
         if parts:
             return " · ".join(parts)
     # fallback: simple scalar fields

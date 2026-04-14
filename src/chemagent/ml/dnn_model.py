@@ -61,6 +61,7 @@ class _BaseDNN:
         epochs: int = 50,
         weight_decay: float = 0.0,
         random_seed: int = 42,
+        random_state: int | None = None,
         use_cuda: bool = False,
         verbose: bool = False,
     ) -> None:
@@ -71,12 +72,23 @@ class _BaseDNN:
         self.batch_size = batch_size
         self.epochs = epochs
         self.weight_decay = weight_decay
+
+        if random_state is not None:
+            random_seed = int(random_state)
         self.random_seed = random_seed
         self.use_cuda = use_cuda
         self.verbose = verbose
 
         self._state: _TrainState | None = None
         self.n_features_in_: int | None = None
+
+    @property
+    def random_state(self) -> int:
+        return self.random_seed
+
+    @random_state.setter
+    def random_state(self, value: int) -> None:
+        self.random_seed = int(value)
 
     # training pipeline that may call set_params/get_params.
     def get_params(self, deep: bool = True) -> dict:
@@ -89,6 +101,7 @@ class _BaseDNN:
             "epochs": self.epochs,
             "weight_decay": self.weight_decay,
             "random_seed": self.random_seed,
+            "random_state": self.random_state,
             "use_cuda": self.use_cuda,
             "verbose": self.verbose,
         }

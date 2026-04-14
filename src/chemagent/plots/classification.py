@@ -293,11 +293,16 @@ def plot_metric_bar(
     """
     set_theme()
 
-    data = {
-        k: float(v)
-        for k, v in metrics_dict.items()
-        if k in _SCALAR_METRICS and isinstance(v, (int, float))
-    }
+    # Canonicalise historical key variant to avoid duplicate BA bars.
+    normalised_metrics: dict[str, float] = {}
+    for key, value in metrics_dict.items():
+        if not isinstance(value, (int, float)):
+            continue
+        canonical_key = "BA" if key == "Balanced Accuracy" else key
+        if canonical_key in _SCALAR_METRICS and canonical_key not in normalised_metrics:
+            normalised_metrics[canonical_key] = float(value)
+
+    data = normalised_metrics
 
     if not data:
         raise ValueError("No plottable scalar metrics found in metrics_dict.")
