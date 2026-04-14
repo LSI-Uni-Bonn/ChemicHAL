@@ -57,6 +57,27 @@ Download **LM Studio** from [lmstudio.ai](https://lmstudio.ai) and install it on
 3. Update the `--directory` path to match your workspace root
 4. Save and restart LM Studio
 
+### 4. Use a Repository-Managed System Prompt (LM Studio GUI)
+
+LM Studio GUI does not currently auto-sync a system prompt directly from a repo file.
+Keep the prompt in version control and copy/paste it directly from the file.
+
+Canonical prompt file:
+- `prompts/lm_studio_system_prompt.md`
+
+Alternative prompt kept for experimentation (non-canonical):
+- `prompts/structured_system_prompt`
+
+Then in LM Studio GUI:
+1. Open `prompts/lm_studio_system_prompt.md` and copy the content
+2. Open your chat preset (or active chat settings)
+3. Paste into the System Prompt field
+4. Save preset
+
+Recommended workflow:
+- Edit `prompts/lm_studio_system_prompt.md` in this repo
+- Paste once into LM Studio
+
 ## Agent Capabilities
 
 🧪 **Dataset Management** – Discover, load, and preprocess ChEMBL datasets; compute molecular fingerprints (ECFP, MACCS, etc.)
