@@ -8,7 +8,6 @@ Functions
 ---------
 get_ml_info             — reference card for algorithms and recommended metrics
 export_predictions      — run inference on a split .pkl, save predictions CSV
-run_pipeline            — one-call shortcut: load → featurize → split → train (non-blocking)
 
 Internal helpers
 ----------------
@@ -19,7 +18,6 @@ build_model_from_arrays — train from raw in-memory arrays
 from __future__ import annotations
 
 import sys
-import threading
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -30,20 +28,11 @@ _SRC = Path(__file__).resolve().parents[2]
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from chemagent.datasets import (
-    load_csv,
-    featurize_df,
-    build_processed_entry,
-    split_processed,
-    save_split as _save_split,
-)
-from chemagent.datasets.dataset_tools import _loaded_datasets, _processed_datasets
 from chemagent.ml.hyperparameter_tuning import HYPERPARAMETERS
 from chemagent.servers.server_helpers import (
     _run_pipeline,
     _to_serialisable,
     _predict,
-    _workspace_root,
     evaluate_classification,
     evaluate_regression,
 )
@@ -338,8 +327,14 @@ def _export_predictions_gnn(
     """Export predictions for PyTorch Geometric GNN models saved as .pt/.pth.
 
     Expects the split file to contain the per-split smiles arrays (e.g. "test_smiles").
-    If the saved model is a state_dict, the `model_class` (e.g. "GCN") will be
-    inferred from the filename when possible or must be provided.
+
+    To avoid architecture-mismatch load errors, this function infers model
+    metadata in the following priority:
+    1) explicit function args,
+    2) checkpoint metadata fields,
+    3) filename hints,
+    4) state_dict tensor shapes/keys,
+    5) safe defaults.
     """
     if torch is None or PyGDataLoader is None or smiles_to_nx_graph is None:
         raise ImportError("PyTorch / PyG not available in this environment")
@@ -387,33 +382,70 @@ def _export_predictions_gnn(
 
     loader = PyGDataLoader(data_list, batch_size=batch_size)
 
-    # Infer model class if not provided
     model_stem = Path(model_path).stem
     possible = ["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"]
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load state/checkpoint first so we can infer architecture dimensions.
+    state = torch.load(model_path, map_location=device)
+    checkpoint: dict[str, Any] | None = state if isinstance(state, dict) else None
+    if isinstance(state, dict) and "state_dict" in state:
+        sd = state["state_dict"]
+    elif isinstance(state, dict):
+        sd = state
+    else:
+        sd = None
+
+    # Inference priority: explicit arg -> checkpoint metadata -> filename -> state_dict keys -> fallback.
+    if model_class is None and isinstance(checkpoint, dict):
+        model_class = checkpoint.get("model_class_name") or checkpoint.get("model_class")
     if model_class is None:
         for name in possible:
             if name.lower() in model_stem.lower():
                 model_class = name
                 break
+    if model_class is None and isinstance(sd, dict):
+        state_keys = list(sd.keys())
+        if any("att_src" in k or "att_dst" in k for k in state_keys):
+            model_class = "GAT"
+        elif any("lin_rel" in k or "lin_root" in k for k in state_keys):
+            model_class = "GC_GNN"
+        elif any("lin_l" in k and "lin_r" in k for k in state_keys):
+            model_class = "GraphSAGE"
     if model_class is None:
         model_class = "GCN"
 
     if not hasattr(_gnn_models, model_class):
         raise ValueError(f"Unknown GNN model class '{model_class}'. Available: {', '.join([n for n in possible if hasattr(_gnn_models, n)])}")
 
+    # Infer model dimensions from checkpoint/state dict when available.
+    node_features_dim = 4
+    inferred_num_classes = len(sorted(set([lbl for lbl in labels if lbl is not None]))) or 2
+    inferred_hidden_channels = hidden_channels
+
+    if isinstance(checkpoint, dict):
+        node_features_dim = int(checkpoint.get("node_features_dim", node_features_dim))
+        inferred_hidden_channels = int(checkpoint.get("hidden_channels", inferred_hidden_channels))
+        inferred_num_classes = int(checkpoint.get("num_classes", inferred_num_classes))
+
+    if isinstance(sd, dict) and "lin.weight" in sd:
+        lin_w = sd["lin.weight"]
+        if hasattr(lin_w, "shape") and len(lin_w.shape) == 2:
+            inferred_num_classes = int(lin_w.shape[0])
+            inferred_hidden_channels = int(lin_w.shape[1])
+
     ModelCls = getattr(_gnn_models, model_class)
+    model = ModelCls(
+        node_features_dim=node_features_dim,
+        hidden_channels=inferred_hidden_channels,
+        num_classes=inferred_num_classes,
+    ).to(device)
 
-    num_classes = len(sorted(set([lbl for lbl in labels if lbl is not None]))) or 2
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = ModelCls(node_features_dim=4, hidden_channels=hidden_channels, num_classes=num_classes).to(device)
-
-    # Load state
-    state = torch.load(model_path, map_location=device)
     try:
         if isinstance(state, dict):
-            # Accept either raw state_dict or checkpoint with 'state_dict'
-            sd = state.get("state_dict") if "state_dict" in state else state
+            # Accept either raw state_dict or checkpoint with 'state_dict'.
+            if sd is None:
+                raise RuntimeError("Checkpoint dictionary did not include a valid state dict")
             model.load_state_dict(sd)
         else:
             # If a full model object was saved
@@ -508,128 +540,3 @@ def build_model_from_arrays(
         random_seed=random_seed,
         model_save_path=model_save_path,
     )
-
-
-# def run_pipeline(
-#     file_path: str,
-#     algorithm: Literal["RFC", "RFR", "SVC", "DNN"] = "RFC",
-#     task: Literal["classification", "classification-cw", "regression"] = "classification",
-#     method: str = "ECFP",
-#     featurizer_kwargs: Optional[dict] = None,
-#     train_size: float = 0.7,
-#     test_size: float = 0.3,
-#     stratified: bool = True,
-#     cv_fold: int = 5,
-#     opt_metric: Optional[str] = "balanced_accuracy",
-#     random_seed: int = 42,
-#     label_col: str = "class_label",
-#     smiles_col: str = "smiles",
-#     id_col: Optional[str] = None,
-# ) -> dict[str, Any]:
-#     """One-call shortcut: load → featurize → split → train+evaluate (non-blocking).
-
-#     Steps 1-3 (load, featurize, split) run immediately; training is submitted as a
-#     background job. Poll with check_training(job_id, model_save_path=model_save_path) every 30 s until done.
-
-#     Args:
-#         file_path: CSV dataset path (workspace-relative or absolute).
-#         algorithm: "RFC" (default), "RFR", "SVC", or "DNN". See get_ml_info().
-#         task: "classification" (default), "classification-cw", or "regression".
-#         method: Featurization method (default "ECFP"). See list_featurizers().
-#         featurizer_kwargs: Method-specific parameters forwarded to the featurizer,
-#             e.g. {"n_bits": 2048, "radius": 2} for ECFP. Defaults to None (method defaults).
-#         train_size: Training fraction (default 0.7).
-#         test_size: Test fraction (default 0.3).
-#         stratified: Stratify the split (default True).
-#         cv_fold: GridSearchCV folds (default 5).
-#         opt_metric: Scoring metric for GridSearchCV (default "balanced_accuracy").
-#         random_seed: Random seed (default 42).
-#         label_col: Target column in the CSV (default "class_label").
-#         smiles_col: SMILES column in the CSV (default "smiles").
-#         id_col: Compound ID column (optional).
-
-#     Returns:
-#         job_id, status="running", split_file_path, dataset_id, n_samples, n_features, model_save_path.
-#         Poll check_training(job_id, model_save_path=model_save_path) for the final result.
-#         Always pass model_save_path to check_training — it enables on-disk fallback if the
-#         server restarts and the in-memory job state is lost.
-#     """
-#     import uuid
-#     from chemagent.ml.training_tools import _default_model_path, _run_job_in_background
-
-#     session_logger = _get_session_logger()
-
-#     # 1. Load
-#     df, meta = load_csv(
-#         file_path=file_path, label_col=label_col, smiles_col=smiles_col,
-#         id_col=id_col, directory="",
-#     )
-#     ds_id = meta["dataset_id"]
-#     _loaded_datasets[ds_id] = df
-#     threading.Thread(
-#         target=session_logger.save_dataframe,
-#         args=(df, ds_id),
-#         daemon=True,
-#     ).start()
-
-#     # 2. Featurize
-#     features_result = featurize_df(df, method=method, **(featurizer_kwargs or {}))
-#     features = features_result[0] if isinstance(features_result, tuple) else features_result
-#     _processed_datasets[ds_id] = build_processed_entry(
-#         df=df, features=features, label_col=label_col
-#     )
-
-#     # 3. Split
-#     split_result = split_processed(
-#         processed=_processed_datasets[ds_id],
-#         split_type="random",
-#         train_size=train_size,
-#         val_size=0.0,
-#         test_size=test_size,
-#         seed=random_seed,
-#         stratified=stratified,
-#     )
-#     out_dir = session_logger.session_dir / "splits"
-#     out_dir.mkdir(parents=True, exist_ok=True)
-#     split_path = str(out_dir / f"{ds_id}_random.pkl")
-#     _save_split(
-#         save_dict=split_result["save_dict"],
-#         dataset_id=ds_id,
-#         split_type="random",
-#         save_path=split_path,
-#     )
-
-#     # 4. Train — submit as background job (non-blocking)
-#     split   = joblib.load(split_path)
-#     X_train = np.array(split["train_features"])
-#     y_train = np.array(split["train_labels"])
-#     X_test  = np.array(split["test_features"])
-#     y_test  = np.array(split["test_labels"])
-
-#     model_save_path = _default_model_path(algorithm, stem=Path(split_path).stem)
-#     job_id = str(uuid.uuid4())
-#     _run_job_in_background(
-#         job_id, _run_pipeline,
-#         X_train=X_train, y_train=y_train,
-#         X_test=X_test,   y_test=y_test,
-#         X_val=None,      y_val=None,
-#         algorithm=algorithm, task=task,
-#         cv_fold=cv_fold, opt_metric=opt_metric,
-#         random_seed=random_seed,
-#         model_save_path=model_save_path,
-#     )
-
-#     return {
-#         "job_id":          job_id,
-#         "status":          "running",
-#         "dataset_id":      ds_id,
-#         "n_samples":       int(features.shape[0]),
-#         "n_features":      int(features.shape[1]),
-#         "split_file_path": split_path,
-#         "model_save_path": model_save_path,
-#         "message": (
-#             f"Load/featurize/split completed. Training started in the background. "
-#             f"Call check_training('{job_id}', model_save_path='{model_save_path}') to poll for completion. "
-#             "Poll every 30 seconds until status is 'completed' or 'failed'."
-#         ),
-#     }

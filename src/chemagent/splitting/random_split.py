@@ -42,8 +42,7 @@ def random_split(
     When *stratified* is ``True`` and *labels* are supplied, each class is
     split proportionally using sklearn's ``train_test_split``.
 
-    Parameters
-    ----------
+    Args:
     n_samples:
         Total number of samples.
     train_size:
@@ -62,14 +61,12 @@ def random_split(
         If ``True``, both the train/test and val/test splits are
         stratified to preserve class proportions. Requires *labels*.
 
-    Returns
-    -------
+    Returns:
     Dict[str, List[int]]
         Keys ``"train"``, ``"val"``, ``"test"`` — each maps to a list of
         integer sample indices.
 
-    Raises
-    ------
+    Raises:
     ValueError
         If sizes are invalid, *labels* length mismatches *n_samples*, or
         *stratified* is ``True`` but *labels* is ``None``.

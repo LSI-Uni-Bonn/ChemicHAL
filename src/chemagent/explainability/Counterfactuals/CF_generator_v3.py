@@ -65,8 +65,7 @@ logger = logging.getLogger(__name__)
 class CFGenerator:
     """Generate counterfactuals for a single query compound using MolCE decomposition.
 
-    Parameters
-    ----------
+    Args:
     query_smiles : str
         SMILES of the compound to analyse.
     model_obj : sklearn estimator
@@ -473,13 +472,11 @@ class CFGenerator:
         only for confirmed counterfactuals (not the full candidate pool), then
         results are sorted by similarity (highest first).
 
-        Parameters
-        ----------
+        Args:
         max_counterfactuals : int, optional
             Maximum number of CFs to return (default 20).
 
-        Returns
-        -------
+        Returns:
         pd.DataFrame
             Columns:
 

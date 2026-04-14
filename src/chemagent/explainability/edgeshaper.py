@@ -22,21 +22,16 @@ import numpy as np
 from numpy.random import default_rng
 
 import matplotlib.pyplot as plt
-# from tqdm import tqdm
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from rdkit import Chem
 from rdkit.Chem import Draw
 
-# edgeshaper_viz_utils wraps the visualization helpers used by EdgeSHAPer.
-# Keep imports routed through that module so this file can still load when
-# optional visualization dependencies are unavailable.
-try:
-    from chemagent.explainability.edgeshaper_viz_utils.molmapping import mapvalues2mol
-    from chemagent.explainability.edgeshaper_viz_utils.utils import transform2png
-    _HAS_EDGESHAPER_VIZ_UTILS = True
-except Exception:
-    _HAS_EDGESHAPER_VIZ_UTILS = False
+
+from chemagent.explainability.edgeshaper_viz_utils.molmapping import mapvalues2mol
+from chemagent.explainability.edgeshaper_viz_utils.utils import transform2png
+    
+
 
 ###EdgeSHAPer as a class###
 
@@ -77,8 +72,7 @@ class Edgeshaper:
     def __init__(self, model, x, edge_index, edge_weight = None, device = "cpu"):
         """Initialize EdgeSHAPer explainer.
         
-        Parameters
-        ----------
+        Args:
         model : torch.nn.Module
             Pre-trained GNN model to explain (automatically set to eval mode)
         x : torch.Tensor
@@ -120,8 +114,7 @@ class Edgeshaper:
         Uses sequential computation (one Monte Carlo sample at a time). For large graphs,
         consider using explain_batch() instead for faster vectorized computation.
         
-        Parameters
-        ----------
+        Args:
         M : int, optional
             Number of Monte Carlo samples for Shapley approximation. More samples = 
             more accurate but slower. Default: 100
@@ -143,13 +136,11 @@ class Edgeshaper:
         progress_bar : bool, optional
             Display tqdm progress bar during computation. Default: True
         
-        Returns
-        -------
+        Returns:
         list
             Shapley values (phi_edges) for each edge, in the same order as edge_index.
             
-        Notes
-        -----
+        Notes:
         The algorithm works as follows for each edge j:
         1. Sample M random edge permutations
         2. For each permutation, create two graphs:
@@ -388,8 +379,7 @@ class Edgeshaper:
         Faster variant that processes multiple Monte Carlo samples in parallel using
         vectorized tensor operations. Recommended for graphs with many edges.
         
-        Parameters
-        ----------
+        Args:
         M : int, optional
             Number of Monte Carlo samples. Will be auto-adjusted to be divisible by 
             batch_size if needed. Default: 100
@@ -414,20 +404,17 @@ class Edgeshaper:
         progress_bar : bool, optional
             Display tqdm progress bar. Default: True
         
-        Returns
-        -------
+        Returns:
         list
             Shapley values (phi_edges) for each edge in same order as edge_index.
         
-        Raises
-        ------
+        Raises:
         Exception
             If target_class is None (batched mode requires classification target)
         Exception
             If deviation is not None (batched mode does not support early stopping)
         
-        Notes
-        -----
+        Notes:
         Algorithm optimizations:
         - Vectorizes edge permutation generation across batch_size samples
         - Batches model inference to process multiple graphs simultaneously
@@ -602,8 +589,7 @@ class Edgeshaper:
         This baseline is used to compute fidelity metrics. Stores result in 
         self.original_pred_prob for use in fidelity computations.
         
-        Returns
-        -------
+        Returns:
         float
             Model's predicted probability for self.target_class on the full graph.
         """
@@ -625,21 +611,18 @@ class Edgeshaper:
         the model's prediction keeps the same class as the original graph. Measures
         how much these edges alone preserve the prediction (fidelity-).
         
-        Parameters
-        ----------
+        Args:
         verbose : bool, optional
             If True, print fidelity- metric. Default: False
         
-        Returns
-        -------
+        Returns:
         tuple
             (edge_index, infidelity) where:
             - edge_index (torch.Tensor): Minimal edge subset with shape [2, k]
             - infidelity (float): Fidelity- = original_prob - reduced_prob.
               Lower values indicate the edges alone capture more of the original prediction.
         
-        Notes
-        -----
+        Notes:
         Fidelity- (infidelity) measures how faithful the minimal set is to the original.
         - High fidelity- → important edges alone don't fully preserve the prediction
         - Low fidelity- → important edges alone capture most of the original prediction
@@ -683,21 +666,18 @@ class Edgeshaper:
         model's prediction changes from the original class. Measures how much of 
         the prediction drop is due to removing edges (fidelity+).
         
-        Parameters
-        ----------
+        Args:
         verbose : bool, optional
             If True, print fidelity+ metric. Default: False
         
-        Returns
-        -------
+        Returns:
         tuple
             (edge_index, fidelity) where:
             - edge_index (torch.Tensor): Edge subset with shape [2, k]
             - fidelity (float): Fidelity+ = original_prob - reduced_prob.
               Higher values indicate these edges are more important for the prediction.
         
-        Notes
-        -----
+        Notes:
         Fidelity+ (sufficiency) measures how sufficient the edges are to drive the
         prediction toward the target class:
         - High fidelity+ → edges collectively have large impact on prediction
@@ -751,21 +731,18 @@ class Edgeshaper:
         score using harmonic mean. Captures both the importance of edges for the 
         prediction and their ability to preserve it.
         
-        Parameters
-        ----------
+        Args:
         verbose : bool, optional
             If True, print trustworthiness score. Default: False
         
-        Returns
-        -------
+        Returns:
         float
             Trustworthiness score in range [0, 1]:
             TW = 2 * (fidelity * (1 - infidelity)) / (fidelity + (1 - infidelity))
             - TW = 1: Perfect explanation (high fidelity, low infidelity)
             - TW = 0: Poor explanation (either low fidelity or high infidelity)
         
-        Notes
-        -----
+        Notes:
         Trustworthiness combines:
         - Fidelity+: How much important edges contribute to the prediction
         - Infidelity: How much do important edges preserve the original prediction
@@ -799,8 +776,7 @@ class Edgeshaper:
         mapped onto molecular bonds. Can visualize: (1) all edge Shapley values, 
         (2) only pertinent positive set edges, or (3) only minimal top-k set edges.
         
-        Parameters
-        ----------
+        Args:
         smiles : str
             SMILES string of the molecule to render
         save_path : str, optional
@@ -812,25 +788,18 @@ class Edgeshaper:
             If True, visualize minimal_top_k_set (edges that change prediction). 
             Default: False
         
-        Returns
-        -------
+        Returns:
         tuple
             (img_expl, img_pert_pos, img_min_top_k) where each is PIL.Image or None:
             - img_expl: Heatmap of all Shapley values
             - img_pert_pos: Heatmap of pertinent_positive_set (if pertinent_positive=True)
             - img_min_top_k: Heatmap of minimal_top_k_set (if minimal_top_k=True)
         
-        Notes
-        -----
+        Notes:
         Maps graph edge indices to RDKit bond indices using atom connectivity.
         Aggregates multiple graph edges to single molecular bonds when present.
         """
         assert(self.explained) #make sure that the explanation has been computed
-
-        if not _HAS_EDGESHAPER_VIZ_UTILS:
-            raise ImportError(
-                "EdgeSHAPer visualization helpers are unavailable. Check the edgeshaper_viz_utils dependencies to enable visualization."
-            )
 
         img_expl = None
         img_pert_pos = None
@@ -943,8 +912,7 @@ def edgeshaper(model, x, E, M = 100, target_class = 0, P = None, deviation = Non
     Standalone function for computing edge Shapley values. For more features 
     (e.g., fidelity metrics, visualizations), use the Edgeshaper class instead.
     
-    Parameters
-    ----------
+    Args:
     model : torch.nn.Module
         Pre-trained GNN model in eval mode
     x : torch.Tensor
@@ -970,13 +938,11 @@ def edgeshaper(model, x, E, M = 100, target_class = 0, P = None, deviation = Non
     device : str, optional
         Compute device ('cpu' or 'cuda'). Default: 'cpu'
     
-    Returns
-    -------
+    Returns:
     list
         Shapley values for each edge, in same order as E (edge_index)
     
-    See Also
-    --------
+    See Also:
     Edgeshaper : Class-based interface with more features (fidelity, visualization)
     edgeshaper_deviation : Implementation with early stopping support
     """
@@ -1089,8 +1055,7 @@ def edgeshaper_deviation(model, x, E, M = 100, target_class = 0, P = None, devia
     cumulative Shapley value sum deviates from the true model output by at most 
     'deviation'. Otherwise runs full M iterations.
     
-    Parameters
-    ----------
+    Args:
     model : torch.nn.Module
         Pre-trained GNN model in eval mode
     x : torch.Tensor
@@ -1115,18 +1080,15 @@ def edgeshaper_deviation(model, x, E, M = 100, target_class = 0, P = None, devia
     device : str, optional
         Compute device ('cpu' or 'cuda'). Default: 'cpu'
     
-    Returns
-    -------
+    Returns:
     list
         Shapley values for each edge
     
-    Notes
-    -----
+    Notes:
     Early stopping can significantly speed up computation but may sacrifice accuracy.
     Set deviation to a reasonable threshold (e.g., 0.01 for 1% error tolerance).
     
-    See Also
-    --------
+    See Also:
     edgeshaper : Functional interface (calls this if deviation is set)
     Edgeshaper.explain_with_deviation : Class method variant
     """

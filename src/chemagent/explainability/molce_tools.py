@@ -341,8 +341,7 @@ def explain_with_molce(
     A high **contrast score** means the current R-group / scaffold strongly
     separates the predicted class from the foil class.
 
-    Parameters
-    ----------
+    Args:
     smiles : str
         SMILES string of the compound to explain.
     model_path : str
@@ -375,8 +374,7 @@ def explain_with_molce(
         reported under ``anti_contrastive_rgroups`` / ``anti_contrastive_scaffolds``
         in the JSON output.  Default False.
 
-    Returns
-    -------
+    Returns:
     list
         Two MCPImage objects (R-group grid, scaffold grid) followed by a JSON
         metadata string.
@@ -397,14 +395,12 @@ def explain_with_molce(
         - image_path_rgroups, image_path_scaffolds
         - status: "completed"
 
-    Raises
-    ------
+    Raises:
     ValueError
         If SMILES is invalid, model/split file cannot be loaded, or the
         molecule cannot be decomposed into a Murcko scaffold + R-groups.
 
-    Examples
-    --------
+    Examples:
     >>> result = explain_with_molce(
     ...     smiles="c1ccc(NC(=O)c2cccc(Cl)c2)cc1",
     ...     model_path="data/logs/session_xxx/models/data_RFC.pkl",
@@ -695,8 +691,7 @@ def identify_recurrent_molce_rules(
     consistently distinguish *fact_class* from *foil_class* across the
     population — the dataset-level chemical logic the model has learned.
 
-    Parameters
-    ----------
+    Args:
     split_file_path : str
         Path to the split .pkl file (from split_dataset).
     model_path : str
@@ -736,8 +731,7 @@ def identify_recurrent_molce_rules(
         reported under ``anti_rgroup_rules`` / ``anti_scaffold_rules`` in
         the JSON output.  Default False.
 
-    Returns
-    -------
+    Returns:
     list
         Two MCPImage objects (R-group grid, scaffold grid) followed by a JSON
         metadata string.
@@ -759,14 +753,12 @@ def identify_recurrent_molce_rules(
         - image_path_rgroups, image_path_scaffolds
         - status: "completed"
 
-    Raises
-    ------
+    Raises:
     ValueError
         If fact_class == foil_class, or split file/model cannot be loaded,
         or no correctly predicted compounds are found.
 
-    Examples
-    --------
+    Examples:
     >>> rules = identify_recurrent_molce_rules(
     ...     split_file_path="data/logs/session_xxx/splits/data_random.pkl",
     ...     model_path="data/logs/session_xxx/models/data_RFC.pkl",

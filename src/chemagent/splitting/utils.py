@@ -21,8 +21,7 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 def set_random_seed(seed: Optional[int]) -> None:
     """Set Python and NumPy random seeds.
 
-    Parameters
-    ----------
+    Args:
     seed:
         Integer seed, or ``None`` to leave the global state unchanged.
     """
@@ -39,13 +38,11 @@ def validate_split_sizes(
 ) -> None:
     """Raise ``ValueError`` if split proportions are invalid.
 
-    Parameters
-    ----------
+    Args:
     train_size, val_size, test_size:
         Fractions that must be non-negative and sum to 1.0.
 
-    Raises
-    ------
+    Raises:
     ValueError
         If any size is negative, or the sum is not 1.0.
     """
@@ -64,13 +61,11 @@ def validate_split_sizes(
 def generate_murcko_scaffold(smiles: str) -> str:
     """Return the canonical SMILES of the Murcko scaffold for *smiles*.
 
-    Parameters
-    ----------
+    Args:
     smiles:
         Input SMILES string.
 
-    Returns
-    -------
+    Returns:
     str
         Canonical SMILES of the Murcko scaffold, or ``""`` if *smiles* is
         invalid or the molecule has no ring system.

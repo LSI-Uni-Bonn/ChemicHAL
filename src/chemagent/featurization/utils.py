@@ -23,18 +23,15 @@ from rdkit import Chem
 def get_mol_list(smiles_list: List[str]) -> List[Chem.Mol]:
     """Convert a list of SMILES strings to RDKit molecule objects.
 
-    Parameters
-    ----------
+    Args:
     smiles_list:
         List of SMILES strings.
 
-    Returns
-    -------
+    Returns:
     List[Chem.Mol]
         One ``Chem.Mol`` per input SMILES, in the same order.
 
-    Raises
-    ------
+    Raises:
     ValueError
         If any SMILES string cannot be parsed by RDKit.
     """
@@ -52,13 +49,11 @@ def get_mol_list(smiles_list: List[str]) -> List[Chem.Mol]:
 def validate_smiles(smiles_list: List[str]) -> dict:
     """Check each SMILES string for validity without raising.
 
-    Parameters
-    ----------
+    Args:
     smiles_list:
         List of SMILES strings to validate.
 
-    Returns
-    -------
+    Returns:
     dict
         ``{"valid": [...], "invalid": [...], "n_valid": int, "n_invalid": int}``
     """
@@ -77,8 +72,7 @@ def validate_smiles(smiles_list: List[str]) -> dict:
 def set_seeds(seed: int) -> None:
     """Set Python, NumPy, and hash-seed random states.
 
-    Parameters
-    ----------
+    Args:
     seed:
         Integer seed value.
     """
@@ -96,15 +90,13 @@ def set_global_determinism(seed: int) -> None:
 def create_directory(path: Union[str, Path], verbose: bool = True) -> Path:
     """Create *path* (and any missing parents) if it does not already exist.
 
-    Parameters
-    ----------
+    Args:
     path:
         Target directory path.
     verbose:
         Print a message when the directory is created.
 
-    Returns
-    -------
+    Returns:
     Path
         Resolved ``Path`` object for the directory.
     """

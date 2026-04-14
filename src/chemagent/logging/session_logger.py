@@ -189,8 +189,7 @@ class SessionLogger:
 
     Thread-safe: all writes and copies are serialised through a Lock.
 
-    Parameters
-    ----------
+    Args:
     log_dir:
         Root directory for all session subdirectories.  Created automatically.
     session_timeout_mins:
@@ -377,8 +376,7 @@ class SessionLogger:
     ) -> None:
         """Record a free-form LLM reasoning step.
 
-        Parameters
-        ----------
+        Args:
         thought:
             The LLM's reasoning text (chain-of-thought, plan, observation, …).
         step:
@@ -402,8 +400,7 @@ class SessionLogger:
     ) -> None:
         """Record an assistant/LLM answer in the session log.
 
-        Parameters
-        ----------
+        Args:
         answer:
             The assistant's textual answer or response.
         role:
@@ -547,8 +544,7 @@ class SessionLogger:
     def save_dataframe(self, df: "pd.DataFrame", name: str) -> Path:
         """Save *df* as a CSV inside ``<session_dir>/datasets/``.
 
-        Parameters
-        ----------
+        Args:
         df:   The pandas DataFrame to save.
         name: Stem used for the filename (``<name>.csv``).
         """

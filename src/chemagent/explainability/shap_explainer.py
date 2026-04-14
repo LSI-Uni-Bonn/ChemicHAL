@@ -3,6 +3,12 @@ chemagent.explainability.shap_explainer
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Thin wrapper that selects the right SHAP explainer for a trained sklearn model.
 
+Important routing rule for LLM tool callers
+-------------------------------------------
+These SHAP helpers are for tabular sklearn-style models saved as .pkl/.joblib
+(RFC/RFR/SVC/DNN tabular path). They are not for GNN checkpoints (.pt/.pth).
+For GNN explanations, use explain_gnn_with_edgeshaper.
+
 Supported models
 ----------------
 * RandomForestClassifier / RandomForestRegressor  →  ``shap.TreeExplainer``
@@ -64,8 +70,7 @@ _TREE_MODEL_NAMES: frozenset[str] = frozenset(
 class SHAPExplainer:
     """Compute SHAP values for a trained sklearn estimator.
 
-    Parameters
-    ----------
+    Args:
     model:
         Fitted scikit-learn estimator.
     background:
@@ -86,13 +91,11 @@ class SHAPExplainer:
     def explain(self, X: np.ndarray) -> np.ndarray:
         """Compute SHAP values for *X*.
 
-        Parameters
-        ----------
+        Args:
         X:
             Feature matrix, shape ``(n_samples, n_features)``.
 
-        Returns
-        -------
+        Returns:
         np.ndarray, shape ``(n_samples, n_features)``
             For binary classifiers the values correspond to the positive
             class (index 1).  For regressors a single 2-D array is returned.
@@ -127,15 +130,13 @@ class SHAPExplainer:
         For 2-D output (regression or already-reduced classifiers) the
         array is returned unchanged.
 
-        Parameters
-        ----------
+        Args:
         X:
             Feature matrix, shape ``(n_samples, n_features)``.
         y_pred:
             Predicted class labels, shape ``(n_samples,)``.
 
-        Returns
-        -------
+        Returns:
         np.ndarray, shape ``(n_samples, n_features)``
         """
         X_in = self.model.as_torch_tensor(X) if self._is_dnn else X
@@ -228,8 +229,7 @@ class SHAPExplainer:
     ) -> "SHAPExplainer":
         """Load model from *model_path* and build the explainer.
 
-        Parameters
-        ----------
+        Args:
         model_path:
             Path to a ``joblib``-serialised sklearn model (``.pkl``).
         background:
@@ -308,7 +308,7 @@ def explain_with_shap(
     correct_only: bool = True,
     save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compute per-compound, per-feature SHAP values for a trained model.
+    """Compute per-compound, per-feature SHAP values for a trained tabular model.
 
     Loads the model and split from disk, predicts on the chosen partition,
     optionally filters to correctly predicted instances, computes SHAP values,
@@ -319,6 +319,11 @@ def explain_with_shap(
     Pass correct_only=False to explain all instances.
 
     Workflow: check_training → THIS TOOL → plot_shap_mol
+
+    Routing note:
+        Use this only for tabular sklearn models (.pkl/.joblib) trained on
+        fingerprint features. If the model is a GNN checkpoint (.pt/.pth),
+        use explain_gnn_with_edgeshaper instead.
 
     Args:
         model_path: Path to .pkl model from train_model() / check_training().
@@ -437,7 +442,7 @@ def explain_smiles_with_shap(
     featurizer_kwargs: Optional[dict] = None,
     save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compute SHAP values for one or more SMILES strings without a pre-built split file.
+    """Compute SHAP values for one or more SMILES strings with a tabular model.
 
     Use this when you have a SMILES string from the chat UI and want to understand
     the model's prediction — no labelled split file or ground-truth label needed.
@@ -452,6 +457,10 @@ def explain_smiles_with_shap(
     the predicted class.
 
     Workflow: check_training → THIS TOOL → plot_shap_mol
+
+    Routing note:
+        This tool is for tabular sklearn models (.pkl/.joblib). For GNN
+        prediction explanations, use explain_gnn_with_edgeshaper.
 
     Args:
         model_path: Path to .pkl model from train_model() / check_training().

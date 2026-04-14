@@ -21,14 +21,12 @@ def get_split_statistics(
 ) -> Dict[str, Dict[str, float]]:
     """Return count and percentage for each partition in *split_dict*.
 
-    Parameters
-    ----------
+    Args:
     split_dict:
         Dict with keys ``"train"``, ``"val"``, ``"test"`` (or any subset)
         mapping to lists of integer indices.
 
-    Returns
-    -------
+    Returns:
     Dict[str, Dict[str, float]]
         Per-partition ``{"count": int, "percentage": float}`` plus a
         ``"total"`` entry.
@@ -53,15 +51,13 @@ def class_distribution(
 
     Useful for verifying that stratification preserved class ratios.
 
-    Parameters
-    ----------
+    Args:
     split_dict:
         Dict mapping partition names to lists of integer indices.
     labels:
         Full label array (indexed by the values in *split_dict*).
 
-    Returns
-    -------
+    Returns:
     Dict[str, Dict[str, int]]
         ``{partition: {class_label: count, ...}, ...}``
     """

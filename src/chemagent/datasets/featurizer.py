@@ -31,8 +31,7 @@ import chemagent.featurization as _feat
 def available_featurizers() -> Dict[str, Any]:
     """Return all public UpperCase callables from ``chemagent.featurization``.
 
-    Returns
-    -------
+    Returns:
     dict
         ``{method_name: callable}``
     """
@@ -46,8 +45,7 @@ def available_featurizers() -> Dict[str, Any]:
 def list_featurizers() -> Dict[str, Any]:
     """Return name, parameters, and one-line description for every featurizer.
 
-    Returns
-    -------
+    Returns:
     dict
         ``{method_name: {"parameters": {...}, "description": str}}``
     """
@@ -75,8 +73,7 @@ def featurize_df(
 ) -> np.ndarray | tuple[np.ndarray, Optional[dict]]:
     """Compute a fingerprint feature matrix from a DataFrame's SMILES column.
 
-    Parameters
-    ----------
+    Args:
     df:
         DataFrame with a SMILES column (configured via ``df.attrs["smiles_col"]``
         or passed explicitly with *smiles_col*).
@@ -93,16 +90,14 @@ def featurize_df(
         If True and method is "ECFP", also return bit information dictionary.
         Bit info maps fingerprint bit indices to atom environments.
 
-    Returns
-    -------
+    Returns:
     np.ndarray
         2-D feature matrix, shape ``(n_samples, n_bits)``.
     tuple (if return_bit_info=True)
         (features, bit_info_dict) where bit_info_dict is the bit information for ECFP,
         or None for other methods.
 
-    Raises
-    ------
+    Raises:
     ValueError
         If *method* is not registered or no SMILES column is found.
     """
@@ -152,8 +147,7 @@ def build_processed_entry(
 ) -> Dict[str, Any]:
     """Assemble the processed-dataset dict stored in ``_processed_datasets``.
 
-    Parameters
-    ----------
+    Args:
     df:
         Source DataFrame (column config read from ``df.attrs`` when not
         overridden by explicit arguments).
@@ -169,8 +163,7 @@ def build_processed_entry(
         Optional bit information dictionary for ECFP fingerprints.
         Maps bit indices to atom environment tuples (for explainability tools like MolAnchor).
 
-    Returns
-    -------
+    Returns:
     dict
         Keys: ``features``, ``labels``, ``label_column``, and optionally
         ``smiles``, ``cid``, ``core``, and ``bit_info``.
@@ -209,8 +202,7 @@ def prepare_from_external_features(
     Used when featurization was performed outside the server (e.g. via the
     mol-featurization MCP server).
 
-    Parameters
-    ----------
+    Args:
     df:
         Source DataFrame.
     features:
@@ -218,13 +210,11 @@ def prepare_from_external_features(
     label_col, smiles_col, id_col:
         Override column names; fall back to ``df.attrs``.
 
-    Returns
-    -------
+    Returns:
     dict
         Same structure as :func:`build_processed_entry`.
 
-    Raises
-    ------
+    Raises:
     ValueError
         If ``len(features) != len(df)``.
     """

@@ -58,8 +58,7 @@ def plot_confusion_matrix(
 ) -> Figure:
     """Annotated confusion-matrix heatmap (seaborn).
 
-    Parameters
-    ----------
+    Args:
     y_true:
         Ground-truth labels.
     y_pred:
@@ -77,8 +76,7 @@ def plot_confusion_matrix(
     save_path:
         File path to save the figure.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
@@ -141,8 +139,7 @@ def plot_roc_curve(
 ) -> Figure:
     """ROC curve with AUC annotation.
 
-    Parameters
-    ----------
+    Args:
     y_true:
         Binary ground-truth labels (0 / 1).
     y_score:
@@ -156,8 +153,7 @@ def plot_roc_curve(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
@@ -206,8 +202,7 @@ def plot_pr_curve(
 ) -> Figure:
     """Precision-Recall curve with Average Precision annotation.
 
-    Parameters
-    ----------
+    Args:
     y_true:
         Binary ground-truth labels (0 / 1).
     y_score:
@@ -221,8 +216,7 @@ def plot_pr_curve(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
@@ -282,8 +276,7 @@ def plot_metric_bar(
     Only rate / score metrics in [0, 1] are plotted; list or dict values
     are silently skipped.
 
-    Parameters
-    ----------
+    Args:
     metrics_dict:
         ``{metric_name: value}`` mapping.
     title:
@@ -295,8 +288,7 @@ def plot_metric_bar(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()
@@ -351,8 +343,7 @@ def plot_threshold_metrics(
 ) -> Figure:
     """Precision, Recall, and F1 as a function of the decision threshold.
 
-    Parameters
-    ----------
+    Args:
     y_true:
         Binary ground-truth labels.
     y_score:
@@ -364,8 +355,7 @@ def plot_threshold_metrics(
     save_path:
         Output file path.
 
-    Returns
-    -------
+    Returns:
     Figure
     """
     set_theme()

@@ -1,4 +1,4 @@
-"""chemagent_mcp.py — single consolidated FastMCP server (27 tools).
+"""chemagent_mcp.py — single consolidated FastMCP server (41 tools).
 
 STANDARD WORKFLOW (data stays on disk — preferred):
     find_datasets()                                          # discover CSVs
@@ -44,11 +44,12 @@ GNN
   prepare_gnn_dataset     convert split .pkl + SMILES CSV to train/val/test graph datasets
   train_gnn_model_mcp     train a GNN (GCN, GraphSAGE, GAT, etc.) on graph datasets (non-blocking job)
   check_gnn_training      poll a background GNN training job
+    load_gnn_model          MCP-safe GNN loader alias (preferred when LLM calls this exact name)
   load_gnn_model_mcp      load a trained GNN model from disk and validate
 
 XAI
-  explain_with_shap              compute per-compound SHAP values from a model + split .pkl
-  explain_smiles                 compute SHAP values for SMILES strings typed directly in chat (no split file needed)
+  explain_with_shap              compute per-compound SHAP values from tabular sklearn models (.pkl/.joblib)
+  explain_smiles                 compute SHAP values for chat SMILES with tabular sklearn models
   plot_shap_mol                  render atom-level SHAP heatmaps on molecular structures
   explain_with_molanchor         identify molecular anchors (critical fragments) for a single prediction
   identify_recurrent_anchor_rules batch MolAnchor + compute substructure & anchor occurrence metrics
@@ -58,8 +59,9 @@ XAI
   visualize_counterfactuals      draw query compound + counterfactuals as a molecule grid image
   explain_with_molce             contrastive R-group + scaffold attribution — why class A and not class B?
   identify_recurrent_molce_rules global MolCE: aggregate top-3 R-group + scaffold rules across a compound class
-  explain_gnn_with_edgeshaper    edge-level Shapley values (explainability) for GNN predictions
-  visualize_edgeshaper_results   render edge importance heatmaps on molecular structures
+  select_compound_for_edgeshaper  randomly select a correctly predicted graph compound for EdgeSHAPer analysis
+  explain_gnn_with_edgeshaper    edge-level Shapley values (required tool for GNN prediction explanations)
+  visualize_edgeshaper_results   generate edge importance heatmaps on molecular structures and save a PNG artifact
   get_edgeshaper_info            reference information about EdgeSHAPer parameters and methods
 
 Utilities
@@ -108,6 +110,7 @@ from chemagent.ml.gnn_training_tools import (
     prepare_gnn_dataset,
     train_gnn_model_mcp,
     check_gnn_training,
+    load_gnn_model,
     load_gnn_model_mcp,
 )
 from chemagent.plots.display import show_plot
@@ -128,6 +131,7 @@ from chemagent.explainability.molce_tools import (
     identify_recurrent_molce_rules,
 )
 from chemagent.explainability.edgeshaper_tools import (
+  select_compound_for_edgeshaper,
     explain_gnn_with_edgeshaper,
     visualize_edgeshaper_results,
     get_edgeshaper_info,
@@ -182,6 +186,7 @@ _register(check_training)
 _register(prepare_gnn_dataset)
 _register(train_gnn_model_mcp)
 _register(check_gnn_training)
+_register(load_gnn_model)
 _register(load_gnn_model_mcp)
 
 
@@ -220,6 +225,7 @@ _register(generate_counterfactuals)
 _register(visualize_counterfactuals)
 _register(explain_with_molce)
 _register(identify_recurrent_molce_rules)
+_register(select_compound_for_edgeshaper)
 _register(explain_gnn_with_edgeshaper)
 _register(visualize_edgeshaper_results)
 _register(get_edgeshaper_info)

@@ -7,19 +7,20 @@ An AI agent for **compound selectivity prediction and explainability** using the
 ## Architecture
 All capabilities are consolidated into a **single FastMCP server** (`chemagent_mcp.py`) that runs as a subprocess over `stdio` transport. The server lives at `src/chemagent/servers/chemagent_mcp.py` and is registered in `lm_studio_mcp_config.json` as `"chemagent"`.
 
-### MCP Tools exposed by `chemagent_mcp.py` (16 total)
+### MCP Tools exposed by `chemagent_mcp.py` (41 total)
 
 | Group | Tools |
 |---|---|
 | **Dataset** | `find_datasets`, `list_loaded_datasets`, `list_featurizers`, `load_dataset`, `compute_features`, `split_dataset`, `dataset_status` |
 | **ML** | `get_ml_info`, `train_model`, `check_training`, `export_predictions` |
-| **Plots** | `plot_classification_results`, `plot_regression_results` |
-| **Utility** | `log_thought`, `start_new_session`, `run_pipeline` |
+| **GNN** | `prepare_gnn_dataset`, `train_gnn_model_mcp`, `check_gnn_training`, `load_gnn_model`, `load_gnn_model_mcp` |
+| **Plots** | `plot_classification_results`, `plot_regression_results`, `show_plot` |
+| **XAI** | `explain_with_shap`, `explain_smiles_with_shap`, `plot_shap_mol`, `explain_with_molanchor`, `identify_recurrent_anchor_rules`, `get_molanchor_info`, `select_compound_for_xai`, `generate_counterfactuals`, `visualize_counterfactuals`, `explain_with_molce`, `identify_recurrent_molce_rules`, `select_compound_for_edgeshaper`, `explain_gnn_with_edgeshaper`, `visualize_edgeshaper_results`, `get_edgeshaper_info` |
+| **Utility / Session** | `log_thought`, `log_answer`, `generate_report`, `generate_pdf_report`, `export_chat_html`, `set_chat_scope`, `start_new_session` |
 
-The following are **internal Python helpers** — they exist in the server but are **not** registered as MCP tools:
-`train_on_split_file`, `predict_from_split_file`, `build_model_from_split_file`, `build_model_from_arrays`, `get_dataset_smiles`, `prepare_ml_dataset`, `load_split`, `get_ml_ready_data`, `_predict`, `evaluate_classification`, `evaluate_regression`
-
-XAI/SHAP tools are the **next planned implementation step** (`shap` is already installed). Do not add XAI tools without explicit instruction.
+Notes:
+- `run_pipeline` is currently not registered in the MCP server.
+- XAI and GNN tools are already implemented and available.
 
 ## Preferred Data Flow (data stays on disk)
 Features are never serialised through the LLM context:
@@ -39,13 +40,28 @@ load_dataset("data/datasets/chembl_activity_data_O00329_P42336.csv")
   → plot_classification_results(model_path, split_file_path)    # all plots in one call
 ```
 
+## GNN Data Flow (data stays on disk)
+GNN training is also non-blocking and returns full metrics when polled:
+```
+load_dataset("data/datasets/chembl_activity_data_O00329_P42336.csv")
+  → split_dataset(dataset_id, train_size=0.7, val_size=0.0, test_size=0.3, stratified=True)
+  → prepare_gnn_dataset(split_file_path, smiles_csv_path="data/datasets/chembl_activity_data_O00329_P42336.csv")
+  → job = train_gnn_model_mcp(split_file_path, smiles_csv_path="data/datasets/chembl_activity_data_O00329_P42336.csv", model_class_name="GCN")
+  → check_gnn_training(job["job_id"], model_save_path=job["model_save_path"])  # poll every 30-60 s
+```
+
+Important:
+- `train_gnn_model_mcp` returns a submitted job (`job_id`, `model_save_path`), not final metrics.
+- Quantitative metrics are returned by `check_gnn_training` when `status == "completed"`.
+- Returned fields include `train_evaluation`, `val_evaluation`, `test_evaluation`, plus `best_val_acc` and `test_acc`.
+
 ## Shortcut (single-call experiments)
 ```
 job = run_pipeline("data/datasets/chembl_activity_data_O00329_P42336.csv",
                    algorithm="RFC", task="classification")
 result = check_training(job["job_id"], model_save_path=job["model_save_path"])   # poll every 60 s
 ```
-Steps 1–3 (load → featurize → split) run synchronously; training is submitted as a background job. Returns `job_id` immediately — poll with `check_training()` like `train_model`. Use for quick experiments; use individual steps when intermediate outputs are needed.
+`run_pipeline` may be unavailable in current MCP server configurations because it is not always registered. Prefer the explicit step-by-step flow above.
 
 ## Running the MCP Server
 The primary MCP host is **LM Studio** (config: `lm_studio_mcp_config.json`). Other clients (VS Code, Claude Desktop) may be supported — the config structure is standard MCP and portable.
@@ -92,7 +108,9 @@ src/chemagent/
 - **ML extensibility**: All estimator factories and hyperparameter grids live in `chemagent/ml/models.py` as `build_estimator`, `PARAM_GRIDS`, and `MODEL_INFO` — that is the single source of truth. `HYPERPARAMETERS` in `hyperparameter_tuning.py` is imported from `models.py`.
 - **Core ML classes**: `MLModel` (GridSearchCV training) in `chemagent.ml.training`; `Model_Evaluation` (metrics) in `chemagent.ml.evaluation`. Both are exported from `chemagent.ml`.
 - **Plot tools**: The two plot tools (`plot_classification_results`, `plot_regression_results`) load model and split data from disk themselves — never pass raw arrays to them. They accept a `plots` list (or `["all"]`) to select which figures to generate.
-- **Background training**: `train_model` is non-blocking and returns a `job_id`. Always poll with `check_training(job_id)` until `status` is `"completed"` or `"failed"`. The full pipeline result is in `check_training(...)[\"result\"]` when done.
+- **Background training (tabular ML)**: `train_model` is non-blocking and returns a `job_id`. Always poll with `check_training(job_id)` until `status` is `"completed"` or `"failed"`. The full pipeline result is in `check_training(...)[\"result\"]` when done.
+- **Background training (GNN)**: `train_gnn_model_mcp` is non-blocking and returns `job_id` + `model_save_path`. Always poll with `check_gnn_training(job_id, model_save_path=...)` until `status` is `"completed"` or `"failed"`.
+- **GNN metrics availability**: quantitative metrics are provided by `check_gnn_training` after completion (`train_evaluation`, `val_evaluation`, `test_evaluation`, `best_val_acc`, `test_acc`).
 
 ## Dataset Target Pairs
 - `O00329` = PI3Kδ, `P42336` = PI3Kα, `P48736` = PI3Kγ

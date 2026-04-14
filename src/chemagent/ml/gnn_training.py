@@ -6,11 +6,15 @@ and provides training loops for PyTorch Geometric GNN models.
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import pickle
 from typing import Optional
 
 import joblib
 import networkx as nx
+import numpy as np
+from tqdm.auto import tqdm
 import torch
 from rdkit import Chem
 from sklearn.model_selection import train_test_split
@@ -18,19 +22,18 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 
 from chemagent.ml.gnn_models import GCN, GAT, GC_GNN, GIN, GINE, GraphSAGE
+from chemagent.ml.metrics import classification_metrics, multiclass_metrics
 
 
 
 def smiles_to_nx_graph(smiles: str) -> Optional[nx.Graph]:
     """Convert SMILES string to NetworkX graph with node/edge features.
 
-    Parameters
-    ----------
+    Args:
     smiles :
         SMILES string.
 
-    Returns
-    -------
+    Returns:
     NetworkX graph with atomic and bond features, or None if parsing fails.
     """
     mol = Chem.MolFromSmiles(smiles)
@@ -63,15 +66,13 @@ def smiles_to_nx_graph(smiles: str) -> Optional[nx.Graph]:
 def nx_graph_to_pyg_data(nx_graph: Optional[nx.Graph], label: int) -> Optional[Data]:
     """Convert NetworkX graph to PyTorch Geometric Data object.
 
-    Parameters
-    ----------
+    Args:
     nx_graph :
         NetworkX graph with node/edge attributes, or None.
     label :
         Class label (0 or 1 for binary selectivity).
 
-    Returns
-    -------
+    Returns:
     PyTorch Geometric Data object, or None if graph is invalid.
     """
     if nx_graph is None or len(nx_graph) == 0:
@@ -109,8 +110,7 @@ def nx_graph_to_pyg_data(nx_graph: Optional[nx.Graph], label: int) -> Optional[D
 class SmilesGraphDataset(InMemoryDataset):
     """PyTorch Geometric in-memory dataset from SMILES and labels.
 
-    Attributes
-    ----------
+    Attributes:
     smiles_list : list
         List of SMILES strings.
     labels : list
@@ -118,6 +118,8 @@ class SmilesGraphDataset(InMemoryDataset):
     name : str
         Dataset identifier for caching.
     """
+
+    CACHE_SCHEMA_VERSION = "v2"
 
     def __init__(
         self,
@@ -132,15 +134,32 @@ class SmilesGraphDataset(InMemoryDataset):
         super().__init__(root)
         # PyTorch 2.6 defaults to weights_only=True, which blocks loading
         # arbitrary dataset objects saved by InMemoryDataset processing.
-        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
+        loaded = torch.load(self.processed_paths[0], weights_only=False)
+        self.metadata: dict = {}
+
+        if isinstance(loaded, tuple) and len(loaded) >= 2:
+            self.data, self.slices = loaded[0], loaded[1]
+            if len(loaded) >= 3 and isinstance(loaded[2], dict):
+                self.metadata = loaded[2]
+        else:
+            raise ValueError(
+                f"Unsupported processed dataset format in {self.processed_paths[0]}"
+            )
+
+        if isinstance(self.metadata.get("smiles_list"), list):
+            self.smiles_list = list(self.metadata["smiles_list"])
+        if isinstance(self.metadata.get("labels"), list):
+            self.labels = list(self.metadata["labels"])
 
     @property
     def processed_file_names(self) -> list[str]:
-        return [f"{self.name}_processed.pt"]
+        return [f"{self.name}_{self.CACHE_SCHEMA_VERSION}_processed.pt"]
 
     def process(self) -> None:
         """Convert SMILES to PyG Data objects and cache."""
         data_list = []
+        kept_smiles: list[str] = []
+        kept_labels: list[int] = []
 
         for smiles, label in zip(self.smiles_list, self.labels):
             nx_graph = smiles_to_nx_graph(smiles)
@@ -148,9 +167,33 @@ class SmilesGraphDataset(InMemoryDataset):
 
             if pyg_data is not None:
                 data_list.append(pyg_data)
+                kept_smiles.append(smiles)
+                kept_labels.append(int(label))
 
         data, slices = self.collate(data_list)
-        torch.save((data, slices), self.processed_paths[0])
+        metadata = {
+            "smiles_list": kept_smiles,
+            "labels": kept_labels,
+            "dataset_name": self.name,
+        }
+        torch.save((data, slices, metadata), self.processed_paths[0])
+
+
+def _build_dataset_cache_name(prefix: str, smiles: list[str], labels: list[int]) -> str:
+    """Build a stable cache key so processed graphs track split content.
+
+    This avoids reusing stale `*_processed.pt` files when switching datasets
+    (e.g., multiclass -> binary), which can otherwise produce out-of-range
+    labels for the current model head and trigger CUDA device-side asserts.
+    """
+    hasher = hashlib.sha1()
+    for smi, lbl in zip(smiles, labels):
+        hasher.update(smi.encode("utf-8", errors="ignore"))
+        hasher.update(b"|")
+        hasher.update(str(int(lbl)).encode("ascii"))
+        hasher.update(b"\n")
+    digest = hasher.hexdigest()[:12]
+    return f"{prefix}_{len(smiles)}_{digest}"
 
 
 def load_and_prepare_gnn_dataset(
@@ -161,8 +204,7 @@ def load_and_prepare_gnn_dataset(
 ) -> tuple[SmilesGraphDataset, SmilesGraphDataset, SmilesGraphDataset]:
     """Load split file and create train/val/test GNN datasets.
 
-    Parameters
-    ----------
+    Args:
     split_file_path :
         Path to .pkl split file with train/test indices and labels.
     smiles_list :
@@ -173,8 +215,7 @@ def load_and_prepare_gnn_dataset(
     seed :
         Random seed for reproducibility (default 42).
 
-    Returns
-    -------
+    Returns:
     Tuple of (train_dataset, val_dataset, test_dataset).
     """
     # Split files are commonly serialized with joblib in this project.
@@ -243,21 +284,22 @@ def load_and_prepare_gnn_dataset(
         stratify=train_labels,
     )
 
-    # Create datasets
+    # Create datasets with content-derived names so cache files are refreshed
+    # when split/dataset content changes.
     train_dataset = SmilesGraphDataset(
         train_smiles,
         train_labels,
-        name="train",
+        name=_build_dataset_cache_name("train", train_smiles, train_labels),
     )
     val_dataset = SmilesGraphDataset(
         val_smiles,
         val_labels,
-        name="val",
+        name=_build_dataset_cache_name("val", val_smiles, val_labels),
     )
     test_dataset = SmilesGraphDataset(
         test_smiles,
         test_labels,
-        name="test",
+        name=_build_dataset_cache_name("test", test_smiles, test_labels),
     )
 
     return train_dataset, val_dataset, test_dataset
@@ -277,8 +319,7 @@ def train_gnn_model(
 ) -> dict:
     """Train a GNN model on graph-structured selectivity data.
 
-    Parameters
-    ----------
+    Args:
     split_file_path :
         Path to .pkl split file with train/test indices and labels.
     smiles_list :
@@ -298,13 +339,65 @@ def train_gnn_model(
     device :
         torch device string (default: auto-detect cuda/cpu).
 
-    Returns
-    -------
+    Returns:
     Dictionary with keys:
         - "best_val_acc": Best validation accuracy across epochs.
         - "test_acc": Final test accuracy.
+        - "train_evaluation": Train metrics (same family as tabular models).
+        - "val_evaluation": Validation metrics.
+        - "test_evaluation": Test metrics.
         - "model_path": Path where model was saved (or None).
     """
+
+    def _evaluate_loader(loader: DataLoader) -> dict:
+        labels_all: list[int] = []
+        preds_all: list[int] = []
+        probs_all: list[list[float]] = []
+
+        model.eval()
+        with torch.no_grad():
+            for batch in loader:
+                batch = batch.to(device)
+                logits = model(batch.x, batch.edge_index, batch.batch)
+                probs = torch.softmax(logits, dim=1)
+                preds = probs.argmax(dim=1)
+
+                labels_all.extend(batch.y.view(-1).long().detach().cpu().tolist())
+                preds_all.extend(preds.detach().cpu().tolist())
+                probs_all.extend(probs.detach().cpu().tolist())
+
+        if not labels_all:
+            return {"status": "empty", "n_samples": 0}
+
+        labels_np = np.array(labels_all)
+        preds_np = np.array(preds_all)
+        probs_np = np.array(probs_all)
+        n_classes = len(np.unique(labels_np))
+
+        if n_classes == 2:
+            return classification_metrics(
+                labels=labels_np,
+                pred=preds_np,
+                y_proba=probs_np,
+                model_id=getattr(model_class, "__name__", "GNN"),
+                model_type="gnn",
+            )
+
+        return multiclass_metrics(
+            labels=labels_np,
+            pred=preds_np,
+            model_id=getattr(model_class, "__name__", "GNN"),
+            model_type="gnn",
+        )
+
+    def _extract_accuracy(eval_result: dict) -> float:
+        if "Accuracy" in eval_result:
+            return float(eval_result["Accuracy"])
+        if "overall_metrics" in eval_result and isinstance(eval_result["overall_metrics"], dict):
+            if "Accuracy" in eval_result["overall_metrics"]:
+                return float(eval_result["overall_metrics"]["Accuracy"])
+        return 0.0
+
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -321,6 +414,11 @@ def train_gnn_model(
 
     # Initialize model
     num_classes = len(set(train_dataset.labels) | set(val_dataset.labels) | set(test_dataset.labels))
+    if num_classes < 2:
+        raise ValueError(
+            "Need at least 2 classes for classification training. "
+            f"Detected {num_classes} class from split labels."
+        )
     model = model_class(
         node_features_dim=node_features_dim,  # atomic_num, formal_charge, num_hs, is_aromatic
         hidden_channels=hidden_channels,
@@ -330,50 +428,110 @@ def train_gnn_model(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = torch.nn.CrossEntropyLoss()
 
+    best_state_dict = None
+
     # Training loop
     best_val_acc = 0.0
-    for epoch in range(epochs):
+    for epoch in tqdm(range(epochs)):
         model.train()
-        train_loss = 0.0
+
+        train_loss_sum = 0.0
+        train_correct = 0
+        train_total = 0
 
         for batch in train_loader:
             batch = batch.to(device)
             optimizer.zero_grad()
             out = model(batch.x, batch.edge_index, batch.batch)
-            loss = criterion(out, batch.y.view(-1))
+            targets = batch.y.view(-1).long()
+            max_target = int(targets.max().item()) if targets.numel() > 0 else -1
+            min_target = int(targets.min().item()) if targets.numel() > 0 else 0
+            if min_target < 0 or max_target >= out.shape[1]:
+                raise ValueError(
+                    "Invalid class label detected for CrossEntropyLoss: "
+                    f"label range=[{min_target}, {max_target}], "
+                    f"model_num_classes={out.shape[1]}. "
+                    "This often indicates stale cached graph datasets under data/gnn_dataset/processed."
+                )
+
+            loss = criterion(out, targets)
+            batch_n = int(targets.numel())
             loss.backward()
             optimizer.step()
-            train_loss += loss.item()
+
+            preds = out.argmax(dim=1)
+            train_correct += (preds == targets).sum().item()
+            train_total += batch_n
+            train_loss_sum += loss.item() * batch_n
+
+        train_loss = train_loss_sum / train_total if train_total > 0 else 0.0
+        train_acc = train_correct / train_total if train_total > 0 else 0.0
 
         # Validation
         model.eval()
-        val_acc = 0.0
+        val_loss_sum = 0.0
+        val_correct = 0
+        val_total = 0
         with torch.no_grad():
             for batch in val_loader:
                 batch = batch.to(device)
                 out = model(batch.x, batch.edge_index, batch.batch)
-                val_acc += (out.argmax(dim=1) == batch.y.view(-1)).sum().item()
+                targets = batch.y.view(-1).long()
+                batch_n = int(targets.numel())
+                loss = criterion(out, targets)
 
-        val_acc /= len(val_dataset) if len(val_dataset) > 0 else 1.0
+                preds = out.argmax(dim=1)
+                val_correct += (preds == targets).sum().item()
+                val_total += batch_n
+                val_loss_sum += loss.item() * batch_n
+
+        val_loss = val_loss_sum / val_total if val_total > 0 else 0.0
+        val_acc = val_correct / val_total if val_total > 0 else 0.0
+
+        # Save best model by validation accuracy
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             if model_save_path:
                 torch.save(model.state_dict(), model_save_path)
+            best_state_dict = copy.deepcopy(model.state_dict())
 
-    # Test evaluation
-    model.eval()
-    test_acc = 0.0
-    with torch.no_grad():
-        for batch in test_loader:
-            batch = batch.to(device)
-            out = model(batch.x, batch.edge_index, batch.batch)
-            test_acc += (out.argmax(dim=1) == batch.y.view(-1)).sum().item()
+        # Log epoch summary via the session logger to avoid writing to stdout.
+        try:
+            from chemagent.session_utils import get_session_logger as _get_session_logger
+            logger = _get_session_logger()
+            logger.log_event(
+                "gnn_epoch",
+                epoch=epoch + 1,
+                epochs=epochs,
+                train_loss=round(float(train_loss), 6),
+                train_acc=round(float(train_acc), 6),
+                val_loss=round(float(val_loss), 6),
+                val_acc=round(float(val_acc), 6),
+            )
+        except Exception:
+            # Fallback: avoid printing to stdout in MCP server context.
+            pass
 
-    test_acc /= len(test_dataset) if len(test_dataset) > 0 else 1.0
+    # Full split metrics from the best validation checkpoint, not the last epoch.
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+
+    train_evaluation = _evaluate_loader(train_loader)
+    val_evaluation = _evaluate_loader(val_loader)
+    test_evaluation = _evaluate_loader(test_loader)
+
+    # Preserve backward-compatible scalar accuracy fields.
+    test_acc = _extract_accuracy(test_evaluation)
 
     return {
         "best_val_acc": float(best_val_acc),
         "test_acc": float(test_acc),
+        "train_evaluation": train_evaluation,
+        "val_evaluation": val_evaluation,
+        "test_evaluation": test_evaluation,
+        "n_train": int(len(train_dataset)),
+        "n_val": int(len(val_dataset)),
+        "n_test": int(len(test_dataset)),
         "model_path": model_save_path,
     }
 
@@ -381,16 +539,14 @@ def train_gnn_model(
 def load_gnn_model(model_class: type, node_features_dim: int, hidden_channels: int, num_classes: int, model_path: str, device: Optional[str] = None) -> torch.nn.Module:
     """Load a trained GNN model from a saved state dict.
 
-    Parameters
-    ----------
+    Args:
     model_class :
         GNN model class (GCN, GraphSAGE, GAT, etc.).
     model_path :
         Path to saved model state dict.
     device :
         torch device string (default: auto-detect cuda/cpu).
-    Returns
-    -------
+    Returns:
     Loaded GNN model instance with weights from the specified path.
     """
     if device is None:

@@ -2,6 +2,14 @@
 
 Registered via ``_register()`` in ``chemagent_mcp.py``.
 
+Important workflow note for LLM tool users
+-----------------------------------------
+For GNN pipelines, use ``prepare_gnn_dataset`` (and then
+``train_gnn_model_mcp``). Do **not** call ``compute_features`` for GNN
+training: molecular fingerprint featurization (ECFP/MACCS/etc.) is for
+standard tabular ML models, while GNNs build graph representations directly
+from SMILES.
+
 Functions
 ---------
 prepare_gnn_dataset     — prepare train/val/test datasets from split .pkl and SMILES
@@ -32,8 +40,8 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from chemagent.ml.gnn_models import GCN, GAT, GC_GNN, GIN, GINE, GraphSAGE
-from chemagent.ml.gnn_training import load_and_prepare_gnn_dataset, train_gnn_model, load_gnn_model
-from chemagent.session_utils import get_session_logger as _get_session_logger
+from chemagent.ml.gnn_training import load_and_prepare_gnn_dataset, train_gnn_model, load_gnn_model as _load_gnn_model_impl
+from chemagent.session_utils import get_session_logger as _get_session_logger, resolve_path as _resolve_path
 
 
 # Shared job state (lost on server restart)
@@ -96,10 +104,16 @@ def prepare_gnn_dataset(
 ) -> dict[str, Any]:
     """Prepare train/val/test GNN datasets from a split file and SMILES CSV.
 
+    This is the dataset-preparation step for GNN workflows. It converts SMILES
+    to graph objects and caches them for GNN training.
+
+    Use this instead of ``compute_features`` when training GNN models.
+    Fingerprint generation (ECFP/MACCS/...) is only needed for standard ML
+    models (RFC/XGBoost/SVM/etc.), not for graph neural networks.
+
     Reads SMILES from CSV, uses indices from split .pkl to create graph datasets.
 
-    Parameters
-    ----------
+    Args:
     split_file_path :
         Path to .pkl split file with train/test indices + labels.
     smiles_csv_path :
@@ -111,8 +125,7 @@ def prepare_gnn_dataset(
     seed :
         Random seed (default 42).
 
-    Returns
-    -------
+    Returns:
     Dict with:
         - "status": "completed" or "failed"
         - "train_dataset_path": path to train dataset cache
@@ -128,9 +141,12 @@ def prepare_gnn_dataset(
     session_logger = _get_session_logger()
 
     try:
+        split_file_path = _resolve_path(split_file_path)
+        smiles_csv_path = _resolve_path(smiles_csv_path)
+
         # Read SMILES from CSV
         smiles_list = []
-        with open(smiles_csv_path, "r") as f:
+        with open(smiles_csv_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 smiles_list.append(row[smiles_column])
@@ -145,6 +161,8 @@ def prepare_gnn_dataset(
 
         session_logger.log_event(
             "gnn_dataset_prepared",
+            split_file_path=split_file_path,
+            smiles_csv_path=smiles_csv_path,
             num_train=len(train_dataset),
             num_val=len(val_dataset),
             num_test=len(test_dataset),
@@ -183,10 +201,18 @@ def train_gnn_model_mcp(
 ) -> dict[str, Any]:
     """Train a GNN model on SMILES selectivity data (non-blocking background job).
 
+    Expected GNN workflow:
+    1) ``load_dataset``
+    2) ``split_dataset``
+    3) ``prepare_gnn_dataset`` (GNN-specific data prep)
+    4) ``train_gnn_model_mcp``
+
+    Do not run ``compute_features`` for this workflow. GNN models consume graph
+    data derived from SMILES directly rather than molecular fingerprint vectors.
+
     Submits training to background thread; use `check_gnn_training()` to poll results.
 
-    Parameters
-    ----------
+    Args:
     split_file_path :
         Path to .pkl split file with train/test indices + labels.
     smiles_csv_path :
@@ -206,8 +232,7 @@ def train_gnn_model_mcp(
     smiles_column :
         Column name in CSV for SMILES (default "smiles").
 
-    Returns
-    -------
+    Returns:
     Dict with:
         - "job_id": unique job identifier
         - "status": "submitted"
@@ -220,7 +245,10 @@ def train_gnn_model_mcp(
     # Read SMILES from CSV
     smiles_list = []
     try:
-        with open(smiles_csv_path, "r") as f:
+        split_file_path = _resolve_path(split_file_path)
+        smiles_csv_path = _resolve_path(smiles_csv_path)
+
+        with open(smiles_csv_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 smiles_list.append(row[smiles_column])
@@ -237,7 +265,6 @@ def train_gnn_model_mcp(
     model_class = _GNN_MODEL_MAP[model_class_name]
 
     # Default save path
-    session_logger = _get_session_logger()
     out_dir = session_logger.session_dir / "models"
     out_dir.mkdir(parents=True, exist_ok=True)
     model_save_path = str(out_dir / f"gnn_{model_class_name}.pt")
@@ -279,19 +306,20 @@ def check_gnn_training(
 ) -> dict[str, Any]:
     """Poll a background GNN training job.
 
-    Parameters
-    ----------
+    Args:
     job_id :
         Job ID from `train_gnn_model_mcp()`.
     model_save_path :
         Optional path to model (fallback to disk if job state lost).
 
-    Returns
-    -------
+    Returns:
     Dict with:
         - "status": "running", "completed", or "failed"
         - "best_val_acc": best validation accuracy (if completed)
         - "test_acc": test accuracy (if completed)
+        - "train_evaluation": train split metrics (if completed)
+        - "val_evaluation": validation split metrics (if completed)
+        - "test_evaluation": test split metrics (if completed)
         - "model_path": path to saved model (if completed)
         - "error": error message (if failed)
     """
@@ -310,6 +338,12 @@ def check_gnn_training(
             "status": "completed",
             "best_val_acc": result.get("best_val_acc"),
             "test_acc": result.get("test_acc"),
+            "train_evaluation": result.get("train_evaluation"),
+            "val_evaluation": result.get("val_evaluation"),
+            "test_evaluation": result.get("test_evaluation"),
+            "n_train": result.get("n_train"),
+            "n_val": result.get("n_val"),
+            "n_test": result.get("n_test"),
             "model_path": result.get("model_path"),
         }
     elif job["status"] == "failed":
@@ -337,8 +371,7 @@ def load_gnn_model_mcp(
     Loads a GNN model from a saved state dict and performs a validation step
     to ensure the weights were loaded correctly.
 
-    Parameters
-    ----------
+    Args:
     model_class_name :
         GNN architecture name: GCN, GraphSAGE, GAT, GC_GNN, GINE, or GIN.
     node_features_dim :
@@ -352,8 +385,7 @@ def load_gnn_model_mcp(
     device :
         torch device string ('cuda' or 'cpu'); auto-detects if None.
 
-    Returns
-    -------
+    Returns:
     Dict with:
         - "status": "completed" or "failed"
         - "model_path": path to the loaded model (if successful)
@@ -375,9 +407,10 @@ def load_gnn_model_mcp(
             return {"status": "failed", "error": err_msg}
 
         model_class = _GNN_MODEL_MAP[model_class_name]
+        model_path = _resolve_path(model_path)
 
         # Load model
-        model = load_gnn_model(
+        model = _load_gnn_model_impl(
             model_class=model_class,
             node_features_dim=node_features_dim,
             hidden_channels=hidden_channels,
@@ -414,9 +447,33 @@ def load_gnn_model_mcp(
         }
 
 
+def load_gnn_model(
+    model_class_name: Literal["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"],
+    node_features_dim: int,
+    hidden_channels: int,
+    num_classes: int,
+    model_path: str,
+    device: Optional[str] = None,
+) -> dict[str, Any]:
+    """Alias for `load_gnn_model_mcp` to make LLM tool-calling robust.
+
+    Some MCP clients/LLMs may try the internal-style name `load_gnn_model`.
+    This public wrapper intentionally maps that call to the MCP-safe loader.
+    """
+    return load_gnn_model_mcp(
+        model_class_name=model_class_name,
+        node_features_dim=node_features_dim,
+        hidden_channels=hidden_channels,
+        num_classes=num_classes,
+        model_path=model_path,
+        device=device,
+    )
+
+
 __all__ = [
     "prepare_gnn_dataset",
     "train_gnn_model_mcp",
     "check_gnn_training",
+    "load_gnn_model",
     "load_gnn_model_mcp",
 ]

@@ -206,6 +206,7 @@ def compute_features(
 def split_dataset(
     dataset_id: str,
     split_type: Literal["random", "scaffold"] = "random",
+    mode: Literal["auto", "ml", "gnn"] = "auto",
     train_size: float = 0.8,
     val_size: float = 0.0,
     test_size: float = 0.1,
@@ -213,12 +214,22 @@ def split_dataset(
     stratified: bool | str | None = None,
     save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Split a featurized dataset into train/val/test partitions and save to .pkl.
+    """Split a dataset into train/val/test partitions and save to .pkl.
 
-    Workflow: compute_features → THIS TOOL → train_model(split_file_path)
+    Workflow:
+    - Standard ML: compute_features → THIS TOOL → train_model(split_file_path)
+    - GNN: load_dataset(smiles_col=...) → THIS TOOL → prepare_gnn_dataset/train_gnn_model_mcp
 
     Args:
-        dataset_id: ID of a featurized dataset (from compute_features).
+        dataset_id: Dataset ID from load_dataset(). If compute_features was run,
+            feature arrays are included in the saved split for standard ML. If
+            not, splits still include labels (and smiles/cid when available),
+            which is sufficient for GNN workflows.
+        mode: Split payload mode:
+            - "auto" (default): use ML payload when features are available,
+              otherwise use GNN payload from loaded data.
+            - "ml": require a featurized dataset (from compute_features).
+            - "gnn": force label/smiles/cid payload from loaded data only.
         split_type: "random" (default) or "scaffold".
         train_size: Training fraction (default 0.8).
         val_size: Validation fraction (default 0.0). Use 0.0 for two-way split.
@@ -228,7 +239,8 @@ def split_dataset(
         save_path: Output .pkl path. Defaults to session splits/ dir. Pass "" to skip.
 
     Returns:
-        train/val/test metadata, statistics, saved_to path, next_step hint.
+        split_file_path (alias: saved_to), train/val/test metadata,
+        statistics, and next_step hint.
     """
     # Accept bool, "true"/"false", "True"/"False", or None (→ False)
     if isinstance(stratified, str):
@@ -236,12 +248,71 @@ def split_dataset(
     else:
         stratified_bool = bool(stratified)
 
-    if dataset_id not in _processed_datasets:
+    if mode not in {"auto", "ml", "gnn"}:
+        raise ValueError("mode must be one of: 'auto', 'ml', 'gnn'.")
+
+    if mode == "ml":
+        if dataset_id not in _processed_datasets:
+            raise ValueError(
+                f"Dataset '{dataset_id}' is not featurized. "
+                "Run compute_features() before split_dataset(..., mode='ml')."
+            )
+        processed = _processed_datasets[dataset_id]
+
+    elif mode == "gnn":
+        if dataset_id not in _loaded_datasets:
+            raise ValueError(
+                f"Dataset '{dataset_id}' is not loaded. "
+                "Run load_dataset(..., smiles_col='smiles') before split_dataset(..., mode='gnn')."
+            )
+        df = _loaded_datasets[dataset_id]
+        label_col = df.attrs.get("label_col", "class_label")
+        if label_col not in df.columns:
+            raise ValueError(
+                f"Label column '{label_col}' not found in dataset '{dataset_id}'."
+            )
+
+        processed = {
+            "labels": df[label_col].to_numpy(),
+            "label_column": label_col,
+        }
+
+        smiles_col = df.attrs.get("smiles_col")
+        if smiles_col and smiles_col in df.columns:
+            processed["smiles"] = df[smiles_col].to_numpy()
+
+        id_col = df.attrs.get("id_col")
+        if id_col and id_col in df.columns:
+            processed["cid"] = df[id_col].to_numpy()
+
+    elif dataset_id in _processed_datasets:
+        processed = _processed_datasets[dataset_id]
+    elif dataset_id in _loaded_datasets:
+        df = _loaded_datasets[dataset_id]
+        label_col = df.attrs.get("label_col", "class_label")
+        if label_col not in df.columns:
+            raise ValueError(
+                f"Label column '{label_col}' not found in dataset '{dataset_id}'."
+            )
+
+        processed = {
+            "labels": df[label_col].to_numpy(),
+            "label_column": label_col,
+        }
+
+        smiles_col = df.attrs.get("smiles_col")
+        if smiles_col and smiles_col in df.columns:
+            processed["smiles"] = df[smiles_col].to_numpy()
+
+        id_col = df.attrs.get("id_col")
+        if id_col and id_col in df.columns:
+            processed["cid"] = df[id_col].to_numpy()
+    else:
         raise ValueError(
-            f"Dataset '{dataset_id}' not featurized. "
-            "Call compute_features() first."
+            f"Dataset '{dataset_id}' not loaded. "
+            "Call load_dataset() first."
         )
-    processed    = _processed_datasets[dataset_id]
+
     split_result = split_processed(
         processed=processed, split_type=split_type,
         train_size=train_size, val_size=val_size, test_size=test_size,
@@ -286,19 +357,27 @@ def split_dataset(
         )
 
     result: dict[str, Any] = {
+        # Keep this first so LLM tool callers can reliably chain downstream calls.
+        "split_file_path": saved_to,
+        # Backward-compatible alias used by existing callers.
+        "saved_to":   saved_to,
         "train":      _split_meta(train_idx),
         "val":        _split_meta(val_idx),
         "test":       _split_meta(test_idx),
         "split_type": split_type,
+        "mode":       mode,
+        "has_features": "features" in processed,
         "statistics": statistics,
         "seed":       seed,
-        "saved_to":   saved_to,
         "next_step": (
             f"Call train_model(split_file_path='{saved_to}', "
             "algorithm='RFC', task='classification', opt_metric='balanced_accuracy') "
             "to train in the background (non-blocking). "
             "Then poll with check_training(job_id) until status='completed'. "
             "Features are on disk — not returned here."
+        ) if saved_to and "features" in processed else (
+            f"Call prepare_gnn_dataset(split_file_path='{saved_to}', smiles_csv_path='...') "
+            "for GNN workflows, or run compute_features() first for standard ML training."
         ) if saved_to else "No file saved. Pass save_path.",
     }
     if warnings_list:

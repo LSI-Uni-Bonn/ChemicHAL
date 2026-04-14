@@ -10,13 +10,11 @@ def get_mol_lims(mol: Chem.Mol) -> Tuple[Tuple[float, float], Tuple[float, float
 
     x- and y-coordinates of all atoms in the molecule are accessed, returning min- and max-values for both axes.
 
-    Parameters
-    ----------
+    Args:
     mol: Chem.Mol
         RDKit Molecule object of which the limits are determined.
 
-    Returns
-    -------
+    Returns:
     Tuple[Tuple[float, float], Tuple[float, float]]
         Limits of the molecule.
     """
@@ -36,15 +34,13 @@ def get_mol_lims(mol: Chem.Mol) -> Tuple[Tuple[float, float], Tuple[float, float
 def pad(lim: Union[Sequence[float], np.ndarray], ratio: float) -> Tuple[float, float]:
     """Takes a 2 dimensional vector and adds len(vector) * ratio / 2 to each side and returns obtained vector.
 
-    Parameters
-    ----------
+    Args:
     lim: Sequence[float]
 
     ratio: float
         factor by which the limits are extended.
 
-    Returns
-    -------
+    Returns:
     List[float, float]
         Extended limits
     """
