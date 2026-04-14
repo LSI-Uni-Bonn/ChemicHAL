@@ -8,7 +8,7 @@
 
 ## Overview
 
-ChemicHAL is an **LLM-driven agent** for chemoinformatics tasks, powered by the **Model Context Protocol (MCP)** and designed for **explainable AI (XAI)**. It enables autonomous compound selectivity prediction, molecular property modeling, and interpretability through SHAP, MolAnchor, MolCE, and EdgeShaper.
+ChemicHAL is an **LLM-driven agent** for chemoinformatics tasks, powered by the **Model Context Protocol (MCP)** and designed for **explainable AI (XAI)**. It enables autonomous compound selectivity prediction, molecular property modeling, and interpretability through SHAP, MolAnchor, MolCE, and EdgeSHAPer.
 
 ## Prerequisites
 
@@ -73,6 +73,6 @@ Download **LM Studio** from [lmstudio.ai](https://lmstudio.ai) and install it on
 
 🔄 **Counterfactuals** – Generate and visualize molecular modifications for explainability with MolCE
 
-🌐 **GNN Explainability** – Explain graph predictions using EdgeShaper to highlight important bonds
+🌐 **GNN Explainability** – Explain graph predictions using EdgeSHAPer to highlight important bonds
 
 📝 **Reporting** – Export results as HTML reports and PDF documents
