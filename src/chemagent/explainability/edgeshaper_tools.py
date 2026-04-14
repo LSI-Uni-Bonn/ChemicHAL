@@ -795,7 +795,8 @@ def explain_gnn_with_edgeshaper(
         - fidelity: fidelity+ metric (from minimal_top_k_set)
         - trustworthiness: harmonic mean of fidelity and (1 - infidelity)
         - num_edges: total number of edges in the graph
-        - original_pred_prob: model's predicted probability for target class
+        - original_class_probs: model probabilities for all classes on the original graph
+        - original_target_class_pred_prob: model probability for the selected target class
         - result_save_path: path to saved results JSON (if save_results=True)
         - error: error message if status is "failed"
 
@@ -936,9 +937,10 @@ def explain_gnn_with_edgeshaper(
             progress_bar=True,
         )
 
-        # Compute original prediction probability
+        # Compute original prediction probabilities.
         explainer.compute_original_predicted_probability()
-        original_pred_prob = explainer.original_pred_prob
+        original_class_probs = explainer.original_class_probs
+        original_target_class_pred_prob = explainer.original_target_class_pred_prob
 
         # Compute fidelity metrics (classification only)
         pertinent_positive_set = None
@@ -969,7 +971,8 @@ def explain_gnn_with_edgeshaper(
             "fidelity": float(fidelity) if fidelity is not None else None,
             "trustworthiness": float(trustworthiness) if trustworthiness is not None else None,
             "num_edges": edge_index.shape[1],
-            "original_pred_prob": float(original_pred_prob) if original_pred_prob is not None else None,
+            "original_class_probs": [float(p) for p in original_class_probs] if original_class_probs is not None else None,
+            "original_target_class_pred_prob": float(original_target_class_pred_prob) if original_target_class_pred_prob is not None else None,
             "compound_idx": resolved_compound_idx,
             "compound_smiles": resolved_compound_smiles,
         }

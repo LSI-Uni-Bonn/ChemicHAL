@@ -66,7 +66,8 @@ class Edgeshaper:
         fidelity (float): Fidelity+ metric (from minimal_top_k_set)
         infidelity (float): Fidelity- metric (from pertinent_positive_set)
         trustworthiness (float): Harmonic mean of fidelity and (1 - infidelity)
-        original_pred_prob (float): Model's predicted probability for target class
+        original_target_class_pred_prob (float): Model's predicted probability for target class
+        original_class_probs (list[float]): Model probabilities for all classes on the original graph
     """
 
     def __init__(self, model, x, edge_index, edge_weight = None, device = "cpu"):
@@ -106,7 +107,10 @@ class Edgeshaper:
         self.infidelity = None
         self.trustuworthiness = None
 
-        self.original_pred_prob = None
+        # Stores p(y=target_class | original graph), used in fidelity metrics.
+        self.original_target_class_pred_prob = None
+        # Stores full class-probability vector on the original graph.
+        self.original_class_probs = None
 
     def explain(self, M = 100, target_class = 0, P = None, deviation = None, log_odds = False, seed = None, progress_bar = True):
         """Compute Shapley values for edge importance (sequential Monte Carlo variant).
@@ -586,22 +590,31 @@ class Edgeshaper:
     def compute_original_predicted_probability(self):
         """Compute model's predicted probability on the full original graph.
         
-        This baseline is used to compute fidelity metrics. Stores result in 
-        self.original_pred_prob for use in fidelity computations.
+        This baseline is used to compute fidelity metrics. Stores:
+        - self.original_class_probs: probability for each available class
+        - self.original_target_class_pred_prob: probability for self.target_class
         
         Returns:
         float
             Model's predicted probability for self.target_class on the full graph.
         """
+        if self.target_class is None:
+            raise ValueError(
+                "target_class is not set. Compute classification explanations before "
+                "calling compute_original_predicted_probability()."
+            )
+
         self.model.eval()
         batch = torch.zeros(self.x.shape[0], dtype=int, device=self.x.device)
         out_log_odds = self.model(self.x, self.edge_index, batch=batch, edge_weight=self.edge_weight)
         out_prob = F.softmax(out_log_odds, dim = 1)
-        original_pred_prob = out_prob[0][self.target_class].item()
+        original_class_probs = out_prob[0].detach().cpu().tolist()
+        original_target_class_pred_prob = out_prob[0][self.target_class].item()
 
-        self.original_pred_prob = original_pred_prob
+        self.original_class_probs = [float(p) for p in original_class_probs]
+        self.original_target_class_pred_prob = float(original_target_class_pred_prob)
 
-        return self.original_pred_prob
+        return self.original_target_class_pred_prob
 
     #TODO: check if egde_weights work correctly in the following two methods, if not modify them accordingly
     def compute_pertinent_positive_set(self, verbose = False):
@@ -632,7 +645,7 @@ class Edgeshaper:
         if self.target_class is None:
             raise Exception("Minimal informative sets are not defined for regression problems.")
 
-        if self.original_pred_prob is None:
+        if self.original_target_class_pred_prob is None:
             self.compute_original_predicted_probability()
 
         self.model.eval()
@@ -649,7 +662,7 @@ class Edgeshaper:
                 
                 
                 pred_prob = out_prob[0][self.target_class].item()
-                infidelity = self.original_pred_prob-pred_prob
+                infidelity = self.original_target_class_pred_prob - pred_prob
 
                 if verbose:
                     print("FID- using pertinent positive set: ", infidelity)
@@ -688,7 +701,7 @@ class Edgeshaper:
         if self.target_class is None:
             raise Exception("Minimal informative sets are not defined for regression problems.")
             
-        if self.original_pred_prob is None:
+        if self.original_target_class_pred_prob is None:
             self.compute_original_predicted_probability()
 
         self.model.eval()
@@ -711,7 +724,7 @@ class Edgeshaper:
 
             if predicted_class != self.target_class:
                 pred_prob = out_prob[0][self.target_class].item()
-                fidelity = self.original_pred_prob - pred_prob
+                fidelity = self.original_target_class_pred_prob - pred_prob
                 if verbose:
                     print("FID+ using minimal top-k set: ", fidelity)
                 break
