@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
 from typing import Any, Literal, Optional, Union
@@ -307,6 +308,7 @@ def _load_edgeshaper_model(
     hidden_channels: Optional[int] = None,
     num_classes: Optional[int] = None,
     num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
     custom_model_module: Optional[str] = None,
     custom_model_class_name: Optional[str] = None,
     device: str = "cpu",
@@ -395,12 +397,22 @@ def _load_edgeshaper_model(
                 if conv_indices:
                     inferred_num_layers = max(conv_indices) + 1
 
-            model = model_class(
-                node_features_dim=inferred_node_features,
-                hidden_channels=inferred_hidden,
-                num_classes=inferred_classes,
-                num_layers=inferred_num_layers,
-            )
+            inferred_aggregation_method = aggregation_method
+            if checkpoint is not None and checkpoint.get("aggregation_method") is not None:
+                inferred_aggregation_method = checkpoint.get("aggregation_method")
+
+            model_kwargs = {
+                "node_features_dim": inferred_node_features,
+                "hidden_channels": inferred_hidden,
+                "num_classes": inferred_classes,
+            }
+            model_sig = inspect.signature(model_class)
+            if "num_layers" in model_sig.parameters:
+                model_kwargs["num_layers"] = inferred_num_layers
+            if inferred_aggregation_method is not None and "aggregation_method" in model_sig.parameters:
+                model_kwargs["aggregation_method"] = inferred_aggregation_method
+
+            model = model_class(**model_kwargs)
             model.load_state_dict(state_dict)
 
     if not isinstance(model, torch.nn.Module):
@@ -528,6 +540,7 @@ def select_compound_for_edgeshaper(
     hidden_channels: Optional[int] = None,
     num_classes: Optional[int] = None,
     num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
     custom_model_module: Optional[str] = None,
     custom_model_class_name: Optional[str] = None,
     target_class: Optional[int] = None,
@@ -566,6 +579,9 @@ def select_compound_for_edgeshaper(
     num_layers : int, optional
         Number of GNN message-passing layers for reconstruction (default: 4).
         Checkpoint metadata overrides this value when present.
+    aggregation_method : str, optional
+        Aggregation method for raw state_dict reconstruction. Checkpoint
+        metadata overrides this value when present.
     custom_model_module : str, optional
         Import path (e.g., ``my_pkg.models``) or ``.py`` path for custom model definitions.
     custom_model_class_name : str, optional
@@ -595,6 +611,7 @@ def select_compound_for_edgeshaper(
             hidden_channels=hidden_channels,
             num_classes=num_classes,
             num_layers=num_layers,
+            aggregation_method=aggregation_method,
             custom_model_module=custom_model_module,
             custom_model_class_name=custom_model_class_name,
             device=device,
@@ -696,6 +713,7 @@ def explain_gnn_with_edgeshaper(
     hidden_channels: Optional[int] = None,
     num_classes: Optional[int] = None,
     num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
     custom_model_module: Optional[str] = None,
     custom_model_class_name: Optional[str] = None,
     compound_idx: int = 0,
@@ -738,6 +756,9 @@ def explain_gnn_with_edgeshaper(
     num_layers : int, optional
         Number of GNN message-passing layers for reconstruction (default: 4).
         Checkpoint metadata overrides this value when present.
+    aggregation_method : str, optional
+        Aggregation method for raw state_dict reconstruction. Checkpoint
+        metadata overrides this value when present.
     custom_model_module : str, optional
         Import path (e.g., ``my_pkg.models``) or ``.py`` path for custom model definitions.
     custom_model_class_name : str, optional
@@ -851,6 +872,7 @@ def explain_gnn_with_edgeshaper(
             hidden_channels=hidden_channels,
             num_classes=num_classes,
             num_layers=num_layers,
+            aggregation_method=aggregation_method,
             custom_model_module=custom_model_module,
             custom_model_class_name=custom_model_class_name,
             device=device,

@@ -254,6 +254,7 @@ def train_gnn_model_mcp(
     device: Optional[str] = None,
     smiles_column: str = "smiles",
     num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
 ) -> dict[str, Any]:
     """Train a GNN model on SMILES selectivity data (non-blocking background job).
 
@@ -285,6 +286,9 @@ def train_gnn_model_mcp(
         - GAT: 2-4 layers
         - GIN / GINE: 2-4 layers
         Higher values can increase over-smoothing risk on small datasets.
+    aggregation_method :
+        Optional aggregation method for models that support it.
+        Defaults remain unchanged if omitted (GraphSAGE='mean', GC_GNN='max').
     epochs :
         Training epochs (default 100).
     lr :
@@ -344,6 +348,7 @@ def train_gnn_model_mcp(
         model_save_path=model_save_path,
         hidden_channels=hidden_channels,
         num_layers=num_layers,
+        aggregation_method=aggregation_method,
         epochs=epochs,
         lr=lr,
         batch_size=batch_size,
@@ -356,6 +361,7 @@ def train_gnn_model_mcp(
         model_class=model_class_name,
         hidden_channels=hidden_channels,
         num_layers=num_layers,
+        aggregation_method=aggregation_method,
         epochs=epochs,
     )
 
@@ -432,6 +438,7 @@ def load_gnn_model_mcp(
     model_path: str,
     device: Optional[str] = None,
     num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
     custom_model_module: Optional[str] = None,
     custom_model_class_name: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -461,6 +468,9 @@ def load_gnn_model_mcp(
         - GCN / GraphSAGE / GC_GNN: 3-6 layers
         - GAT: 2-4 layers
         - GIN / GINE: 2-4 layers
+    aggregation_method :
+        Optional aggregation method for raw state_dict loads. For checkpoint
+        files with embedded metadata, the stored value is used.
     device :
         torch device string ('cuda' or 'cpu'); auto-detects if None.
     custom_model_module :
@@ -498,6 +508,7 @@ def load_gnn_model_mcp(
             num_classes=num_classes,
             model_path=model_path,
             num_layers=num_layers,
+            aggregation_method=aggregation_method,
             device=device,
         )
 
@@ -517,6 +528,7 @@ def load_gnn_model_mcp(
             "model_path": str(model_path),
             "model_class": resolved_model_class_name,
             "num_layers": num_layers,
+            "aggregation_method": aggregation_method,
             "device": device,
         }
     except Exception as exc:
@@ -538,6 +550,7 @@ def load_gnn_model(
     model_path: str,
     device: Optional[str] = None,
     num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
     custom_model_module: Optional[str] = None,
     custom_model_class_name: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -553,6 +566,7 @@ def load_gnn_model(
         num_classes=num_classes,
         model_path=model_path,
         num_layers=num_layers,
+        aggregation_method=aggregation_method,
         device=device,
         custom_model_module=custom_model_module,
         custom_model_class_name=custom_model_class_name,

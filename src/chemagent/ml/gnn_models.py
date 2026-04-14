@@ -27,6 +27,12 @@ def _validate_num_layers(num_layers: int) -> int:
     return num_layers
 
 
+def _validate_aggregation_method(aggregation_method: str) -> str:
+    if not isinstance(aggregation_method, str) or not aggregation_method.strip():
+        raise ValueError("aggregation_method must be a non-empty string.")
+    return aggregation_method
+
+
 def _make_gin_mlp(input_dim: int, hidden_channels: int) -> torch.nn.Sequential:
     return torch.nn.Sequential(
         torch.nn.Linear(input_dim, hidden_channels),
@@ -94,14 +100,16 @@ class GraphSAGE(torch.nn.Module):
         hidden_channels: int,
         num_classes: int,
         num_layers: int = 4,
+        aggregation_method: str = "mean",
     ) -> None:
         super().__init__()
 
         num_layers = _validate_num_layers(num_layers)
+        aggregation_method = _validate_aggregation_method(aggregation_method)
         self.convs = torch.nn.ModuleList()
-        self.convs.append(SAGEConv(node_features_dim, hidden_channels, aggr="mean"))
+        self.convs.append(SAGEConv(node_features_dim, hidden_channels, aggr=aggregation_method))
         for _ in range(num_layers - 1):
-            self.convs.append(SAGEConv(hidden_channels, hidden_channels, aggr="mean"))
+            self.convs.append(SAGEConv(hidden_channels, hidden_channels, aggr=aggregation_method))
         self.lin = Linear(hidden_channels, num_classes)
 
     def forward(
@@ -139,14 +147,16 @@ class GC_GNN(torch.nn.Module):
         hidden_channels: int,
         num_classes: int,
         num_layers: int = 4,
+        aggregation_method: str = "max",
     ):
         super().__init__()
 
         num_layers = _validate_num_layers(num_layers)
+        aggregation_method = _validate_aggregation_method(aggregation_method)
         self.convs = torch.nn.ModuleList()
-        self.convs.append(GraphConv(node_features_dim, hidden_channels, aggr="max"))
+        self.convs.append(GraphConv(node_features_dim, hidden_channels, aggr=aggregation_method))
         for _ in range(num_layers - 1):
-            self.convs.append(GraphConv(hidden_channels, hidden_channels, aggr="max"))
+            self.convs.append(GraphConv(hidden_channels, hidden_channels, aggr=aggregation_method))
         self.lin = Linear(hidden_channels, num_classes)
 
     def forward(

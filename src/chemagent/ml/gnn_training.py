@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import pickle
 from typing import Optional
 
@@ -313,6 +314,7 @@ def train_gnn_model(
     node_features_dim: int = 4,
     hidden_channels: int = 64,
     num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
     epochs: int = 100,
     lr: float = 0.001,
     batch_size: int = 32,
@@ -333,6 +335,9 @@ def train_gnn_model(
         Hidden dimension for all GNN layers (default 64).
     num_layers :
         Number of message-passing layers in the GNN backbone (default 4).
+    aggregation_method :
+        Optional aggregation method for models that support it (for example,
+        GraphSAGE or GC_GNN). If None, model defaults are used.
     epochs :
         Number of training epochs (default 100).
     lr :
@@ -422,12 +427,18 @@ def train_gnn_model(
             "Need at least 2 classes for classification training. "
             f"Detected {num_classes} class from split labels."
         )
-    model = model_class(
-        node_features_dim=node_features_dim,  # atomic_num, formal_charge, num_hs, is_aromatic
-        hidden_channels=hidden_channels,
-        num_classes=num_classes,
-        num_layers=num_layers,
-    ).to(device)
+    model_kwargs = {
+        "node_features_dim": node_features_dim,  # atomic_num, formal_charge, num_hs, is_aromatic
+        "hidden_channels": hidden_channels,
+        "num_classes": num_classes,
+    }
+    model_sig = inspect.signature(model_class)
+    if "num_layers" in model_sig.parameters:
+        model_kwargs["num_layers"] = num_layers
+    if aggregation_method is not None and "aggregation_method" in model_sig.parameters:
+        model_kwargs["aggregation_method"] = aggregation_method
+
+    model = model_class(**model_kwargs).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = torch.nn.CrossEntropyLoss()
@@ -504,6 +515,7 @@ def train_gnn_model(
                         "hidden_channels": int(hidden_channels),
                         "num_classes": int(num_classes),
                         "num_layers": int(num_layers),
+                        "aggregation_method": aggregation_method,
                     },
                     model_save_path,
                 )
@@ -558,6 +570,7 @@ def load_gnn_model(
     model_path: str,
     device: Optional[str] = None,
     num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
 ) -> torch.nn.Module:
     """Load a trained GNN model from a saved state dict.
 
@@ -569,6 +582,9 @@ def load_gnn_model(
     num_layers :
         Number of message-passing layers for raw state_dict loads (default 4).
         Ignored when checkpoint metadata contains ``num_layers``.
+    aggregation_method :
+        Optional aggregation method for raw state_dict loads. Ignored when
+        checkpoint metadata contains ``aggregation_method``.
     device :
         torch device string (default: auto-detect cuda/cpu).
     Returns:
@@ -590,16 +606,23 @@ def load_gnn_model(
         num_classes = int(checkpoint_or_state.get("num_classes", num_classes))
         node_features_dim = int(checkpoint_or_state.get("node_features_dim", node_features_dim))
         num_layers = int(checkpoint_or_state.get("num_layers", num_layers))
+        aggregation_method = checkpoint_or_state.get("aggregation_method", aggregation_method)
     else:
         state_dict = checkpoint_or_state
 
     # Initialize model architecture (must match training configuration)
-    model = model_class(
-        node_features_dim=node_features_dim,
-        hidden_channels=hidden_channels,  # Must match training hidden_channels
-        num_classes=num_classes,       # Must match number of classes in training data
-        num_layers=num_layers,
-    ).to(device)
+    model_kwargs = {
+        "node_features_dim": node_features_dim,
+        "hidden_channels": hidden_channels,  # Must match training hidden_channels
+        "num_classes": num_classes,  # Must match number of classes in training data
+    }
+    model_sig = inspect.signature(model_class)
+    if "num_layers" in model_sig.parameters:
+        model_kwargs["num_layers"] = num_layers
+    if aggregation_method is not None and "aggregation_method" in model_sig.parameters:
+        model_kwargs["aggregation_method"] = aggregation_method
+
+    model = model_class(**model_kwargs).to(device)
 
     # Load state dict
     model.load_state_dict(state_dict)

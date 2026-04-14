@@ -110,13 +110,16 @@ prep = prepare_gnn_dataset(
 )
 
 # 2) Submit non-blocking GNN training
-#    num_layers is optional and defaults to 4.
+#    num_layers defaults to 4.
+#    aggregation_method is optional and keeps model defaults when omitted
+#    (GraphSAGE='mean', GC_GNN='max').
 job = train_gnn_model_mcp(
   split_file_path="session/splits/chembl_activity_data_O00329_P42336_split.pkl",
   smiles_csv_path="data/datasets/chembl_activity_data_O00329_P42336.csv",
   model_class_name="GCN",
   hidden_channels=64,
   num_layers=6,
+  aggregation_method="mean",  # Example for GraphSAGE/GC_GNN
   epochs=100,
 )
 
@@ -125,7 +128,7 @@ status = check_gnn_training(job["job_id"], model_save_path=job["model_save_path"
 
 # 4) Optionally load model explicitly
 #    num_layers can be provided; for checkpoint files with metadata,
-#    the stored architecture values are used.
+#    stored architecture values are used.
 loaded = load_gnn_model_mcp(
   model_class_name="GCN",
   node_features_dim=4,
@@ -133,6 +136,7 @@ loaded = load_gnn_model_mcp(
   num_classes=2,
   model_path=job["model_save_path"],
   num_layers=6,
+  aggregation_method="mean",
 )
 
 # 5) Load a custom pretrained GNN class (outside built-in model list)
