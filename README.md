@@ -84,7 +84,7 @@ Recommended workflow:
 
 🤖 **ML Modeling** – Train classification and regression models (Random Forest, SVM, XGBoost, etc.) with hyperparameter tuning
 
-🧠 **Graph Neural Networks** – Prepare GNN datasets and train GCN/GAT models for end-to-end molecular learning
+🧠 **Graph Neural Networks** – Prepare GNN datasets and train GCN/GAT models for end-to-end molecular learning with configurable depth (`num_layers`, default 4)
 
 📊 **Visualization** – Generate classification/regression plots and model performance summaries
 
@@ -97,3 +97,54 @@ Recommended workflow:
 🌐 **GNN Explainability** – Explain graph predictions using EdgeSHAPer to highlight important bonds
 
 📝 **Reporting** – Export results as HTML reports and PDF documents
+
+<!-- ## GNN MCP Quick Start
+
+Use this sequence for GNN workflows (without `compute_features`):
+
+```python
+# 1) Prepare graph datasets from a split + SMILES CSV
+prep = prepare_gnn_dataset(
+  split_file_path="session/splits/chembl_activity_data_O00329_P42336_split.pkl",
+  smiles_csv_path="data/datasets/chembl_activity_data_O00329_P42336.csv",
+)
+
+# 2) Submit non-blocking GNN training
+#    num_layers is optional and defaults to 4.
+job = train_gnn_model_mcp(
+  split_file_path="session/splits/chembl_activity_data_O00329_P42336_split.pkl",
+  smiles_csv_path="data/datasets/chembl_activity_data_O00329_P42336.csv",
+  model_class_name="GCN",
+  hidden_channels=64,
+  num_layers=6,
+  epochs=100,
+)
+
+# 3) Poll until completed
+status = check_gnn_training(job["job_id"], model_save_path=job["model_save_path"])
+
+# 4) Optionally load model explicitly
+#    num_layers can be provided; for checkpoint files with metadata,
+#    the stored architecture values are used.
+loaded = load_gnn_model_mcp(
+  model_class_name="GCN",
+  node_features_dim=4,
+  hidden_channels=64,
+  num_classes=2,
+  model_path=job["model_save_path"],
+  num_layers=6,
+)
+
+# 5) Load a custom pretrained GNN class (outside built-in model list)
+#    custom_model_module supports either module import paths or .py file paths.
+custom_loaded = load_gnn_model_mcp(
+  model_class_name="CustomGNN",  # label for the request
+  node_features_dim=4,
+  hidden_channels=128,
+  num_classes=2,
+  model_path="models/custom_pretrained.pt",
+  num_layers=5,
+  custom_model_module="src.chemagent.custom_models.my_gnn",  # or "path/to/my_gnn.py"
+  custom_model_class_name="CustomGNN",
+)
+``` -->

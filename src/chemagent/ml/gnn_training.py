@@ -312,6 +312,7 @@ def train_gnn_model(
     model_save_path: Optional[str] = None,
     node_features_dim: int = 4,
     hidden_channels: int = 64,
+    num_layers: int = 4,
     epochs: int = 100,
     lr: float = 0.001,
     batch_size: int = 32,
@@ -330,6 +331,8 @@ def train_gnn_model(
         Optional path to save best model state dict.
     hidden_channels :
         Hidden dimension for all GNN layers (default 64).
+    num_layers :
+        Number of message-passing layers in the GNN backbone (default 4).
     epochs :
         Number of training epochs (default 100).
     lr :
@@ -423,6 +426,7 @@ def train_gnn_model(
         node_features_dim=node_features_dim,  # atomic_num, formal_charge, num_hs, is_aromatic
         hidden_channels=hidden_channels,
         num_classes=num_classes,
+        num_layers=num_layers,
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -492,7 +496,17 @@ def train_gnn_model(
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             if model_save_path:
-                torch.save(model.state_dict(), model_save_path)
+                torch.save(
+                    {
+                        "state_dict": model.state_dict(),
+                        "model_class_name": getattr(model_class, "__name__", str(model_class)),
+                        "node_features_dim": int(node_features_dim),
+                        "hidden_channels": int(hidden_channels),
+                        "num_classes": int(num_classes),
+                        "num_layers": int(num_layers),
+                    },
+                    model_save_path,
+                )
             best_state_dict = copy.deepcopy(model.state_dict())
 
         # Log epoch summary via the session logger to avoid writing to stdout.
@@ -536,7 +550,15 @@ def train_gnn_model(
     }
 
 
-def load_gnn_model(model_class: type, node_features_dim: int, hidden_channels: int, num_classes: int, model_path: str, device: Optional[str] = None) -> torch.nn.Module:
+def load_gnn_model(
+    model_class: type,
+    node_features_dim: int,
+    hidden_channels: int,
+    num_classes: int,
+    model_path: str,
+    device: Optional[str] = None,
+    num_layers: int = 4,
+) -> torch.nn.Module:
     """Load a trained GNN model from a saved state dict.
 
     Args:
@@ -544,6 +566,9 @@ def load_gnn_model(model_class: type, node_features_dim: int, hidden_channels: i
         GNN model class (GCN, GraphSAGE, GAT, etc.).
     model_path :
         Path to saved model state dict.
+    num_layers :
+        Number of message-passing layers for raw state_dict loads (default 4).
+        Ignored when checkpoint metadata contains ``num_layers``.
     device :
         torch device string (default: auto-detect cuda/cpu).
     Returns:
@@ -552,15 +577,31 @@ def load_gnn_model(model_class: type, node_features_dim: int, hidden_channels: i
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # Support both raw state_dict and checkpoint dictionaries with metadata.
+    checkpoint_or_state = torch.load(model_path, map_location=device)
+    if isinstance(checkpoint_or_state, torch.nn.Module):
+        model = checkpoint_or_state.to(device)
+        model.eval()
+        return model
+
+    if isinstance(checkpoint_or_state, dict) and "state_dict" in checkpoint_or_state:
+        state_dict = checkpoint_or_state["state_dict"]
+        hidden_channels = int(checkpoint_or_state.get("hidden_channels", hidden_channels))
+        num_classes = int(checkpoint_or_state.get("num_classes", num_classes))
+        node_features_dim = int(checkpoint_or_state.get("node_features_dim", node_features_dim))
+        num_layers = int(checkpoint_or_state.get("num_layers", num_layers))
+    else:
+        state_dict = checkpoint_or_state
+
     # Initialize model architecture (must match training configuration)
     model = model_class(
         node_features_dim=node_features_dim,
         hidden_channels=hidden_channels,  # Must match training hidden_channels
         num_classes=num_classes,       # Must match number of classes in training data
+        num_layers=num_layers,
     ).to(device)
 
     # Load state dict
-    state_dict = torch.load(model_path, map_location=device)
     model.load_state_dict(state_dict)
     model.eval()
 

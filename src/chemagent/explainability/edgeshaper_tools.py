@@ -16,6 +16,8 @@ in Graph Neural Networks, enabling edge-level explainability.
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import sys
 from pathlib import Path
 from typing import Any, Literal, Optional, Union
@@ -37,6 +39,62 @@ from chemagent.explainability.edgeshaper import Edgeshaper
 from chemagent.session_utils import get_session_logger as _get_session_logger
 from chemagent.ml.gnn_models import GCN, GraphSAGE, GAT, GC_GNN, GINE, GIN
 from chemagent.ml.gnn_training import smiles_to_nx_graph, nx_graph_to_pyg_data
+
+
+_EDGE_GNN_MODEL_MAP = {
+    "GCN": GCN,
+    "GraphSAGE": GraphSAGE,
+    "GAT": GAT,
+    "GC_GNN": GC_GNN,
+    "GINE": GINE,
+    "GIN": GIN,
+}
+
+
+def _resolve_edgeshaper_model_class(
+    model_class_name: str,
+    custom_model_module: Optional[str] = None,
+    custom_model_class_name: Optional[str] = None,
+) -> tuple[type, str]:
+    """Resolve built-in or custom model class for EdgeSHAPer workflows."""
+    if model_class_name in _EDGE_GNN_MODEL_MAP:
+        return _EDGE_GNN_MODEL_MAP[model_class_name], model_class_name
+
+    class_name = custom_model_class_name or model_class_name
+    module_obj = None
+    module_hint = custom_model_module
+
+    if module_hint and module_hint.endswith(".py"):
+        module_path = Path(module_hint)
+        if not module_path.is_absolute():
+            module_path = Path(_SRC) / module_path
+        module_path = module_path.resolve()
+        spec = importlib.util.spec_from_file_location("chemagent_edgeshaper_custom_model", module_path)
+        if spec is None or spec.loader is None:
+            raise ValueError(f"Could not import custom module from path: {module_hint}")
+        module_obj = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module_obj)
+    elif module_hint:
+        module_obj = importlib.import_module(module_hint)
+
+    if module_obj is None and "." in class_name:
+        module_part, _, attr_part = class_name.rpartition(".")
+        if module_part and attr_part:
+            module_obj = importlib.import_module(module_part)
+            class_name = attr_part
+
+    if module_obj is None:
+        raise ValueError(
+            "Unknown model_class_name. For custom models, provide custom_model_module "
+            "(module import path or .py path) and custom_model_class_name."
+        )
+
+    if not hasattr(module_obj, class_name):
+        raise ValueError(
+            f"Class '{class_name}' not found in module '{getattr(module_obj, '__name__', str(module_hint))}'."
+        )
+
+    return getattr(module_obj, class_name), class_name
 
 
 def _extract_graph_components(
@@ -244,10 +302,13 @@ def _build_graph_from_smiles(compound_smiles: str) -> tuple[torch.Tensor, torch.
 def _load_edgeshaper_model(
     model: Optional[Any],
     model_path: Optional[str],
-    model_class_name: Literal["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"] = "GCN",
+    model_class_name: str = "GCN",
     node_features_dim: int = 4,
     hidden_channels: Optional[int] = None,
     num_classes: Optional[int] = None,
+    num_layers: int = 4,
+    custom_model_module: Optional[str] = None,
+    custom_model_class_name: Optional[str] = None,
     device: str = "cpu",
 ) -> torch.nn.Module:
     """Load a GNN model object or reconstruct it from a state dict checkpoint."""
@@ -260,27 +321,47 @@ def _load_edgeshaper_model(
         loaded_obj = torch.load(model_file, map_location=device, weights_only=False)
         model = loaded_obj
 
+        if isinstance(loaded_obj, torch.nn.Module):
+            model = loaded_obj
+
         if isinstance(loaded_obj, dict):
-            model_map = {
-                "GCN": GCN,
-                "GraphSAGE": GraphSAGE,
-                "GAT": GAT,
-                "GC_GNN": GC_GNN,
-                "GINE": GINE,
-                "GIN": GIN,
-            }
-            if model_class_name not in model_map:
-                raise ValueError(
-                    f"Unknown model_class_name '{model_class_name}'. "
-                    f"Available: {list(model_map.keys())}"
-                )
+            checkpoint = loaded_obj if "state_dict" in loaded_obj else None
+            state_dict = loaded_obj["state_dict"] if checkpoint is not None else loaded_obj
+
+            checkpoint_model_class = None
+            if checkpoint is not None:
+                checkpoint_model_class = checkpoint.get("model_class_name") or checkpoint.get("model_class")
+            resolved_name = checkpoint_model_class or model_class_name
+            model_class, _ = _resolve_edgeshaper_model_class(
+                model_class_name=resolved_name,
+                custom_model_module=custom_model_module,
+                custom_model_class_name=custom_model_class_name,
+            )
+
+            if not isinstance(state_dict, dict):
+                raise ValueError("Invalid checkpoint format: expected a state dict dictionary.")
 
             inferred_hidden = hidden_channels
+            if checkpoint is not None and checkpoint.get("hidden_channels") is not None:
+                inferred_hidden = int(checkpoint["hidden_channels"])
+
             if inferred_hidden is None:
-                for k in ("conv1.bias", "conv1.lin.weight", "conv1.lin_l.weight", "conv1.att_src"):
-                    if k in loaded_obj and hasattr(loaded_obj[k], "shape"):
-                        inferred_hidden = int(loaded_obj[k].shape[0])
-                        break
+                if "lin.weight" in state_dict and hasattr(state_dict["lin.weight"], "shape"):
+                    inferred_hidden = int(state_dict["lin.weight"].shape[1])
+                else:
+                    for k in (
+                        "conv1.bias",
+                        "conv1.lin.weight",
+                        "conv1.lin_l.weight",
+                        "conv1.att_src",
+                        "convs.0.bias",
+                        "convs.0.lin.weight",
+                        "convs.0.lin_l.weight",
+                        "convs.0.att_src",
+                    ):
+                        if k in state_dict and hasattr(state_dict[k], "shape"):
+                            inferred_hidden = int(state_dict[k].shape[0])
+                            break
             if inferred_hidden is None:
                 raise ValueError(
                     "Could not infer hidden_channels from state_dict. "
@@ -288,20 +369,39 @@ def _load_edgeshaper_model(
                 )
 
             inferred_classes = num_classes
-            if inferred_classes is None and "lin.weight" in loaded_obj:
-                inferred_classes = int(loaded_obj["lin.weight"].shape[0])
+            if checkpoint is not None and checkpoint.get("num_classes") is not None:
+                inferred_classes = int(checkpoint["num_classes"])
+            if inferred_classes is None and "lin.weight" in state_dict:
+                inferred_classes = int(state_dict["lin.weight"].shape[0])
             if inferred_classes is None:
                 raise ValueError(
                     "Could not infer num_classes from state_dict. "
                     "Pass num_classes explicitly."
                 )
 
-            model = model_map[model_class_name](
-                node_features_dim=node_features_dim,
+            inferred_node_features = node_features_dim
+            if checkpoint is not None and checkpoint.get("node_features_dim") is not None:
+                inferred_node_features = int(checkpoint["node_features_dim"])
+
+            inferred_num_layers = num_layers
+            if checkpoint is not None and checkpoint.get("num_layers") is not None:
+                inferred_num_layers = int(checkpoint["num_layers"])
+            else:
+                conv_indices = {
+                    int(k.split(".")[1])
+                    for k in state_dict.keys()
+                    if k.startswith("convs.") and len(k.split(".")) > 1 and k.split(".")[1].isdigit()
+                }
+                if conv_indices:
+                    inferred_num_layers = max(conv_indices) + 1
+
+            model = model_class(
+                node_features_dim=inferred_node_features,
                 hidden_channels=inferred_hidden,
                 num_classes=inferred_classes,
+                num_layers=inferred_num_layers,
             )
-            model.load_state_dict(loaded_obj)
+            model.load_state_dict(state_dict)
 
     if not isinstance(model, torch.nn.Module):
         raise TypeError(
@@ -423,10 +523,13 @@ def select_compound_for_edgeshaper(
     graph_data_path: str | None = None,
     split: Literal["train", "val", "test"] = "test",
     split_file_path: Optional[str] = None,
-    model_class_name: Literal["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"] = "GCN",
+    model_class_name: str = "GCN",
     node_features_dim: int = 4,
     hidden_channels: Optional[int] = None,
     num_classes: Optional[int] = None,
+    num_layers: int = 4,
+    custom_model_module: Optional[str] = None,
+    custom_model_class_name: Optional[str] = None,
     target_class: Optional[int] = None,
     seed: Optional[int] = None,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -451,6 +554,22 @@ def select_compound_for_edgeshaper(
         Split name used for metadata fallback (default: "test").
     split_file_path : str, optional
         Optional split .pkl file for SMILES fallback metadata.
+    model_class_name : str, optional
+        Built-in model class label (GCN, GraphSAGE, GAT, GC_GNN, GINE, GIN)
+        or a custom class label used with ``custom_model_module``.
+    node_features_dim : int, optional
+        Node feature dimension used when reconstructing from state_dict/checkpoint.
+    hidden_channels : int, optional
+        Hidden channels for reconstruction; inferred when available in checkpoint.
+    num_classes : int, optional
+        Number of output classes for reconstruction; inferred when available.
+    num_layers : int, optional
+        Number of GNN message-passing layers for reconstruction (default: 4).
+        Checkpoint metadata overrides this value when present.
+    custom_model_module : str, optional
+        Import path (e.g., ``my_pkg.models``) or ``.py`` path for custom model definitions.
+    custom_model_class_name : str, optional
+        Class name inside ``custom_model_module``.
     target_class : int, optional
         If provided, restrict selection to correctly predicted compounds of this class.
     seed : int, optional
@@ -475,6 +594,9 @@ def select_compound_for_edgeshaper(
             node_features_dim=node_features_dim,
             hidden_channels=hidden_channels,
             num_classes=num_classes,
+            num_layers=num_layers,
+            custom_model_module=custom_model_module,
+            custom_model_class_name=custom_model_class_name,
             device=device,
         )
 
@@ -569,10 +691,13 @@ def explain_gnn_with_edgeshaper(
     graph_data_path: Optional[str] = None,
     split: Literal["train", "val", "test"] = "test",
     split_file_path: Optional[str] = None,
-    model_class_name: Literal["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"] = "GCN",
+    model_class_name: str = "GCN",
     node_features_dim: int = 4,
     hidden_channels: Optional[int] = None,
     num_classes: Optional[int] = None,
+    num_layers: int = 4,
+    custom_model_module: Optional[str] = None,
+    custom_model_class_name: Optional[str] = None,
     compound_idx: int = 0,
     compound_smiles: Optional[str] = None,
     allow_external_smiles: bool = True,
@@ -602,13 +727,21 @@ def explain_gnn_with_edgeshaper(
     graph_data_path : str
         Path to PyTorch Geometric graph data (.pt file with x, edge_index, etc.)
     model_class_name : str, optional
-        Model architecture to use when reconstructing from a state_dict (default: "GCN").
+        Built-in model class label (GCN, GraphSAGE, GAT, GC_GNN, GINE, GIN)
+        or a custom class label used with ``custom_model_module`` (default: "GCN").
     node_features_dim : int, optional
         Node feature dimension for model reconstruction (default: 4).
     hidden_channels : int, optional
         Hidden channels for model reconstruction. If omitted, inferred from state_dict.
     num_classes : int, optional
         Number of output classes for model reconstruction. If omitted, inferred from state_dict.
+    num_layers : int, optional
+        Number of GNN message-passing layers for reconstruction (default: 4).
+        Checkpoint metadata overrides this value when present.
+    custom_model_module : str, optional
+        Import path (e.g., ``my_pkg.models``) or ``.py`` path for custom model definitions.
+    custom_model_class_name : str, optional
+        Class name inside ``custom_model_module``.
     compound_idx : int, optional
         Index of the compound in the graph dataset to explain (default: 0)
     M : int, optional
@@ -717,6 +850,9 @@ def explain_gnn_with_edgeshaper(
             node_features_dim=node_features_dim,
             hidden_channels=hidden_channels,
             num_classes=num_classes,
+            num_layers=num_layers,
+            custom_model_module=custom_model_module,
+            custom_model_class_name=custom_model_class_name,
             device=device,
         )
 
