@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="docs/assets/chemichal_logo.svg" alt="ChemicHAL logo" width=50%>
+  <img src="docs/assets/chemichal_logo.svg" alt="ChemicHAL logo" width=30%>
 </p>
 
 # ChemicHAL: an XAI-enhanced agent for chemoinformatics
