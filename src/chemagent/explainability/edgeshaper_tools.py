@@ -720,7 +720,7 @@ def explain_gnn_with_edgeshaper(
     compound_smiles: Optional[str] = None,
     allow_external_smiles: bool = True,
     M: int = 100,
-    target_class: int = 0,
+    target_class: Optional[Union[int, str]] = 0,
     batch_size: int = 100,
     deviation: Optional[float] = None,
     log_odds: bool = False,
@@ -767,8 +767,8 @@ def explain_gnn_with_edgeshaper(
         Index of the compound in the graph dataset to explain (default: 0)
     M : int, optional
         Number of Monte Carlo sampling steps (default: 100)
-    target_class : int, optional
-        Class index for classification (default: 0); None for regression
+    target_class : int | str | None, optional
+        Class index for classification. Use None, -1, or "regression" for regression.
     batch_size : int, optional
         Batch size for vectorized computation; M must be divisible by batch_size
         (will auto-adjust if needed). Higher values = faster but more memory usage (default: 100)
@@ -795,8 +795,9 @@ def explain_gnn_with_edgeshaper(
         - fidelity: fidelity+ metric (from minimal_top_k_set)
         - trustworthiness: harmonic mean of fidelity and (1 - infidelity)
         - num_edges: total number of edges in the graph
-        - original_class_probs: model probabilities for all classes on the original graph
-        - original_target_class_pred_prob: model probability for the selected target class
+        - original_predicted_value: scalar model output for regression, or the selected target-class probability for classification
+        - original_class_probs: model probabilities for all classes on the original graph (classification only)
+        - original_target_class_pred_prob: model probability for the selected target class (classification only)
         - result_save_path: path to saved results JSON (if save_results=True)
         - error: error message if status is "failed"
 
@@ -925,6 +926,8 @@ def explain_gnn_with_edgeshaper(
                 "edgeshaper_deviation_ignored",
                 reason="deviation parameter not supported in batched mode; using full M iterations",
             )
+
+        is_regression = Edgeshaper._is_regression_target(target_class)
         
         phi_edges = explainer.explain_batch(
             M=M,
@@ -937,10 +940,11 @@ def explain_gnn_with_edgeshaper(
             progress_bar=True,
         )
 
-        # Compute original prediction probabilities.
-        explainer.compute_original_predicted_probability()
-        original_class_probs = explainer.original_class_probs
-        original_target_class_pred_prob = explainer.original_target_class_pred_prob
+        # Compute the original output baseline.
+        explainer.compute_original_predicted_value()
+        original_predicted_value = explainer.original_predicted_value
+        original_class_probs = explainer.original_class_probs if not is_regression else None
+        original_target_class_pred_prob = explainer.original_target_class_pred_prob if not is_regression else None
 
         # Compute fidelity metrics (classification only)
         pertinent_positive_set = None
@@ -949,7 +953,7 @@ def explain_gnn_with_edgeshaper(
         fidelity = None
         trustworthiness = None
 
-        if target_class is not None:
+        if not is_regression:
             _, infidelity = explainer.compute_pertinent_positive_set(verbose=False)
             pertinent_positive_set = explainer.pertinent_positive_set.cpu().tolist() if explainer.pertinent_positive_set is not None else None
 
@@ -971,6 +975,7 @@ def explain_gnn_with_edgeshaper(
             "fidelity": float(fidelity) if fidelity is not None else None,
             "trustworthiness": float(trustworthiness) if trustworthiness is not None else None,
             "num_edges": edge_index.shape[1],
+            "original_predicted_value": float(original_predicted_value) if original_predicted_value is not None else None,
             "original_class_probs": [float(p) for p in original_class_probs] if original_class_probs is not None else None,
             "original_target_class_pred_prob": float(original_target_class_pred_prob) if original_target_class_pred_prob is not None else None,
             "compound_idx": resolved_compound_idx,
