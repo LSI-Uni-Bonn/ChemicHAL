@@ -41,6 +41,110 @@ from chemagent.explainability.MolAnchor.MolAnchor import MolecularAnchor
 from chemagent.session_utils import get_session_logger as _get_session_logger
 from chemagent.featurization.fingerprints import ECFP
 
+# ---------------------------------------------------------------------------
+# GNN-compatible graph_func / graph_predict for MolAnchor
+# ---------------------------------------------------------------------------
+# These replace MolAnchor's default_mol_to_nx / default_graph_predict when the
+# model is a chemagent PyTorch GNN (GCN, GraphSAGE, GIN, GC_GNN, GAT, GINE).
+#
+# Feature scheme (4-dim node features) must match gnn_training.py:
+#   [atomic_num/100, formal_charge, num_hs/4, is_aromatic]
+# Bond weights (bond_type_as_double / 3.0) are included so GINE and GAT work.
+# ---------------------------------------------------------------------------
+
+_GNN_NODE_FEATURES_DIM = 4
+
+
+def _gnn_mol_to_nx(mol: Chem.Mol):
+    """Convert RDKit mol to NetworkX graph using the canonical training function.
+
+    Delegates to ``chemagent.ml.gnn_training.smiles_to_nx_graph`` so the node
+    attributes and edge structure are identical to what the model saw during
+    training. MolAnchor supplies a ``Chem.Mol``; we round-trip via canonical
+    SMILES to satisfy the string-based API.
+    """
+    from chemagent.ml.gnn_training import smiles_to_nx_graph
+    return smiles_to_nx_graph(Chem.MolToSmiles(mol))
+
+
+def _make_gnn_graph_predict(model):
+    """Return a graph_predict callable bound to *model*.
+
+    The returned function converts a list of NetworkX fragment subgraphs
+    to PyG Data objects, batches them, runs forward(), and returns a numpy
+    int array of class predictions compatible with MolAnchor.
+
+    Works with GCN, GraphSAGE, GIN, GC_GNN, and GAT. GINE is not supported
+    because the standard training pipeline does not provide edge weights.
+    """
+    import torch
+    from torch_geometric.data import Batch
+    from chemagent.ml.gnn_training import nx_graph_to_pyg_data
+
+    def _predict(_, frag_graphs):
+        # MolAnchor always includes at least one fragment per combination
+        # (generate_combinations skips the empty tuple), so nx_graph_to_pyg_data
+        # will never receive an empty graph and will never return None here.
+        data_list = [
+            nx_graph_to_pyg_data(g, label=0)  # label=0 is a dummy; y unused at inference
+            for g in frag_graphs
+        ]
+
+        batch = Batch.from_data_list(data_list)
+
+        model.eval()
+        with torch.no_grad():
+            logits = model(batch.x, batch.edge_index, batch.batch)
+            preds = logits.argmax(dim=1).cpu().numpy().astype(int)
+
+        return preds
+
+    return _predict
+
+
+def _load_gnn_model(model_path: str, model_class_name: str, hidden_channels: int, num_classes: int):
+    """Load a chemagent GNN from a .pt state-dict file.
+
+    Args:
+        model_path:        Path to saved state dict (.pt).
+        model_class_name:  One of GCN | GraphSAGE | GAT | GC_GNN | GINE | GIN.
+        hidden_channels:   Hidden dimension used during training.
+        num_classes:       Number of output classes used during training.
+
+    Returns:
+        Loaded torch.nn.Module in eval mode on CPU.
+    """
+    import torch
+    from chemagent.ml.gnn_models import GCN, GAT, GC_GNN, GIN, GraphSAGE
+
+    _MAP = {
+        "GCN": GCN, "GraphSAGE": GraphSAGE, "GAT": GAT,
+        "GC_GNN": GC_GNN, "GIN": GIN,
+    }
+    if model_class_name == "GINE":
+        raise ValueError(
+            "GINE is not supported for MolAnchor graph-based explanations. "
+            "GINE requires edge_weight features, but the standard GNN training "
+            "pipeline (train_gnn_model / train_gnn_model_mcp) does not provide "
+            "edge weights — so a GINE model trained via that pipeline cannot be "
+            "used here consistently. Use GCN, GraphSAGE, GIN, GC_GNN, or GAT instead."
+        )
+    if model_class_name not in _MAP:
+        raise ValueError(
+            f"Unknown GNN model class '{model_class_name}'. "
+            f"Available: {list(_MAP.keys())}"
+        )
+    model_class = _MAP[model_class_name]
+    model = model_class(
+        node_features_dim=_GNN_NODE_FEATURES_DIM,
+        hidden_channels=hidden_channels,
+        num_classes=num_classes,
+    )
+    state = torch.load(model_path, map_location="cpu", weights_only=True)
+    model.load_state_dict(state)
+    model.eval()
+    return model
+
 
 def _parse_bool(value: Union[bool, str]) -> bool:
     """Coerce MCP string booleans ('true'/'false') to Python bool."""
@@ -169,16 +273,50 @@ def _explain_with_molanchor(
     radius: int = 2,
     bit_info_path: Optional[str] = None,
     original_fp_path: Optional[str] = None,
+    gnn_model_class_name: Optional[str] = None,
+    gnn_hidden_channels: int = 64,
+    gnn_num_classes: int = 2,
 ) -> tuple[dict[str, Any], Any]:
-    """Run MolAnchor analysis and return (result_dict, mol_anchor) for internal use."""
+    """Run MolAnchor analysis and return (result_dict, mol_anchor) for internal use.
+
+    For GNN models set ``representation="graphs"`` and supply:
+    - ``gnn_model_class_name``: one of GCN | GraphSAGE | GAT | GC_GNN | GINE | GIN
+    - ``gnn_hidden_channels``:  hidden dim used during training (default 64)
+    - ``gnn_num_classes``:      number of output classes (default 2)
+    - ``model_path``:           path to the saved .pt state dict
+    """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         raise ValueError(f"Invalid SMILES: {smiles}")
 
-    try:
-        model = joblib.load(model_path)
-    except Exception as e:
-        raise ValueError(f"Failed to load model from {model_path}: {e}")
+    # ── Model loading ─────────────────────────────────────────────────────
+    graph_func = None
+    graph_predict = None
+
+    if representation == "graphs":
+        # GNN path: reconstruct architecture and load state dict
+        if gnn_model_class_name is None:
+            raise ValueError(
+                "representation='graphs' requires gnn_model_class_name "
+                "(e.g. 'GCN', 'GAT', 'GIN', 'GraphSAGE', 'GC_GNN', 'GINE')."
+            )
+        try:
+            model = _load_gnn_model(
+                model_path=model_path,
+                model_class_name=gnn_model_class_name,
+                hidden_channels=gnn_hidden_channels,
+                num_classes=gnn_num_classes,
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to load GNN model from {model_path}: {e}")
+        graph_func = _gnn_mol_to_nx
+        graph_predict = _make_gnn_graph_predict(model)
+    else:
+        # Sklearn / joblib path (ECFP and any other tabular representation)
+        try:
+            model = joblib.load(model_path)
+        except Exception as e:
+            raise ValueError(f"Failed to load model from {model_path}: {e}")
 
     bit_inf = None
     original_fp = None
@@ -213,6 +351,8 @@ def _explain_with_molanchor(
         bit_inf=bit_inf,
         original_fp=original_fp,
         acc_for_radius=acc_for_radius,
+        graph_func=graph_func,
+        graph_predict=graph_predict,
     )
 
     df_combinations = mol_anchor.predict_frag_combinations()
@@ -279,6 +419,9 @@ def explain_with_molanchor(
     bit_info_path: Optional[str] = None,
     original_fp_path: Optional[str] = None,
     output_path: Optional[str] = None,
+    gnn_model_class_name: Optional[str] = None,
+    gnn_hidden_channels: int = 64,
+    gnn_num_classes: int = 2,
 ) -> list:
     """
     Identify molecular anchors (critical fragments) for a model prediction using MolAnchor,
@@ -297,11 +440,13 @@ def explain_with_molanchor(
     smiles : str
         SMILES string of the compound to analyze.
     model_path : str
-        Path to the trained model file (.pkl format).
+        Path to the trained model file. Use .pkl for ECFP/sklearn models,
+        .pt state-dict for GNN models (requires representation="graphs").
     fragment_scheme : str, optional
         Fragmentation scheme. Currently supports "BRICS" (default).
     representation : str, optional
         Molecular representation: "ECFP" (default) or "graphs".
+        Use "graphs" for GNN models trained with train_gnn_model_mcp().
     target_class : int, optional
         Class label to identify anchors for (default 1).
     cutoff : float, optional
@@ -323,6 +468,14 @@ def explain_with_molanchor(
     output_path : str, optional
         Path to save the visualization image (.png).
         Defaults to ``session_dir/plots/molanchor_<session_id>.png``.
+    gnn_model_class_name : str, optional
+        Required when representation="graphs". GNN architecture name:
+        one of GCN | GraphSAGE | GAT | GC_GNN | GINE | GIN.
+        Must match the architecture used during training.
+    gnn_hidden_channels : int, optional
+        Hidden dimension of the GNN (default 64). Must match training config.
+    gnn_num_classes : int, optional
+        Number of output classes of the GNN (default 2). Must match training config.
 
     Returns:
     list
@@ -334,7 +487,14 @@ def explain_with_molanchor(
         If SMILES is invalid, model cannot be loaded, or no anchors are identified.
 
     Examples:
-    >>> explain_with_molanchor(smiles="CCO", model_path="path/to/model.pkl")
+    >>> # ECFP / sklearn model (existing workflow)
+    >>> explain_with_molanchor(smiles="CCO", model_path="model.pkl")
+    >>> # GNN model
+    >>> explain_with_molanchor(
+    ...     smiles="CCO", model_path="gnn_GCN.pt",
+    ...     representation="graphs", gnn_model_class_name="GCN",
+    ...     gnn_hidden_channels=64, gnn_num_classes=2,
+    ... )
     """
     allow_frag_combinations = _parse_bool(allow_frag_combinations)
     return_multiple_anchors = _parse_bool(return_multiple_anchors)
@@ -356,6 +516,9 @@ def explain_with_molanchor(
         radius=radius,
         bit_info_path=bit_info_path,
         original_fp_path=original_fp_path,
+        gnn_model_class_name=gnn_model_class_name,
+        gnn_hidden_channels=gnn_hidden_channels,
+        gnn_num_classes=gnn_num_classes,
     )
 
     anchor_indices = result["anchor_indices"]
