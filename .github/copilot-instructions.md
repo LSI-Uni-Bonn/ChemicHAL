@@ -46,7 +46,12 @@ GNN training is also non-blocking and returns full metrics when polled:
 load_dataset("data/datasets/chembl_activity_data_O00329_P42336.csv")
   → split_dataset(dataset_id, train_size=0.7, val_size=0.0, test_size=0.3, stratified=True)
   → prepare_gnn_dataset(split_file_path, smiles_csv_path="data/datasets/chembl_activity_data_O00329_P42336.csv")
-  → job = train_gnn_model_mcp(split_file_path, smiles_csv_path="data/datasets/chembl_activity_data_O00329_P42336.csv", model_class_name="GCN")
+  → job = train_gnn_model_mcp(
+      split_file_path,
+      smiles_csv_path="data/datasets/chembl_activity_data_O00329_P42336.csv",
+      model_class_name="GCN",
+      num_layers=6,  # default is 4
+  )
   → check_gnn_training(job["job_id"], model_save_path=job["model_save_path"])  # poll every 30-60 s
 ```
 

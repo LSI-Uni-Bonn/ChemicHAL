@@ -19,6 +19,7 @@ build_model_from_arrays — train from raw in-memory arrays
 from __future__ import annotations
 
 from collections import Counter
+import inspect
 import sys
 from itertools import combinations
 from pathlib import Path
@@ -968,11 +969,15 @@ def _export_predictions_gnn(
     node_features_dim = 4
     inferred_num_classes = len(sorted(set([lbl for lbl in labels if lbl is not None]))) or 2
     inferred_hidden_channels = hidden_channels
+    inferred_num_layers = 4
+    inferred_aggregation_method = None
 
     if isinstance(checkpoint, dict):
         node_features_dim = int(checkpoint.get("node_features_dim", node_features_dim))
         inferred_hidden_channels = int(checkpoint.get("hidden_channels", inferred_hidden_channels))
         inferred_num_classes = int(checkpoint.get("num_classes", inferred_num_classes))
+        inferred_num_layers = int(checkpoint.get("num_layers", inferred_num_layers))
+        inferred_aggregation_method = checkpoint.get("aggregation_method", inferred_aggregation_method)
 
     if isinstance(sd, dict) and "lin.weight" in sd:
         lin_w = sd["lin.weight"]
@@ -980,12 +985,34 @@ def _export_predictions_gnn(
             inferred_num_classes = int(lin_w.shape[0])
             inferred_hidden_channels = int(lin_w.shape[1])
 
+    if isinstance(sd, dict):
+        # Support newer ModuleList keys (convs.0..., convs.1...) and older
+        # fixed-name keys (conv1..., conv2...).
+        conv_indices = {
+            int(k.split(".")[1])
+            for k in sd.keys()
+            if k.startswith("convs.") and len(k.split(".")) > 1 and k.split(".")[1].isdigit()
+        }
+        if conv_indices:
+            inferred_num_layers = max(conv_indices) + 1
+        else:
+            legacy_count = sum(1 for i in range(1, 9) if any(key.startswith(f"conv{i}.") for key in sd.keys()))
+            if legacy_count > 0:
+                inferred_num_layers = legacy_count
+
     ModelCls = getattr(_gnn_models, model_class)
-    model = ModelCls(
-        node_features_dim=node_features_dim,
-        hidden_channels=inferred_hidden_channels,
-        num_classes=inferred_num_classes,
-    ).to(device)
+    model_kwargs = {
+        "node_features_dim": node_features_dim,
+        "hidden_channels": inferred_hidden_channels,
+        "num_classes": inferred_num_classes,
+    }
+    model_sig = inspect.signature(ModelCls)
+    if "num_layers" in model_sig.parameters:
+        model_kwargs["num_layers"] = inferred_num_layers
+    if inferred_aggregation_method is not None and "aggregation_method" in model_sig.parameters:
+        model_kwargs["aggregation_method"] = inferred_aggregation_method
+
+    model = ModelCls(**model_kwargs).to(device)
 
     try:
         if isinstance(state, dict):

@@ -26,6 +26,8 @@ _GNN_MODEL_MAP          — mapping of model names to classes
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import sys
 import threading
 import time
@@ -56,6 +58,59 @@ _GNN_MODEL_MAP = {
     "GINE": GINE,
     "GIN": GIN,
 }
+
+
+def _resolve_model_class_for_loading(
+    model_class_name: str,
+    custom_model_module: Optional[str] = None,
+    custom_model_class_name: Optional[str] = None,
+):
+    """Resolve built-in or user-provided model classes for loading.
+
+    Resolution order:
+    1) built-in model map by ``model_class_name``
+    2) explicit ``custom_model_module`` + class name
+    3) dotted ``module.ClassName`` provided via class argument
+    """
+    if model_class_name in _GNN_MODEL_MAP:
+        return _GNN_MODEL_MAP[model_class_name], model_class_name
+
+    class_name = custom_model_class_name or model_class_name
+
+    module_obj = None
+    module_hint = custom_model_module
+
+    # Allow file-path imports for custom model modules.
+    if module_hint and module_hint.endswith(".py"):
+        module_path = Path(_resolve_path(module_hint))
+        spec = importlib.util.spec_from_file_location("chemagent_custom_gnn_model", module_path)
+        if spec is None or spec.loader is None:
+            raise ValueError(f"Could not import custom module from path: {module_hint}")
+        module_obj = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module_obj)
+    elif module_hint:
+        module_obj = importlib.import_module(module_hint)
+
+    # If no explicit module was provided, allow module.Class notation.
+    if module_obj is None and "." in class_name:
+        module_part, _, attr_part = class_name.rpartition(".")
+        if module_part and attr_part:
+            module_obj = importlib.import_module(module_part)
+            class_name = attr_part
+
+    if module_obj is None:
+        raise ValueError(
+            "Unknown model class. For custom models, provide custom_model_module "
+            "(module path or .py file path) and custom_model_class_name."
+        )
+
+    if not hasattr(module_obj, class_name):
+        raise ValueError(
+            f"Class '{class_name}' not found in module '{getattr(module_obj, '__name__', str(module_hint))}'."
+        )
+
+    model_class = getattr(module_obj, class_name)
+    return model_class, class_name
 
 
 def _run_gnn_job_in_background(job_id: str, fn, *args, **kwargs) -> None:
@@ -198,6 +253,8 @@ def train_gnn_model_mcp(
     batch_size: int = 32,
     device: Optional[str] = None,
     smiles_column: str = "smiles",
+    num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
 ) -> dict[str, Any]:
     """Train a GNN model on SMILES selectivity data (non-blocking background job).
 
@@ -221,6 +278,17 @@ def train_gnn_model_mcp(
         GNN architecture: GCN, GraphSAGE, GAT, GC_GNN, GINE, GIN (default GCN).
     hidden_channels :
         Hidden dimension (default 64).
+    num_layers :
+        Number of message-passing layers in the selected GNN (default 4).
+        Valid range: >= 1.
+        Practical defaults by model family:
+        - GCN / GraphSAGE / GC_GNN: 3-6 layers
+        - GAT: 2-4 layers
+        - GIN / GINE: 2-4 layers
+        Higher values can increase over-smoothing risk on small datasets.
+    aggregation_method :
+        Optional aggregation method for models that support it.
+        Defaults remain unchanged if omitted (GraphSAGE='mean', GC_GNN='max').
     epochs :
         Training epochs (default 100).
     lr :
@@ -279,6 +347,8 @@ def train_gnn_model_mcp(
         model_class=model_class,
         model_save_path=model_save_path,
         hidden_channels=hidden_channels,
+        num_layers=num_layers,
+        aggregation_method=aggregation_method,
         epochs=epochs,
         lr=lr,
         batch_size=batch_size,
@@ -290,6 +360,8 @@ def train_gnn_model_mcp(
         job_id=job_id,
         model_class=model_class_name,
         hidden_channels=hidden_channels,
+        num_layers=num_layers,
+        aggregation_method=aggregation_method,
         epochs=epochs,
     )
 
@@ -359,12 +431,16 @@ def check_gnn_training(
 
 
 def load_gnn_model_mcp(
-    model_class_name: Literal["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"],
+    model_class_name: str,
     node_features_dim: int,
     hidden_channels: int,
     num_classes: int,
     model_path: str,
     device: Optional[str] = None,
+    num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
+    custom_model_module: Optional[str] = None,
+    custom_model_class_name: Optional[str] = None,
 ) -> dict[str, Any]:
     """Load a trained GNN model from disk and verify it loads correctly.
 
@@ -373,7 +449,9 @@ def load_gnn_model_mcp(
 
     Args:
     model_class_name :
-        GNN architecture name: GCN, GraphSAGE, GAT, GC_GNN, GINE, or GIN.
+        GNN architecture name. Built-ins: GCN, GraphSAGE, GAT, GC_GNN, GINE, GIN.
+        For custom models, pass any label and specify ``custom_model_module`` and
+        ``custom_model_class_name``.
     node_features_dim :
         Input node feature dimension (typically 4 for atomic features).
     hidden_channels :
@@ -382,8 +460,24 @@ def load_gnn_model_mcp(
         Number of output classes (must match the training data).
     model_path :
         Path to saved model state dict (.pt file).
+    num_layers :
+        Number of message-passing layers (default 4). For checkpoint files with
+        embedded metadata, the stored value is used.
+        Valid range: >= 1.
+        Practical defaults by model family:
+        - GCN / GraphSAGE / GC_GNN: 3-6 layers
+        - GAT: 2-4 layers
+        - GIN / GINE: 2-4 layers
+    aggregation_method :
+        Optional aggregation method for raw state_dict loads. For checkpoint
+        files with embedded metadata, the stored value is used.
     device :
         torch device string ('cuda' or 'cpu'); auto-detects if None.
+    custom_model_module :
+        Optional import path (e.g., ``my_pkg.models``) or ``.py`` file path to a
+        module containing a custom model class.
+    custom_model_class_name :
+        Optional class name inside ``custom_model_module``.
 
     Returns:
     Dict with:
@@ -398,15 +492,12 @@ def load_gnn_model_mcp(
     session_logger = _get_session_logger()
 
     try:
-        # Resolve model class
-        if model_class_name not in _GNN_MODEL_MAP:
-            err_msg = (
-                f"Unknown model class: {model_class_name}. "
-                f"Available: {', '.join(_GNN_MODEL_MAP.keys())}"
-            )
-            return {"status": "failed", "error": err_msg}
-
-        model_class = _GNN_MODEL_MAP[model_class_name]
+        # Resolve model class (built-in or custom).
+        model_class, resolved_model_class_name = _resolve_model_class_for_loading(
+            model_class_name=model_class_name,
+            custom_model_module=custom_model_module,
+            custom_model_class_name=custom_model_class_name,
+        )
         model_path = _resolve_path(model_path)
 
         # Load model
@@ -416,6 +507,8 @@ def load_gnn_model_mcp(
             hidden_channels=hidden_channels,
             num_classes=num_classes,
             model_path=model_path,
+            num_layers=num_layers,
+            aggregation_method=aggregation_method,
             device=device,
         )
 
@@ -425,7 +518,7 @@ def load_gnn_model_mcp(
 
         session_logger.log_event(
             "gnn_model_loaded",
-            model_class=model_class_name,
+            model_class=resolved_model_class_name,
             model_path=model_path,
             device=device,
         )
@@ -433,7 +526,9 @@ def load_gnn_model_mcp(
         return {
             "status": "completed",
             "model_path": str(model_path),
-            "model_class": model_class_name,
+            "model_class": resolved_model_class_name,
+            "num_layers": num_layers,
+            "aggregation_method": aggregation_method,
             "device": device,
         }
     except Exception as exc:
@@ -448,12 +543,16 @@ def load_gnn_model_mcp(
 
 
 def load_gnn_model(
-    model_class_name: Literal["GCN", "GraphSAGE", "GAT", "GC_GNN", "GINE", "GIN"],
+    model_class_name: str,
     node_features_dim: int,
     hidden_channels: int,
     num_classes: int,
     model_path: str,
     device: Optional[str] = None,
+    num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
+    custom_model_module: Optional[str] = None,
+    custom_model_class_name: Optional[str] = None,
 ) -> dict[str, Any]:
     """Alias for `load_gnn_model_mcp` to make LLM tool-calling robust.
 
@@ -466,7 +565,11 @@ def load_gnn_model(
         hidden_channels=hidden_channels,
         num_classes=num_classes,
         model_path=model_path,
+        num_layers=num_layers,
+        aggregation_method=aggregation_method,
         device=device,
+        custom_model_module=custom_model_module,
+        custom_model_class_name=custom_model_class_name,
     )
 
 
