@@ -70,7 +70,6 @@ Utilities
   set_chat_scope         bind session logging to a host chat/window identifier
   start_new_session      start a fresh session directory
   #run_pipeline           non-blocking shortcut: load → featurize → split → train (not used)
-  generate_report        write a Markdown summary of the current session
 """
 
 from __future__ import annotations
@@ -144,8 +143,6 @@ from chemagent.servers.session_tools import (
     _register,
     log_thought,
     log_answer,
-    generate_report,
-    generate_pdf_report,
     export_chat_html,
     set_chat_scope,
     start_new_session,
@@ -240,8 +237,6 @@ _register(get_edgeshaper_info)
 
 _register(log_thought)
 _register(log_answer)
-_register(generate_report)
-_register(generate_pdf_report)
 _register(export_chat_html)
 _register(set_chat_scope)
 _register(start_new_session)
