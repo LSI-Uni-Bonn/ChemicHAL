@@ -3,6 +3,10 @@
     "python-envs.defaultPackageManager": "ms-python.python:pip",
     "chat.tools.terminal.autoApprove": {
         "Set-Content": true,
-        "&": true
+        "&": true,
+        "/^& \"c:/Users/janela/OneDrive - uni-bonn\\.de/Code/AI-Agent-for-Compound-Selectivity-Prediction-and-Explainability/\\.venv/Scripts/python\\.exe\" -m pytest tests/chemagent/explainability/test_shap_explainer\\.py -q$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

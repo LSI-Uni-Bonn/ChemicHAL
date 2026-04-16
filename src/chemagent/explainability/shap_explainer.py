@@ -274,7 +274,7 @@ class SHAPExplainer:
     def _build_explainer(model, background,):
         model_name = type(model).__name__
         if model_name in _TREE_MODEL_NAMES:
-            return shap.TreeExplainer(model, feature_perturbation="interventional")
+            return shap.TreeExplainer(model, feature_perturbation="interventional", data=background)
 
         if SHAPExplainer._is_dnn_model(model):
             if background is None:
