@@ -26,7 +26,7 @@ Dataset
   list_featurizers       discover available fingerprint methods
   load_dataset           load a CSV for ML
   compute_features       compute molecular fingerprints server-side
-  split_dataset          create train/test splits, save .pkl
+  split_dataset          create train/test splits, save .pkl (optionally .csv)
   dataset_status         inspect a dataset's current load/prepare state
 
 ML

@@ -213,6 +213,8 @@ def split_dataset(
     seed: Optional[int] = 42,
     stratified: bool | str | None = None,
     save_path: Optional[str] = None,
+    save_csv: bool = False,
+    csv_save_path: Optional[str] = None,
 ) -> dict[str, Any]:
     """Split a dataset into train/val/test partitions and save to .pkl.
 
@@ -237,11 +239,50 @@ def split_dataset(
         seed: Random seed (default 42).
         stratified: Preserve class proportions across splits (supported for both "random" and "scaffold" split types).
         save_path: Output .pkl path. Defaults to session splits/ dir. Pass "" to skip.
+        save_csv: If True, also export a CSV version of the split (default False).
+        csv_save_path: Output .csv path when save_csv=True. Defaults to the same
+            stem as the saved .pkl, or session splits/<dataset_id>_<split_type>.csv.
 
     Returns:
         split_file_path (alias: saved_to), train/val/test metadata,
         statistics, and next_step hint.
     """
+    def _split_save_dict_to_dataframe(save_dict: dict[str, Any]):
+        import numpy as np
+        import pandas as pd
+
+        parts = []
+        for prefix in ("train", "val", "test"):
+            labels_key = f"{prefix}_labels"
+            if labels_key not in save_dict:
+                continue
+
+            labels = np.asarray(save_dict[labels_key])
+            data: dict[str, Any] = {
+                "split": [prefix] * int(len(labels)),
+                "label": labels,
+            }
+
+            for optional_col in ("smiles", "cid", "core"):
+                key = f"{prefix}_{optional_col}"
+                if key in save_dict:
+                    data[optional_col] = np.asarray(save_dict[key])
+
+            features_key = f"{prefix}_features"
+            if features_key in save_dict:
+                features = np.asarray(save_dict[features_key])
+                if features.ndim == 1:
+                    data["feature_0"] = features
+                elif features.ndim == 2:
+                    for i in range(features.shape[1]):
+                        data[f"feature_{i}"] = features[:, i]
+
+            parts.append(pd.DataFrame(data))
+
+        if not parts:
+            return pd.DataFrame()
+        return pd.concat(parts, ignore_index=True)
+
     # Accept bool, "true"/"false", "True"/"False", or None (→ False)
     if isinstance(stratified, str):
         stratified_bool = stratified.strip().lower() in ("true", "1", "yes")
@@ -338,6 +379,23 @@ def split_dataset(
             save_path=save_path,
         )
 
+    csv_saved_to = None
+    if save_csv and csv_save_path != "":
+        if csv_save_path is None:
+            if saved_to is not None:
+                csv_path = str(Path(saved_to).with_suffix(".csv"))
+            else:
+                out_dir = _get_session_logger().session_dir / "splits"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                csv_path = str(out_dir / f"{dataset_id}_{split_type}.csv")
+        else:
+            csv_path = _resolve_path(csv_save_path)
+
+        split_df = _split_save_dict_to_dataframe(split_result["save_dict"])
+        Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+        split_df.to_csv(csv_path, index=False)
+        csv_saved_to = str(Path(csv_path).resolve())
+
     def _split_meta(idx):
         meta: dict[str, Any] = {
             "n_samples": len(idx),
@@ -361,6 +419,8 @@ def split_dataset(
         "split_file_path": saved_to,
         # Backward-compatible alias used by existing callers.
         "saved_to":   saved_to,
+        "split_csv_file_path": csv_saved_to,
+        "csv_saved_to": csv_saved_to,
         "train":      _split_meta(train_idx),
         "val":        _split_meta(val_idx),
         "test":       _split_meta(test_idx),
