@@ -59,3 +59,6 @@ notebooks/data/gnn_dataset/
 splits/chembl_binary_gnn.pkl
 splits/chembl_binary_random.pkl
 data/processed/
+tests/chemagent/explainability/test_multiclass_shap_explainer.py
+src/chemagent/explainability/simple_shap_explainer.py
+src/chemagent/explainability/multiclass_shap_explainer.py

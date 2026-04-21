@@ -1,5 +1,6 @@
 """Unit tests for SHAPExplainer routing and value normalization logic."""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -82,9 +83,10 @@ def _build_test_explainer(shap_values: Any, expected_value: Any = 0.0) -> SHAPEx
 def test_sample_background_downsamples_to_requested_size():
     bg = np.arange(1000, dtype=np.float32).reshape(500, 2)
     sampled = SHAPExplainer._sample_background(bg, max_background=5)
+    expected = np.asarray(shap_module.shap.sample(bg, nsamples=5, random_state=0))
 
     assert sampled.shape == (5, 2)
-    assert np.array_equal(sampled[:, 0], np.array([0, 248, 498, 748, 998], dtype=np.float32))
+    assert np.array_equal(sampled, expected)
 
 
 def test_sample_background_raises_for_non_2d_input():
@@ -381,6 +383,16 @@ def test_explain_with_shap_raises_when_no_correct_predictions(tmp_path: Path):
         )
 
 
+def test_explain_smiles_with_shap_requires_split_file_path():
+    with pytest.raises(ValueError, match="split_file_path is required"):
+        shap_module.explain_smiles_with_shap(
+            model_path="unused.pkl",
+            smiles=["CCO"],
+            method="ECFP",
+            split_file_path="",
+        )
+
+
 def test_explain_smiles_with_shap_integration_uses_split_background_and_saves(
     tmp_path: Path,
     monkeypatch,
@@ -458,3 +470,146 @@ def test_explain_smiles_with_shap_integration_uses_split_background_and_saves(
     assert len(_FakeToolSHAPExplainer.init_backgrounds) == 1
     assert _FakeToolSHAPExplainer.init_backgrounds[0] is not None
     assert _FakeToolSHAPExplainer.init_backgrounds[0].shape == (3, 7)
+
+
+def _write_minimal_shap_payload(tmp_path: Path, smiles: str = "CCO", n_bits: int = 16) -> Path:
+    payload_path = tmp_path / "sample_shap.pkl"
+    payload = {
+        "shap_values": np.linspace(-0.4, 0.6, n_bits, dtype=float).reshape(1, -1),
+        "smiles": np.array([smiles]),
+        "radius": 2,
+        "n_bits": n_bits,
+    }
+    joblib.dump(payload, payload_path)
+    return payload_path
+
+
+def test_get_top_k_bit_environments_from_shap_returns_expected_structure(tmp_path: Path, monkeypatch):
+    shap_path = _write_minimal_shap_payload(tmp_path, smiles="CCO", n_bits=16)
+
+    monkeypatch.setattr(
+        shap_module,
+        "get_ecfp_morgan_generator_bit_info",
+        lambda smiles, radius, n_bits: {1: [(0, 0)]},
+    )
+    monkeypatch.setattr(
+        shap_module,
+        "get_top_k_bit_environments_with_contribution",
+        lambda mol, dict_bit_info, shapley_values, top_k, ranking: [
+            {
+                "bit": 1,
+                "contribution": 0.5,
+                "environments": [
+                    {
+                        "center_atom": 0,
+                        "radius": 0,
+                        "atom_indices": [0],
+                        "bond_indices": [],
+                        "environment_smiles": "C",
+                    }
+                ],
+            }
+        ],
+    )
+
+    result = shap_module.get_top_k_bit_environments_from_shap(
+        shap_values_path=str(shap_path),
+        sample_index=0,
+        top_k=5,
+        ranking="absolute",
+    )
+
+    assert result["sample_index"] == 0
+    assert result["smiles"] == "CCO"
+    assert result["n_selected_bits"] == 1
+    assert result["n_environments"] == 1
+    assert result["bit_environments"][0]["bit"] == 1
+
+
+def test_plot_top_k_parent_molecule_environments_from_shap_saves_image(tmp_path: Path, monkeypatch):
+    from PIL import Image as PILImage
+
+    shap_path = _write_minimal_shap_payload(tmp_path, smiles="CCO", n_bits=16)
+
+    monkeypatch.setattr(
+        shap_module,
+        "get_ecfp_morgan_generator_bit_info",
+        lambda smiles, radius, n_bits: {1: [(0, 0)]},
+    )
+    monkeypatch.setattr(
+        shap_module,
+        "render_top_k_parent_molecule_environment_highlights",
+        lambda **kwargs: PILImage.new("RGB", (20, 20), color="white"),
+    )
+
+    out = shap_module.plot_top_k_parent_molecule_environments_from_shap(
+        shap_values_path=str(shap_path),
+        sample_index=0,
+        top_k=3,
+        ranking="absolute",
+    )
+
+    assert isinstance(out, dict)
+    assert Path(out["image_path"]).exists()
+    # Ensure MCP can serialize this payload without custom-object handling.
+    json.dumps(out)
+
+
+def test_get_top_k_bit_environments_from_shap_uses_latest_payload_when_path_missing(
+    tmp_path: Path,
+    monkeypatch,
+):
+    session_dir = tmp_path / "session"
+    results_dir = session_dir / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    latest_payload = results_dir / "latest_shap.pkl"
+    joblib.dump(
+        {
+            "shap_values": np.linspace(-0.2, 0.8, 16, dtype=float).reshape(1, -1),
+            "smiles": np.array(["CCO"]),
+            "radius": 2,
+            "n_bits": 16,
+        },
+        latest_payload,
+    )
+
+    monkeypatch.setattr(
+        shap_module,
+        "_get_session_logger",
+        lambda: type("_Logger", (), {"session_dir": session_dir})(),
+    )
+    monkeypatch.setattr(
+        shap_module,
+        "get_ecfp_morgan_generator_bit_info",
+        lambda smiles, radius, n_bits: {1: [(0, 0)]},
+    )
+    monkeypatch.setattr(
+        shap_module,
+        "get_top_k_bit_environments_with_contribution",
+        lambda mol, dict_bit_info, shapley_values, top_k, ranking: [
+            {
+                "bit": 1,
+                "contribution": 0.5,
+                "environments": [
+                    {
+                        "center_atom": 0,
+                        "radius": 0,
+                        "atom_indices": [0],
+                        "bond_indices": [],
+                        "environment_smiles": "C",
+                    }
+                ],
+            }
+        ],
+    )
+
+    result = shap_module.get_top_k_bit_environments_from_shap(
+        sample_index=0,
+        top_k=5,
+        ranking="absolute",
+    )
+
+    assert result["sample_index"] == 0
+    assert result["smiles"] == "CCO"
+    assert result["shap_values_path"] == str(latest_payload)

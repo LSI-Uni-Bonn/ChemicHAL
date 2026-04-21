@@ -116,6 +116,595 @@ def assign_prediction_importance(bit_dict: Dict[int, List[List[int]]], weights: 
     return atom_contribution
 
 
+def get_most_important_bits_by_contribution(
+    shapley_values: np.ndarray,
+    top_k: int = 10,
+) -> Dict[str, List[Dict[str, float]]]:
+    """Return top positive and negative ECFP bits by SHAP contribution.
+
+    Args:
+    shapley_values:
+        1-D array of per-bit SHAP values for a single sample.
+    top_k:
+        Number of bits to return per sign (positive and negative).
+
+    Returns:
+    dict
+        ``{"positive": [{"bit": i, "contribution": v}, ...],
+           "negative": [{"bit": j, "contribution": w}, ...]}``.
+        Positive entries are sorted descending by contribution; negative entries
+        are sorted ascending (most negative first).
+    """
+    values = np.asarray(shapley_values, dtype=float)
+    if values.ndim != 1:
+        raise ValueError(
+            f"Expected 1D SHAP values for a single sample, got shape {values.shape}."
+        )
+    if top_k <= 0:
+        raise ValueError(f"top_k must be > 0, got {top_k}.")
+
+    pos_idx = np.flatnonzero(values > 0)
+    neg_idx = np.flatnonzero(values < 0)
+
+    pos_sorted = pos_idx[np.argsort(values[pos_idx])[::-1]][:top_k]
+    neg_sorted = neg_idx[np.argsort(values[neg_idx])][:top_k]
+
+    return {
+        "positive": [
+            {"bit": int(i), "contribution": float(values[i])} for i in pos_sorted
+        ],
+        "negative": [
+            {"bit": int(i), "contribution": float(values[i])} for i in neg_sorted
+        ],
+    }
+
+
+def get_top_k_bit_environments_with_contribution(
+    mol: Chem.Mol,
+    dict_bit_info: dict,
+    shapley_values: np.ndarray,
+    top_k: int = 10,
+    ranking: str = "absolute",
+) -> List[Dict[str, Any]]:
+    """Return top-k ECFP bit environments and their SHAP contributions.
+
+    Args:
+    mol:
+        RDKit molecule object for which bit environments were computed.
+    dict_bit_info:
+        Bit-info map for *mol*, as returned by
+        :func:`get_ecfp_morgan_generator_bit_info`.
+    shapley_values:
+        1-D array of per-bit SHAP values for one sample.
+    top_k:
+        Number of top bits to return.
+    ranking:
+        Ranking strategy: ``"absolute"`` (default), ``"positive"``, or
+        ``"negative"``.
+
+    Returns:
+    list of dict
+        One entry per selected bit with keys:
+        ``bit``, ``contribution``, and ``environments``.
+        Each environment contains:
+        ``center_atom``, ``radius``, ``atom_indices``, ``bond_indices``, and
+        ``environment_smiles``.
+        Environments are deduplicated using both
+        ``(atom_indices, bond_indices)`` and ``(radius, environment_smiles)``
+        so repeated symmetric fragments are not duplicated in outputs.
+    """
+    values = np.asarray(shapley_values, dtype=float)
+    if values.ndim != 1:
+        raise ValueError(
+            f"Expected 1D SHAP values for a single sample, got shape {values.shape}."
+        )
+    if top_k <= 0:
+        raise ValueError(f"top_k must be > 0, got {top_k}.")
+    if ranking not in {"absolute", "positive", "negative"}:
+        raise ValueError(
+            f"ranking must be one of ['absolute', 'positive', 'negative'], got {ranking!r}."
+        )
+
+    available_bits = np.array(sorted(dict_bit_info.keys()), dtype=int)
+    if available_bits.size == 0:
+        return []
+    if int(np.max(available_bits)) >= values.shape[0]:
+        raise ValueError(
+            "SHAP vector length is smaller than the largest bit index in dict_bit_info."
+        )
+
+    bit_values = values[available_bits]
+    if ranking == "positive":
+        mask = bit_values > 0
+        ranked_bits = available_bits[mask]
+        ranked_vals = bit_values[mask]
+        order = np.argsort(ranked_vals)[::-1]
+    elif ranking == "negative":
+        mask = bit_values < 0
+        ranked_bits = available_bits[mask]
+        ranked_vals = bit_values[mask]
+        order = np.argsort(ranked_vals)
+    else:
+        ranked_bits = available_bits
+        ranked_vals = bit_values
+        order = np.argsort(np.abs(ranked_vals))[::-1]
+
+    ranked_bits = ranked_bits[order][:top_k]
+    results: List[Dict[str, Any]] = []
+
+    for bit in ranked_bits:
+        matches = list(dict_bit_info[int(bit)])
+        if not matches:
+            continue
+        env_entries = []
+        seen_env_keys = set()
+        seen_env_info_keys = set()
+        for center_atom, radius in matches:
+            if radius == 0:
+                atom_indices = [int(center_atom)]
+                bond_indices: List[int] = []
+            else:
+                env = Chem.FindAtomEnvironmentOfRadiusN(
+                    mol,
+                    int(radius),
+                    int(center_atom),
+                    useHs=True,
+                )
+                amap = {}
+                _ = Chem.PathToSubmol(mol, env, atomMap=amap)
+                atom_indices = sorted(int(a) for a in amap)
+                bond_indices = sorted(int(b) for b in env)
+
+            env_key = (tuple(atom_indices), tuple(bond_indices))
+            if env_key in seen_env_keys:
+                continue
+            seen_env_keys.add(env_key)
+
+            env_smiles = Chem.MolFragmentToSmiles(
+                mol,
+                atomsToUse=atom_indices,
+                bondsToUse=bond_indices,
+                canonical=True,
+            )
+
+            env_info_key = (int(radius), env_smiles)
+            if env_info_key in seen_env_info_keys:
+                continue
+            seen_env_info_keys.add(env_info_key)
+
+            env_entries.append(
+                {
+                    "center_atom": int(center_atom),
+                    "radius": int(radius),
+                    "atom_indices": atom_indices,
+                    "bond_indices": bond_indices,
+                    "environment_smiles": env_smiles,
+                }
+            )
+
+        results.append(
+            {
+                "bit": int(bit),
+                "contribution": float(values[int(bit)]),
+                "environments": env_entries,
+            }
+        )
+
+    return results
+
+
+def _grid_image_to_pil_or_original(grid_image: Any) -> Any:
+    """Convert RDKit grid image outputs to PIL when possible."""
+    if isinstance(grid_image, bytes):
+        return Image.open(io.BytesIO(grid_image)).copy()
+    if isinstance(grid_image, Image.Image):
+        return grid_image
+
+    data_attr = getattr(grid_image, "data", None)
+    if isinstance(data_attr, (bytes, bytearray)):
+        return Image.open(io.BytesIO(bytes(data_attr))).copy()
+
+    return grid_image
+
+
+def render_top_k_bit_environments_image(
+    mol: Chem.Mol,
+    dict_bit_info: dict,
+    shapley_values: np.ndarray,
+    top_k: int = 10,
+    ranking: str = "absolute",
+    max_environments: Optional[int] = None,
+    mols_per_row: int = 4,
+    sub_img_size: tuple = (260, 210),
+) -> Any:
+    """Render top-k bit environments as a labeled molecule grid image.
+
+    Args:
+    mol:
+        RDKit molecule object.
+    dict_bit_info:
+        Bit-info map for *mol*, as returned by
+        :func:`get_ecfp_morgan_generator_bit_info`.
+    shapley_values:
+        1-D array of per-bit SHAP values for one sample.
+    top_k:
+        Number of top bits to consider.
+    ranking:
+        Ranking strategy: ``"absolute"`` (default), ``"positive"``, or
+        ``"negative"``.
+    max_environments:
+        Optional limit on how many environments are drawn in total.
+    mols_per_row:
+        Number of molecules per row in the grid image.
+    sub_img_size:
+        Size of each sub-image in pixels.
+
+    Returns:
+    Any
+        Grid image containing environment molecules with SHAP labels.
+        Typically a :class:`PIL.Image.Image`; in some notebook backends RDKit
+        may return an IPython display image object.
+    """
+    if max_environments is not None and max_environments <= 0:
+        raise ValueError(f"max_environments must be > 0 when provided, got {max_environments}.")
+    if mols_per_row <= 0:
+        raise ValueError(f"mols_per_row must be > 0, got {mols_per_row}.")
+
+    top_env = get_top_k_bit_environments_with_contribution(
+        mol=mol,
+        dict_bit_info=dict_bit_info,
+        shapley_values=shapley_values,
+        top_k=top_k,
+        ranking=ranking,
+    )
+
+    env_mols: List[Chem.Mol] = []
+    legends: List[str] = []
+
+    for item in top_env:
+        for env in item["environments"]:
+            bond_indices = [int(b) for b in env.get("bond_indices", [])]
+            atom_indices = [int(a) for a in env.get("atom_indices", [])]
+
+            if bond_indices:
+                env_mol = Chem.PathToSubmol(mol, bond_indices)
+            elif atom_indices:
+                atom_fragment_smiles = Chem.MolFragmentToSmiles(
+                    mol,
+                    atomsToUse=atom_indices,
+                    canonical=True,
+                    kekuleSmiles=True,
+                )
+                env_mol = Chem.MolFromSmiles(atom_fragment_smiles)
+            else:
+                env_mol = None
+
+            if env_mol is None:
+                continue
+
+            env_mols.append(env_mol)
+            legends.append(
+                "\n".join(
+                    [
+                        f"bit {item['bit']} | SHAP {item['contribution']:+.4f}",
+                        f"r={env['radius']}, center={env['center_atom']}",
+                    ]
+                )
+            )
+
+            if max_environments is not None and len(env_mols) >= max_environments:
+                break
+        if max_environments is not None and len(env_mols) >= max_environments:
+            break
+
+    if not env_mols:
+        raise ValueError("No valid bit environments available to render.")
+
+    grid_image = Draw.MolsToGridImage(
+        env_mols,
+        legends=legends,
+        molsPerRow=int(mols_per_row),
+        subImgSize=tuple(sub_img_size),
+        useSVG=False,
+        returnPNG=True,
+    )
+
+    return _grid_image_to_pil_or_original(grid_image)
+
+
+def render_top_positive_negative_bit_environments_images(
+    mol: Chem.Mol,
+    dict_bit_info: dict,
+    shapley_values: np.ndarray,
+    top_k: int = 10,
+    max_environments_per_sign: Optional[int] = None,
+    mols_per_row: int = 4,
+    sub_img_size: tuple = (260, 210),
+) -> Dict[str, Optional[Any]]:
+    """Render fragment environment grids split into positive and negative SHAP.
+
+    Args:
+    mol:
+        RDKit molecule object.
+    dict_bit_info:
+        Bit-info map for *mol*, as returned by
+        :func:`get_ecfp_morgan_generator_bit_info`.
+    shapley_values:
+        1-D array of per-bit SHAP values for one sample.
+    top_k:
+        Number of top bits per sign to consider.
+    max_environments_per_sign:
+        Optional cap for number of rendered environments per sign.
+    mols_per_row:
+        Number of molecules per row in each sign-specific grid.
+    sub_img_size:
+        Size of each sub-image in pixels.
+
+    Returns:
+    dict
+        ``{"positive": image_or_none, "negative": image_or_none}``.
+    """
+    values = np.asarray(shapley_values, dtype=float)
+    if values.ndim != 1:
+        raise ValueError(
+            f"Expected 1D SHAP values for a single sample, got shape {values.shape}."
+        )
+    if top_k <= 0:
+        raise ValueError(f"top_k must be > 0, got {top_k}.")
+
+    images: Dict[str, Optional[Any]] = {"positive": None, "negative": None}
+
+    if np.any(values > 0):
+        images["positive"] = render_top_k_bit_environments_image(
+            mol=mol,
+            dict_bit_info=dict_bit_info,
+            shapley_values=values,
+            top_k=top_k,
+            ranking="positive",
+            max_environments=max_environments_per_sign,
+            mols_per_row=mols_per_row,
+            sub_img_size=sub_img_size,
+        )
+
+    if np.any(values < 0):
+        images["negative"] = render_top_k_bit_environments_image(
+            mol=mol,
+            dict_bit_info=dict_bit_info,
+            shapley_values=values,
+            top_k=top_k,
+            ranking="negative",
+            max_environments=max_environments_per_sign,
+            mols_per_row=mols_per_row,
+            sub_img_size=sub_img_size,
+        )
+
+    return images
+
+
+def render_top_k_parent_molecule_environment_highlights(
+    mol: Chem.Mol,
+    dict_bit_info: dict,
+    shapley_values: np.ndarray,
+    top_k: int = 10,
+    ranking: str = "absolute",
+    max_environments: Optional[int] = None,
+    mols_per_row: int = 4,
+    sub_img_size: tuple = (320, 240),
+) -> Any:
+    """Render top-k environments as highlights on the full parent molecule.
+
+    Each tile in the returned grid is the full parent molecule with one
+    environment highlighted.
+
+    Args:
+    mol:
+        RDKit molecule object.
+    dict_bit_info:
+        Bit-info map for *mol*, as returned by
+        :func:`get_ecfp_morgan_generator_bit_info`.
+    shapley_values:
+        1-D array of per-bit SHAP values for one sample.
+    top_k:
+        Number of top bits to consider.
+    ranking:
+        Ranking strategy: ``"absolute"`` (default), ``"positive"``, or
+        ``"negative"``.
+    max_environments:
+        Optional cap for number of highlighted environments in total.
+    mols_per_row:
+        Number of molecules per row in the grid image.
+    sub_img_size:
+        Size of each sub-image in pixels.
+
+    Returns:
+    Any
+        Grid image, typically :class:`PIL.Image.Image`.
+    """
+    if max_environments is not None and max_environments <= 0:
+        raise ValueError(f"max_environments must be > 0 when provided, got {max_environments}.")
+    if mols_per_row <= 0:
+        raise ValueError(f"mols_per_row must be > 0, got {mols_per_row}.")
+
+    top_env = get_top_k_bit_environments_with_contribution(
+        mol=mol,
+        dict_bit_info=dict_bit_info,
+        shapley_values=shapley_values,
+        top_k=top_k,
+        ranking=ranking,
+    )
+
+    parent_mols: List[Chem.Mol] = []
+    legends: List[str] = []
+    highlight_atom_lists: List[List[int]] = []
+    highlight_bond_lists: List[List[int]] = []
+
+    for item in top_env:
+        for env in item["environments"]:
+            atom_indices = [int(a) for a in env.get("atom_indices", [])]
+            bond_indices = [int(b) for b in env.get("bond_indices", [])]
+            if not atom_indices and not bond_indices:
+                continue
+
+            parent_mols.append(Chem.Mol(mol))
+            highlight_atom_lists.append(atom_indices)
+            highlight_bond_lists.append(bond_indices)
+            legends.append(
+                "\n".join(
+                    [
+                        f"bit {item['bit']} | SHAP {item['contribution']:+.4f}",
+                        #f"r={env['radius']}, center={env['center_atom']}",
+                    ]
+                )
+            )
+
+            if max_environments is not None and len(parent_mols) >= max_environments:
+                break
+        if max_environments is not None and len(parent_mols) >= max_environments:
+            break
+
+    if not parent_mols:
+        raise ValueError("No valid bit environments available to render on parent molecule.")
+
+    grid_image = Draw.MolsToGridImage(
+        parent_mols,
+        legends=legends,
+        molsPerRow=int(mols_per_row),
+        subImgSize=tuple(sub_img_size),
+        highlightAtomLists=highlight_atom_lists,
+        highlightBondLists=highlight_bond_lists,
+        useSVG=False,
+        returnPNG=True,
+    )
+
+    return _grid_image_to_pil_or_original(grid_image)
+
+
+def map_top_k_features_to_parent_molecule(
+    mol: Chem.Mol,
+    dict_bit_info: dict,
+    shapley_values: np.ndarray,
+    top_k: int = 10,
+    ranking: str = "absolute",
+) -> Dict[str, Any]:
+    """Map top-k bit environments into one combined parent-molecule highlight map.
+
+    This aggregates all selected top-k environments at once and sums their
+    SHAP contributions into per-atom and per-bond scores.
+
+    Args:
+    mol:
+        RDKit molecule object.
+    dict_bit_info:
+        Bit-info map for *mol*, as returned by
+        :func:`get_ecfp_morgan_generator_bit_info`.
+    shapley_values:
+        1-D array of per-bit SHAP values for one sample.
+    top_k:
+        Number of top bits to consider.
+    ranking:
+        Ranking strategy: ``"absolute"`` (default), ``"positive"``, or
+        ``"negative"``.
+
+    Returns:
+    dict
+        ``{"selected_bits", "atom_contributions", "bond_contributions",
+        "highlight_atoms", "highlight_bonds"}``.
+    """
+    top_env = get_top_k_bit_environments_with_contribution(
+        mol=mol,
+        dict_bit_info=dict_bit_info,
+        shapley_values=shapley_values,
+        top_k=top_k,
+        ranking=ranking,
+    )
+
+    atom_scores: Dict[int, float] = defaultdict(float)
+    bond_scores: Dict[int, float] = defaultdict(float)
+
+    for item in top_env:
+        contribution = float(item["contribution"])
+        for env in item["environments"]:
+            for atom_idx in env.get("atom_indices", []):
+                atom_scores[int(atom_idx)] += contribution
+            for bond_idx in env.get("bond_indices", []):
+                bond_scores[int(bond_idx)] += contribution
+
+    selected_bits = [int(item["bit"]) for item in top_env]
+    highlight_atoms = sorted(atom_scores.keys())
+    highlight_bonds = sorted(bond_scores.keys())
+
+    return {
+        "selected_bits": selected_bits,
+        "atom_contributions": dict(atom_scores),
+        "bond_contributions": dict(bond_scores),
+        "highlight_atoms": highlight_atoms,
+        "highlight_bonds": highlight_bonds,
+    }
+
+
+def plot_bit_contribution_summary(
+    bit_summary: Dict[str, List[Dict[str, float]]],
+    title: str = "Top SHAP Bit Contributions",
+    figsize: tuple = (15, 6),
+    positive_color: str = "#d62728",
+    negative_color: str = "#1f77b4",
+) -> Any:
+    """Plot top positive and negative SHAP bit contributions as a bar chart.
+
+    Args:
+    bit_summary:
+        Output dictionary from :func:`get_most_important_bits_by_contribution`.
+    title:
+        Chart title.
+    figsize:
+        Matplotlib figure size.
+    positive_color:
+        Bar color for positive contributions.
+    negative_color:
+        Bar color for negative contributions.
+
+    Returns:
+    matplotlib.axes.Axes
+        Axes containing the horizontal contribution bar plot.
+    """
+    positive = bit_summary.get("positive", [])
+    negative = bit_summary.get("negative", [])
+
+    records = []
+    for item in negative + positive:
+        bit = int(item["bit"])
+        contribution = float(item["contribution"])
+        records.append((f"{bit}", contribution))
+
+    if not records:
+        raise ValueError("No bit contributions found to plot.")
+
+    labels = [r[0] for r in records]
+    values = np.asarray([r[1] for r in records], dtype=float)
+    order = np.argsort(values)
+
+    labels_sorted = [labels[i] for i in order]
+    values_sorted = values[order]
+    colors = [negative_color if v < 0 else positive_color for v in values_sorted]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.barh(labels_sorted, values_sorted, color=colors)
+    ax.axvline(0.0, color="black", linewidth=1)
+    ax.set_xlabel("SHAP contribution")
+    ax.set_ylabel("Fingerprint bit")
+    ax.set_title(title)
+
+    max_abs = float(np.max(np.abs(values_sorted)))
+    text_offset = 0.02 * max_abs if max_abs > 0 else 0.01
+    for i, value in enumerate(values_sorted):
+        x = value + text_offset if value >= 0 else value - text_offset
+        ha = "left" if value >= 0 else "right"
+        ax.text(x, i, f"{value:.4f}", va="center", ha=ha, fontsize=9)
+
+    fig.tight_layout()
+    return ax
+
+
 def shap_to_atom_weight(mol: Chem.Mol, dict_bit_info: dict, shapley_values: np.ndarray) -> List[float]:
     """Compute a per-atom SHAP weight for every atom in *mol*.
 

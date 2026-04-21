@@ -7,6 +7,22 @@
         "/^& \"c:/Users/janela/OneDrive - uni-bonn\\.de/Code/AI-Agent-for-Compound-Selectivity-Prediction-and-Explainability/\\.venv/Scripts/python\\.exe\" -m pytest tests/chemagent/explainability/test_shap_explainer\\.py -q$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^& \"c:/Users/janela/OneDrive - uni-bonn\\.de/Code/AI-Agent-for-Compound-Selectivity-Prediction-and-Explainability/\\.venv/Scripts/python\\.exe\" -m pytest tests/chemagent/explainability/test_shap_explainer\\.py tests/chemagent/explainability/test_shap_explainer_dnn\\.py tests/chemagent/explainability/test_multiclass_shap_explainer\\.py -q$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git restore --source=HEAD --worktree -- \"src/chemagent/explainability/shap_explainer\\.py\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^& \"c:/Users/janela/OneDrive - uni-bonn\\.de/Code/AI-Agent-for-Compound-Selectivity-Prediction-and-Explainability/\\.venv/Scripts/python\\.exe\" -m pytest tests/chemagent/explainability/test_mol_shap_draw\\.py -q$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\$i=1; Get-Content \"notebooks/shap_generation_and_explanations\\.ipynb\" \\| ForEach-Object \\{ \"\\{0,6\\}: \\{1\\}\" -f \\$i, \\$_; \\$i\\+\\+ \\} \\| Select-Object -Skip 2408 -First 95$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }

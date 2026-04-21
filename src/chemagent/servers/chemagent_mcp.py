@@ -116,7 +116,13 @@ from chemagent.ml.gnn_training_tools import (
 )
 from chemagent.plots.display import show_plot
 from chemagent.plots.plot_tools import plot_classification_results, plot_regression_results
-from chemagent.explainability.shap_explainer import explain_with_shap, explain_smiles_with_shap, plot_shap_mol
+from chemagent.explainability.shap_explainer import (
+  explain_with_shap,
+  explain_smiles_with_shap,
+  plot_shap_mol,
+  get_top_k_bit_environments_from_shap,
+  plot_top_k_parent_molecule_environments_from_shap,
+)
 from chemagent.explainability.molanchor_tools import (
     explain_with_molanchor,
     identify_recurrent_anchor_rules,
@@ -217,6 +223,8 @@ _register(show_plot)
 _register(explain_with_shap)
 _register(explain_smiles_with_shap)
 _register(plot_shap_mol)
+_register(get_top_k_bit_environments_from_shap)
+_register(plot_top_k_parent_molecule_environments_from_shap)
 _register(explain_with_molanchor)
 _register(identify_recurrent_anchor_rules)
 _register(get_molanchor_info)

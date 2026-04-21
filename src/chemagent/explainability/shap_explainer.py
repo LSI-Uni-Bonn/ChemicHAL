@@ -37,13 +37,15 @@ from typing import Any, Literal, Optional
 import joblib
 import numpy as np
 import shap
-from mcp.server.fastmcp import Image
+from mcp.server.fastmcp import Image as MCPImage
 from rdkit import Chem
 
 from chemagent.datasets.featurizer import available_featurizers
 from chemagent.explainability.mol_shap_draw import (
     get_atom_wise_weight_map,
     get_ecfp_morgan_generator_bit_info,
+    get_top_k_bit_environments_with_contribution,
+    render_top_k_parent_molecule_environment_highlights,
     shap_to_atom_weight,
 )
 from chemagent.session_utils import (
@@ -267,8 +269,8 @@ class SHAPExplainer:
         n_samples = int(bg.shape[0])
         if n_samples <= max_background:
             return bg
-        idx = np.linspace(0, n_samples - 1, num=max_background, dtype=int)
-        return bg[idx]
+        sampled = shap.sample(bg, nsamples=max_background, random_state=0)
+        return np.asarray(sampled)
 
     @staticmethod
     def _build_explainer(model, background,):
@@ -300,6 +302,124 @@ class SHAPExplainer:
         return shap.KernelExplainer(model.predict, sampled_bg)
 
 
+def _load_split_data_with_required_background(
+    split_file_path: str,
+) -> tuple[dict[str, Any], np.ndarray, str]:
+    """Load split data and enforce presence of 2D train_features background."""
+    if split_file_path is None or not str(split_file_path).strip():
+        raise ValueError(
+            "split_file_path is required and must point to a split .pkl file "
+            "from split_dataset() so SHAP background data is always available."
+        )
+
+    resolved_path = _resolve_path(str(split_file_path))
+    split_path = Path(resolved_path)
+    if not split_path.exists():
+        raise ValueError(
+            f"split_file_path does not exist: {resolved_path}. "
+            "Provide a valid split .pkl path from split_dataset()."
+        )
+
+    split_data = joblib.load(split_path)
+    if not isinstance(split_data, dict):
+        raise ValueError(
+            "split_file_path must reference a dict-like split payload produced by split_dataset()."
+        )
+    if "train_features" not in split_data:
+        raise ValueError(
+            "split_file_path must contain 'train_features' to provide SHAP background data."
+        )
+
+    background = np.asarray(split_data["train_features"])
+    if background.ndim != 2:
+        raise ValueError(
+            f"Expected 2D train_features in split file, got shape {background.shape}."
+        )
+
+    return split_data, background, str(split_path)
+
+
+def _find_latest_shap_payload_path() -> Optional[Path]:
+    """Find the most recent SHAP payload file from session/workspace logs."""
+    candidates: list[Path] = []
+
+    session_dir = _get_session_logger().session_dir
+    session_results = session_dir / "results"
+    if session_results.exists():
+        candidates.extend(session_results.glob("*_shap.pkl"))
+
+    logs_root = Path(_resolve_path("data/logs"))
+    if logs_root.exists():
+        candidates.extend(logs_root.glob("session_*/results/*_shap.pkl"))
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _load_shap_payload(shap_values_path: Optional[str] = None) -> tuple[dict[str, Any], str, np.ndarray]:
+    """Load SHAP payload produced by explain_with_shap/explain_smiles_with_shap."""
+    if shap_values_path is None or not str(shap_values_path).strip():
+        payload_path = _find_latest_shap_payload_path()
+        if payload_path is None:
+            raise ValueError(
+                "No SHAP payload file found. Provide shap_values_path or run explain_with_shap/"
+                "explain_smiles_with_shap first."
+            )
+    else:
+        resolved_path = _resolve_path(str(shap_values_path))
+        payload_path = Path(resolved_path)
+        if not payload_path.exists():
+            raise ValueError(f"shap_values_path does not exist: {resolved_path}.")
+
+    payload = joblib.load(payload_path)
+    if not isinstance(payload, dict):
+        raise ValueError("SHAP payload must be a dict produced by explain_with_shap/explain_smiles_with_shap.")
+    if "shap_values" not in payload:
+        raise ValueError("SHAP payload is missing required key 'shap_values'.")
+
+    shap_values = np.asarray(payload["shap_values"], dtype=float)
+    if shap_values.ndim == 1:
+        shap_values = shap_values.reshape(1, -1)
+    if shap_values.ndim != 2:
+        raise ValueError(
+            f"Expected shap_values to be 1D/2D, got shape {shap_values.shape}."
+        )
+
+    return payload, str(payload_path), shap_values
+
+
+def _get_shap_sample_context(
+    payload: dict[str, Any],
+    shap_values: np.ndarray,
+    sample_index: int,
+) -> tuple[str, np.ndarray, int, int]:
+    """Extract one sample (smiles + SHAP vector + fingerprint params)."""
+    smiles_arr = payload.get("smiles")
+    if smiles_arr is None:
+        raise ValueError(
+            "No SMILES found in SHAP payload. Re-run explain_with_shap on a split with smiles, "
+            "or use explain_smiles_with_shap."
+        )
+
+    if sample_index < 0 or sample_index >= shap_values.shape[0]:
+        raise ValueError(
+            f"sample_index {sample_index} out of range for {shap_values.shape[0]} samples."
+        )
+
+    smiles_np = np.asarray(smiles_arr)
+    if smiles_np.shape[0] != shap_values.shape[0]:
+        raise ValueError(
+            "SHAP payload has inconsistent lengths between smiles and shap_values."
+        )
+
+    smiles = str(smiles_np[sample_index])
+    shap_vector = np.asarray(shap_values[sample_index], dtype=float)
+    radius = int(payload.get("radius", 2))
+    n_bits = int(shap_vector.shape[0])
+    return smiles, shap_vector, radius, n_bits
+
+
 def explain_with_shap(
     model_path: str,
     split_file_path: str,
@@ -308,42 +428,55 @@ def explain_with_shap(
     correct_only: bool = True,
     save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compute per-compound, per-feature SHAP values for a trained tabular model.
+    """Compute SHAP values for compounds already present in a split file.
 
-    Loads the model and split from disk, predicts on the chosen partition,
-    optionally filters to correctly predicted instances, computes SHAP values,
-    and saves the results (SHAP matrix, SMILES, labels, fingerprint params)
-    to a .pkl file for downstream visualisation.
+    When to use:
+        - You already trained a tabular model and have a split .pkl from
+          split_dataset().
+        - You want explanations for many compounds from train/val/test at once.
+        - You want one reusable SHAP payload file for downstream visual tools.
 
-    By default only correctly predicted instances are explained (correct_only=True).
-    Pass correct_only=False to explain all instances.
+    When not to use:
+        - You only have ad-hoc chat SMILES strings: use
+          explain_smiles_with_shap() instead.
+        - The model is a GNN checkpoint (.pt/.pth): use
+          explain_gnn_with_edgeshaper().
 
-    Workflow: check_training → THIS TOOL → plot_shap_mol
+    Typical workflow:
+        check_training() -> explain_with_shap() -> plot_shap_mol()
+        Optional next steps:
+        get_top_k_bit_environments_from_shap() and
+        plot_top_k_parent_molecule_environments_from_shap().
 
-    Routing note:
-        Use this only for tabular sklearn models (.pkl/.joblib) trained on
-        fingerprint features. If the model is a GNN checkpoint (.pt/.pth),
-        use explain_gnn_with_edgeshaper instead.
+    Behavior:
+        - Loads model and split from disk.
+        - Predicts on the selected split partition.
+        - Optionally filters to correctly predicted instances only.
+        - Computes SHAP values and writes a payload .pkl containing SHAP values,
+          SMILES (if available), labels, and fingerprint metadata.
 
     Args:
-        model_path: Path to .pkl model from train_model() / check_training().
-        split_file_path: Path to the .pkl split file from split_dataset().
-        split: Partition to explain — "test" (default), "train", or "val".
-        n_bits: Bit vector size used when computing ECFP features (default 2048).
-                Must match the n_bits passed to compute_features().
-        correct_only: If True (default), restrict SHAP computation to correctly
-                      predicted instances. If False, explain all instances.
-        save_path: Output .pkl path. Defaults to <session>/results/<stem>_<split>_shap.pkl.
+        model_path: Path to a tabular sklearn-style model (.pkl/.joblib),
+            usually from train_model()/check_training().
+        split_file_path: Path to split .pkl from split_dataset(). Must contain
+            train_features, which are always used as SHAP background.
+        split: Which partition to explain: "test" (default), "train", or "val".
+        n_bits: Fingerprint size metadata saved in output payload. Should match
+            feature generation settings.
+        correct_only: If True (default), explain only correct predictions.
+            If False, explain all rows in the selected split.
+        save_path: Optional output .pkl path. Defaults to
+            <session>/results/<model_stem>_<split>_shap.pkl.
 
     Returns:
-        shap_values_path, n_samples, n_samples_total, n_correct, correct_only,
-        n_features, expected_value, mean_abs_shap, has_smiles, next_step.
+        JSON-serializable summary including shap_values_path and dataset stats.
+        The saved shap_values_path is the primary input for follow-up SHAP
+        visualization tools.
     """
 
-    split_data  = joblib.load(split_file_path)
+    split_data, X_train, split_file_path = _load_split_data_with_required_background(split_file_path)
     X_all       = np.array(split_data[f"{split}_features"])
     y_all       = np.array(split_data[f"{split}_labels"])
-    X_train     = np.array(split_data["train_features"])  # background for KernelExplainer
 
     model        = joblib.load(model_path)
     y_pred       = model.predict(X_all)
@@ -412,6 +545,7 @@ def explain_with_shap(
     joblib.dump(save_dict, save_path)
 
     return {
+        "split_file_path":          split_file_path,
         "shap_values_path":          save_path,
         "n_samples":                 int(shap_values.shape[0]),
         "n_samples_total":           int(X_all.shape[0]),
@@ -423,7 +557,6 @@ def explain_with_shap(
         "expected_values_selected":  expected_values_selected.tolist(),
         "expected_value_classes":    class_labels.tolist(),
         "expected_value_mode":       expected_value_mode,
-        "mean_abs_shap":             float(np.abs(shap_values).mean()),
         "has_smiles":                smiles_key in split_data,
         "next_step": (
             f"Call plot_shap_mol('{save_path}') to visualise "
@@ -435,60 +568,61 @@ def explain_with_shap(
 def explain_smiles_with_shap(
     model_path: str,
     smiles: list[str],
+    split_file_path: str,
     method: str = "ECFP",
-    split_file_path: Optional[str] = None,
     n_bits: int = 2048,
     radius: int = 2,
     featurizer_kwargs: Optional[dict] = None,
     save_path: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compute SHAP values for one or more SMILES strings with a tabular model.
+    """Compute SHAP values for ad-hoc SMILES inputs with a tabular model.
 
-    Use this when you have a SMILES string from the chat UI and want to understand
-    the model's prediction — no labelled split file or ground-truth label needed.
+    When to use:
+        - You have one or more SMILES from chat and want local explanations now.
+        - You do not need to explain an entire split partition.
 
-    Featurizes each SMILES with any registered fingerprint method (default ECFP),
-    runs model prediction, and computes per-feature SHAP values. Saves a .pkl that
-    is directly usable by plot_shap_mol() for atom-level heatmap visualisation
-    (ECFP/Morgan only; other methods produce SHAP values but atom mapping is skipped).
+    When not to use:
+        - You want explanations for many compounds already stored in a split:
+          use explain_with_shap().
+        - The model is a GNN checkpoint (.pt/.pth): use
+          explain_gnn_with_edgeshaper().
 
-    The labels stored in the output file are the model's own predictions
-    (class 0 or 1), not ground-truth labels — filenames/summaries will reflect
-    the predicted class.
+    Typical workflow:
+        check_training() -> explain_smiles_with_shap() -> plot_shap_mol()
+        Optional next steps:
+        get_top_k_bit_environments_from_shap() and
+        plot_top_k_parent_molecule_environments_from_shap().
 
-    Workflow: check_training → THIS TOOL → plot_shap_mol
-
-    Routing note:
-        This tool is for tabular sklearn models (.pkl/.joblib). For GNN
-        prediction explanations, use explain_gnn_with_edgeshaper.
+    Behavior:
+        - Featurizes input SMILES using a selected registered fingerprint method.
+        - Loads training background from split_file_path for SHAP baselines.
+        - Predicts classes and computes SHAP values per predicted class.
+        - Saves SHAP payload .pkl for downstream plotting.
+        - Stored labels are model predictions (not ground-truth labels).
 
     Args:
-        model_path: Path to .pkl model from train_model() / check_training().
-        smiles: List of one or more SMILES strings to explain.
-                Single compound example: ["CC(=O)Oc1ccccc1C(=O)O"]
-        method: Featurization method (default "ECFP"). Call list_featurizers() to
-                see all available methods. Must match the method used to train the model.
-        split_file_path: Optional path to a split .pkl from split_dataset(). When
-            provided the training features are used as the SHAP background (required
-            for non-tree models such as SVC). The feature dimension of the split
-            overrides n_bits automatically.
-        n_bits: Fingerprint bit-vector size (default 2048). Ignored when
-            split_file_path is provided (inferred from split dimensions).
-        radius: Morgan radius for ECFP (default 2 = ECFP4). Ignored by methods
-            that do not accept a radius parameter.
-        featurizer_kwargs: Additional method-specific keyword arguments forwarded
-            to the featurizer, e.g. {"min_path": 1} for RDKitFP. n_bits and radius
-            are merged in automatically and can be overridden here.
-        save_path: Output .pkl path.
-            Defaults to <session>/results/<model_stem>_smiles_shap.pkl.
+        model_path: Path to tabular model (.pkl/.joblib).
+        smiles: One or more SMILES to explain.
+        split_file_path: Required split .pkl from split_dataset() used for
+            SHAP background. This is mandatory.
+        method: Featurizer name (default "ECFP"). Should match model training.
+        n_bits: Desired fingerprint length metadata; overridden by split
+            background feature width.
+        radius: Morgan radius for ECFP-compatible featurizers.
+        featurizer_kwargs: Extra keyword arguments forwarded to featurizer.
+        save_path: Optional output .pkl path. Defaults to
+            <session>/results/<model_stem>_smiles_shap.pkl.
 
     Returns:
-        shap_values_path, n_samples, n_features, expected_value,
-        predictions, mean_abs_shap, shap_sum, method, has_smiles, next_step.
+        JSON-serializable summary including shap_values_path and prediction
+        metadata. shap_values_path should be passed to downstream SHAP tools.
     """
 
     if not smiles:
         raise ValueError("smiles list must contain at least one SMILES string.")
+
+    split_data, background, split_file_path = _load_split_data_with_required_background(split_file_path)
+    n_bits = int(background.shape[1])
 
     featurizers = available_featurizers()
     if method not in featurizers:
@@ -498,13 +632,6 @@ def explain_smiles_with_shap(
             "Call list_featurizers() for details."
         )
     fn = featurizers[method]
-
-    #Background / infer n_bits from split file
-    background: Optional[np.ndarray] = None
-    if split_file_path is not None:
-        split_data = joblib.load(split_file_path)
-        background = np.array(split_data["train_features"])
-        n_bits     = int(background.shape[1])  # authoritative source
 
     #Build keyword args accepted by this featurizer
     sig = _inspect.signature(fn)
@@ -549,9 +676,8 @@ def explain_smiles_with_shap(
         "radius":                   base_kwargs.get("radius", radius),
         "featurizer_kwargs":        base_kwargs,
         "source":                   "explain_smiles",
+        "split_file_path":          split_file_path,
     }
-    if split_file_path is not None:
-        save_dict["split_file_path"] = split_file_path
 
     if save_path is None:
         out_dir   = _get_session_logger().session_dir / "results"
@@ -564,6 +690,7 @@ def explain_smiles_with_shap(
     joblib.dump(save_dict, save_path)
 
     return {
+        "split_file_path":          split_file_path,
         "shap_values_path":          save_path,
         "n_samples":                 int(shap_values.shape[0]),
         "n_features":                int(shap_values.shape[1]),
@@ -573,7 +700,6 @@ def explain_smiles_with_shap(
         "expected_value_classes":    class_labels.tolist(),
         "expected_value_mode":       expected_value_mode,
         "prediction":                y_pred.tolist()[0],
-        "mean_abs_shap":             float(np.abs(shap_values).mean()),
         "shap_sum":                  float(shap_values.sum()),
         "method":                    method,
         "has_smiles":                True,
@@ -592,27 +718,37 @@ def plot_shap_mol(
     mol_size: Optional[list[int]] = None,
     cmap: str = "coolwarm",
 ) -> list:
-    """Render atom-level SHAP heatmaps on molecular structures.
+    """Render atom-level SHAP heatmaps from a saved SHAP payload.
 
-    Reads SHAP values and SMILES from the .pkl produced by explain_with_shap()
-    or explain_smiles(), maps per-bit SHAP values onto atom positions using a
-    Gaussian kernel, and returns one heatmap image per requested compound.
+    When to use:
+        - After explain_with_shap() or explain_smiles_with_shap().
+        - You want per-compound atom heatmaps for visual interpretation.
 
-    Workflow: explain_with_shap / explain_smiles → THIS TOOL
+    When not to use:
+        - You need top-k fragment environments or combined parent-molecule
+          overlays. Use get_top_k_bit_environments_from_shap() and
+          plot_top_k_parent_molecule_environments_from_shap().
 
-    Each image is also saved to <session>/plots/ and returned inline so it
-    renders directly in MCP-compatible chat interfaces.
+    Input expectations:
+        - shap_values_path must point to a SHAP payload .pkl containing SMILES.
+        - Atom mapping is ECFP/Morgan-based via bit environment expansion.
+
+    Output behavior:
+        - Saves PNG images to <session>/plots/.
+        - Returns a list with:
+          1) summary dict
+          2) one inline MCP Image object per rendered molecule.
 
     Args:
-        shap_values_path: Path to the .pkl produced by explain_with_shap().
-        sample_indices: Compound indices to visualise (0-based within the split).
-                        Defaults to the first 5 compounds.
-        mol_size: Image dimensions [width, height] in pixels (default [400, 300]).
-        cmap: Matplotlib colormap name (default "coolwarm").
+        shap_values_path: Path to .pkl from explain_with_shap() or
+            explain_smiles_with_shap().
+        sample_indices: 0-based rows to visualize. Defaults to first 5 rows.
+        mol_size: [width, height] in pixels. Default (400, 300).
+        cmap: Matplotlib colormap name.
 
     Returns:
-        List starting with a summary dict (index → path/smiles/label),
-        followed by inline Image objects that render directly in the chat UI.
+        A mixed list [summary_dict, MCPImage, ...]. This is optimized for
+        clients that support inline image objects.
     """
 
     data        = joblib.load(shap_values_path)
@@ -666,6 +802,175 @@ def plot_shap_mol(
             "label":  label,
             "cid":    cid,
         }
-        images.append(Image(path=img_path))
+        images.append(MCPImage(path=img_path))
 
     return [summary, *images]
+
+
+def get_top_k_bit_environments_from_shap(
+    shap_values_path: Optional[str] = None,
+    sample_index: int = 0,
+    top_k: int = 10,
+    ranking: Literal["absolute", "positive", "negative"] = "absolute",
+) -> dict[str, Any]:
+    """Return top-k fingerprint-bit environments for one explained sample.
+
+    When to use:
+        - You want structured, text-friendly explanation data rather than images.
+        - You need atom_indices/bond_indices for downstream custom rendering
+          or rule analysis.
+
+    When not to use:
+        - You want a direct parent-molecule overlay image. Use
+          plot_top_k_parent_molecule_environments_from_shap().
+
+    Workflow:
+        explain_with_shap()/explain_smiles_with_shap() -> this tool
+
+    Args:
+        shap_values_path: Optional SHAP payload .pkl path. If omitted, the
+            newest available *_shap.pkl is auto-selected.
+        sample_index: 0-based row index in payload.
+        top_k: Number of bits to select.
+        ranking: "absolute", "positive", or "negative".
+
+    Returns:
+        JSON-serializable dict with metadata and bit_environments containing
+        per-bit contribution values and deduplicated fragment environments.
+    """
+    payload, resolved_path, shap_values = _load_shap_payload(shap_values_path)
+    smiles, shap_vector, radius, n_bits = _get_shap_sample_context(
+        payload,
+        shap_values,
+        sample_index,
+    )
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Invalid SMILES at sample_index={sample_index}: {smiles!r}")
+
+    bit_info = get_ecfp_morgan_generator_bit_info(smiles, radius=radius, n_bits=n_bits)
+    top_env = get_top_k_bit_environments_with_contribution(
+        mol=mol,
+        dict_bit_info=bit_info,
+        shapley_values=shap_vector,
+        top_k=top_k,
+        ranking=ranking,
+    )
+
+    n_env = int(sum(len(item.get("environments", [])) for item in top_env))
+    return {
+        "shap_values_path": resolved_path,
+        "sample_index": int(sample_index),
+        "smiles": smiles,
+        "top_k": int(top_k),
+        "ranking": ranking,
+        "n_selected_bits": int(len(top_env)),
+        "n_environments": n_env,
+        "bit_environments": top_env,
+    }
+
+
+def plot_top_k_parent_molecule_environments_from_shap(
+    shap_values_path: Optional[str] = None,
+    sample_index: int = 0,
+    top_k: int = 10,
+    ranking: Literal["absolute", "positive", "negative"] = "absolute",
+    max_environments: Optional[int] = 12,
+    mols_per_row: int = 4,
+    sub_img_size: Optional[list[int]] = None,
+    output_path: Optional[str] = None,
+) -> dict[str, Any]:
+    """Render top-k SHAP fragment environments as parent-molecule overlays.
+
+    When to use:
+        - You already have a SHAP payload and want visual context for the most
+          influential fragment environments on the full molecule.
+        - You need a serialization-safe response that only returns metadata and
+          file paths (no inline custom image objects).
+
+    When not to use:
+        - You only need structured environment data. Use
+          get_top_k_bit_environments_from_shap().
+        - You need atom heatmaps for full SHAP vectors. Use plot_shap_mol().
+
+    Workflow:
+        explain_with_shap()/explain_smiles_with_shap() -> this tool ->
+        show_plot(image_path)
+
+    Behavior:
+        - Creates one tile per selected environment with parent-molecule
+          highlighting.
+        - Saves PNG to output_path or <session>/plots/topk_parent_env_sampleN.png.
+        - Returns a JSON-serializable summary dict.
+
+    Args:
+        shap_values_path: Optional SHAP payload .pkl path. Auto-selects latest
+            payload when omitted.
+        sample_index: 0-based row index in payload.
+        top_k: Number of bits to consider.
+        ranking: "absolute", "positive", or "negative".
+        max_environments: Optional cap on rendered environment tiles.
+        mols_per_row: Grid width.
+        sub_img_size: Optional [width, height] for each tile.
+        output_path: Optional explicit PNG output path.
+
+    Returns:
+        JSON-serializable dict with image_path and rendering metadata.
+    """
+    payload, resolved_path, shap_values = _load_shap_payload(shap_values_path)
+    smiles, shap_vector, radius, n_bits = _get_shap_sample_context(
+        payload,
+        shap_values,
+        sample_index,
+    )
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Invalid SMILES at sample_index={sample_index}: {smiles!r}")
+
+    if sub_img_size is None:
+        size = (320, 240)
+    else:
+        if len(sub_img_size) != 2:
+            raise ValueError("sub_img_size must contain exactly two integers: [width, height].")
+        size = (int(sub_img_size[0]), int(sub_img_size[1]))
+
+    bit_info = get_ecfp_morgan_generator_bit_info(smiles, radius=radius, n_bits=n_bits)
+    image = render_top_k_parent_molecule_environment_highlights(
+        mol=mol,
+        dict_bit_info=bit_info,
+        shapley_values=shap_vector,
+        top_k=top_k,
+        ranking=ranking,
+        max_environments=max_environments,
+        mols_per_row=mols_per_row,
+        sub_img_size=size,
+    )
+
+    if output_path is None:
+        out_dir = _get_session_logger().session_dir / "plots"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"topk_parent_env_sample{sample_index}.png"
+    else:
+        out_path = Path(_resolve_path(output_path))
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if hasattr(image, "save"):
+        image.save(out_path)
+    elif isinstance(image, (bytes, bytearray)):
+        out_path.write_bytes(bytes(image))
+    else:
+        raise TypeError("Rendered image output is not a supported saveable type.")
+
+    summary = {
+        "shap_values_path": resolved_path,
+        "sample_index": int(sample_index),
+        "smiles": smiles,
+        "top_k": int(top_k),
+        "ranking": ranking,
+        "image_path": str(out_path),
+        "next_step": "Use show_plot(image_path) to display this artifact in chat.",
+    }
+    return summary
+

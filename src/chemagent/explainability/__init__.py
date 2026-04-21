@@ -14,6 +14,13 @@ Public API
 from .shap_explainer import SHAPExplainer
 from .mol_shap_draw import (
     get_ecfp_morgan_generator_bit_info,
+    get_most_important_bits_by_contribution,
+    get_top_k_bit_environments_with_contribution,
+    render_top_k_bit_environments_image,
+  render_top_positive_negative_bit_environments_images,
+  render_top_k_parent_molecule_environment_highlights,
+    map_top_k_features_to_parent_molecule,
+    plot_bit_contribution_summary,
     shap_to_atom_weight,
     get_atom_wise_weight_map,
 )
@@ -30,6 +37,13 @@ def __getattr__(name: str):
 __all__ = [
     "SHAPExplainer",
     "get_ecfp_morgan_generator_bit_info",
+    "get_most_important_bits_by_contribution",
+    "get_top_k_bit_environments_with_contribution",
+    "render_top_k_bit_environments_image",
+    "render_top_positive_negative_bit_environments_images",
+    "render_top_k_parent_molecule_environment_highlights",
+    "map_top_k_features_to_parent_molecule",
+    "plot_bit_contribution_summary",
     "shap_to_atom_weight",
     "get_atom_wise_weight_map",
     "MolecularAnchor",
