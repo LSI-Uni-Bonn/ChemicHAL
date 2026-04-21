@@ -83,7 +83,7 @@ class MLModel:
                     model=self.model,
                     param_grid=self.h_parameters,
                     features=data.features,
-                    labels=data.class_labels,
+                    labels=data.labels,
                     cv_fold=cv_fold,
                     scoring=opt_metric,
                     stratified=(reg_class != "regression"),

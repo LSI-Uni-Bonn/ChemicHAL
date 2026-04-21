@@ -121,7 +121,7 @@ def _show_mol_as_pil(
         d2d = MolDraw2DCairo(size[0], size[1])
         dopts = d2d.drawOptions()
         dopts.useBWAtomPalette()
-        dopts.prepareMolsBeforeDrawing = True
+        dopts.prepareMolsBeforeDrawing = False
         dopts.dummiesAreAttachments = alt_dummy
         dopts.rotate = rotate
         dopts.clearBackground = True
@@ -322,6 +322,9 @@ def explain_with_molce(
     similarity_threshold: Optional[float] = None,
     output_path: Optional[str] = None,
     include_anti_contrastive: bool = False,
+    gnn_model_class_name: Optional[str] = None,
+    gnn_hidden_channels: int = 64,
+    gnn_num_classes: int = 2,
 ) -> list:
     """Run MolCE contrastive attribution for a single compound (R-groups and scaffolds).
 
@@ -341,11 +344,15 @@ def explain_with_molce(
     A high **contrast score** means the current R-group / scaffold strongly
     separates the predicted class from the foil class.
 
+    For GNN models, set ``gnn_model_class_name`` (e.g. ``'GCN'``) and point
+    ``model_path`` to the ``.pt`` checkpoint. The ``n_bits`` / ``radius``
+    parameters are ignored in GNN mode.
+
     Args:
     smiles : str
         SMILES string of the compound to explain.
     model_path : str
-        Path to the trained sklearn model (.pkl).
+        Path to the trained model (.pkl for sklearn, .pt for GNN).
     split_file_path : str
         Path to the split .pkl file (from split_dataset).  Used to build the
         R-group library from all unique SMILES in train + test.
@@ -373,6 +380,13 @@ def explain_with_molce(
         contrastive scores).  They are appended to the image grids and
         reported under ``anti_contrastive_rgroups`` / ``anti_contrastive_scaffolds``
         in the JSON output.  Default False.
+    gnn_model_class_name : str, optional
+        GNN architecture name: one of GCN | GraphSAGE | GAT | GC_GNN | GIN.
+        Auto-detected from .pt checkpoint metadata when omitted.
+    gnn_hidden_channels : int, optional
+        Hidden dimension of the GNN (default 64). Must match training config.
+    gnn_num_classes : int, optional
+        Number of output classes of the GNN (default 2). Must match training config.
 
     Returns:
     list
@@ -415,18 +429,11 @@ def explain_with_molce(
     if mol is None:
         raise ValueError(f"Invalid SMILES: {smiles!r}")
 
-    # ---- Load model ----
-    try:
-        model = joblib.load(model_path)
-    except Exception as e:
-        raise ValueError(f"Failed to load model from {model_path!r}: {e}")
-
-    if not hasattr(model, "predict_proba"):
-        raise ValueError(
-            "Model does not support predict_proba.  MolCE requires probability "
-            "estimates — use a probabilistic classifier (e.g. RFC, GBC, SVC with "
-            "probability=True)."
-        )
+    # ---- Auto-detect GNN checkpoints from .pt metadata ----
+    from chemagent.explainability.gnn_compat import infer_gnn_params
+    gnn_model_class_name, gnn_hidden_channels, gnn_num_classes = infer_gnn_params(
+        model_path, gnn_model_class_name, gnn_hidden_channels, gnn_num_classes,
+    )
 
     # ---- Collect SMILES from split file ----
     try:
@@ -450,8 +457,38 @@ def explain_with_molce(
     if not unique_smiles:
         raise ValueError("No SMILES found in train or test splits of the split file.")
 
-    # ---- Build predict function adapters ----
-    predict_func, predict_func_proba = _make_sklearn_predict_funcs(model, n_bits, radius)
+    # ---- Load model & build predict function adapters ----
+    if gnn_model_class_name is not None:
+        from chemagent.explainability.gnn_compat import (
+            load_chemagent_gnn, make_gnn_molce_predict_funcs,
+        )
+        try:
+            gnn = load_chemagent_gnn(
+                model_path, gnn_model_class_name,
+                gnn_hidden_channels, gnn_num_classes,
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to load GNN model from {model_path!r}: {e}")
+        model = gnn  # passed to MolContrastWrapper (ignored by GNN predict funcs)
+        predict_func, predict_func_proba = make_gnn_molce_predict_funcs(gnn)
+    elif str(model_path).endswith(".pt"):
+        raise ValueError(
+            f"Model path {model_path!r} is a .pt file but no GNN architecture "
+            "could be inferred from checkpoint metadata. Supply "
+            "gnn_model_class_name explicitly (e.g. 'GCN', 'GraphSAGE')."
+        )
+    else:
+        try:
+            model = joblib.load(model_path)
+        except Exception as e:
+            raise ValueError(f"Failed to load model from {model_path!r}: {e}")
+        if not hasattr(model, "predict_proba"):
+            raise ValueError(
+                "Model does not support predict_proba.  MolCE requires probability "
+                "estimates — use a probabilistic classifier (e.g. RFC, GBC, SVC with "
+                "probability=True)."
+            )
+        predict_func, predict_func_proba = _make_sklearn_predict_funcs(model, n_bits, radius)
 
     # ---- Instantiate MolContrast ----
     try:
@@ -675,6 +712,9 @@ def identify_recurrent_molce_rules(
     similarity_threshold: Optional[float] = None,
     output_path: Optional[str] = None,
     include_anti_contrastive: bool = False,
+    gnn_model_class_name: Optional[str] = None,
+    gnn_hidden_channels: int = 64,
+    gnn_num_classes: int = 2,
 ) -> list:
     """Global MolCE analysis: aggregate the top-3 contrastive R-group and scaffold rules.
 
@@ -695,7 +735,7 @@ def identify_recurrent_molce_rules(
     split_file_path : str
         Path to the split .pkl file (from split_dataset).
     model_path : str
-        Path to the trained sklearn model (.pkl).
+        Path to the trained model (.pkl for sklearn, .pt for GNN).
     fact_class : int
         The class whose compounds are analyzed (e.g. 1 for actives).
     foil_class : int
@@ -730,6 +770,13 @@ def identify_recurrent_molce_rules(
         contrastive scores).  They are appended to the image grids and
         reported under ``anti_rgroup_rules`` / ``anti_scaffold_rules`` in
         the JSON output.  Default False.
+    gnn_model_class_name : str, optional
+        GNN architecture name: one of GCN | GraphSAGE | GAT | GC_GNN | GIN.
+        Auto-detected from .pt checkpoint metadata when omitted.
+    gnn_hidden_channels : int, optional
+        Hidden dimension of the GNN (default 64). Must match training config.
+    gnn_num_classes : int, optional
+        Number of output classes of the GNN (default 2). Must match training config.
 
     Returns:
     list
@@ -771,17 +818,11 @@ def identify_recurrent_molce_rules(
     if fact_class == foil_class:
         raise ValueError("fact_class and foil_class must differ.")
 
-    # ---- Load model ----
-    try:
-        model = joblib.load(model_path)
-    except Exception as e:
-        raise ValueError(f"Failed to load model from {model_path!r}: {e}")
-
-    if not hasattr(model, "predict_proba"):
-        raise ValueError(
-            "Model does not support predict_proba. MolCE requires probability "
-            "estimates — use a probabilistic classifier (e.g. RFC, GBC)."
-        )
+    # ---- Auto-detect GNN checkpoints from .pt metadata ----
+    from chemagent.explainability.gnn_compat import infer_gnn_params
+    gnn_model_class_name, gnn_hidden_channels, gnn_num_classes = infer_gnn_params(
+        model_path, gnn_model_class_name, gnn_hidden_channels, gnn_num_classes,
+    )
 
     # ---- Load split file ----
     try:
@@ -789,17 +830,12 @@ def identify_recurrent_molce_rules(
     except Exception as e:
         raise ValueError(f"Failed to load split file from {split_file_path!r}: {e}")
 
-    split_key_features = f"{split}_features"
-    split_key_labels = f"{split}_labels"
-    split_key_smiles = f"{split}_smiles"
-
-    if split_key_features not in split_data or split_key_labels not in split_data:
+    if f"{split}_labels" not in split_data:
         available = [k for k in split_data if "features" in k or "labels" in k]
         raise ValueError(f"Split '{split}' not found. Available: {available}")
 
-    features = split_data[split_key_features]
-    labels = split_data[split_key_labels]
-    smiles_list = split_data.get(split_key_smiles, [f"compound_{i}" for i in range(len(labels))])
+    labels = split_data[f"{split}_labels"]
+    smiles_list = split_data.get(f"{split}_smiles", [f"compound_{i}" for i in range(len(labels))])
 
     # ---- Collect all unique SMILES for the R-group library ----
     all_smiles: list[str] = []
@@ -814,8 +850,48 @@ def identify_recurrent_molce_rules(
             seen.add(s)
             unique_smiles.append(s)
 
+    # ---- Load model, get predictions, build predict adapters ----
+    if gnn_model_class_name is not None:
+        from chemagent.explainability.gnn_compat import (
+            load_chemagent_gnn, infer_from_mols, make_gnn_molce_predict_funcs,
+        )
+        try:
+            gnn = load_chemagent_gnn(
+                model_path, gnn_model_class_name,
+                gnn_hidden_channels, gnn_num_classes,
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to load GNN model from {model_path!r}: {e}")
+        model = gnn
+        mols = [Chem.MolFromSmiles(s) for s in smiles_list]
+        valid_idx = [i for i, m in enumerate(mols) if m is not None]
+        valid_mols = [mols[i] for i in valid_idx]
+        _preds, _ = infer_from_mols(gnn, valid_mols)
+        predictions = np.full(len(labels), -1, dtype=int)
+        for arr_i, orig_i in enumerate(valid_idx):
+            predictions[orig_i] = _preds[arr_i]
+        predict_func, predict_func_proba = make_gnn_molce_predict_funcs(gnn)
+    elif str(model_path).endswith(".pt"):
+        raise ValueError(
+            f"Model path {model_path!r} is a .pt file but no GNN architecture "
+            "could be inferred from checkpoint metadata. Supply "
+            "gnn_model_class_name explicitly (e.g. 'GCN', 'GraphSAGE')."
+        )
+    else:
+        try:
+            model = joblib.load(model_path)
+        except Exception as e:
+            raise ValueError(f"Failed to load model from {model_path!r}: {e}")
+        if not hasattr(model, "predict_proba"):
+            raise ValueError(
+                "Model does not support predict_proba. MolCE requires probability "
+                "estimates — use a probabilistic classifier (e.g. RFC, GBC)."
+            )
+        features = split_data[f"{split}_features"]
+        predictions = model.predict(features)
+        predict_func, predict_func_proba = _make_sklearn_predict_funcs(model, n_bits, radius)
+
     # ---- Find correctly predicted compounds of fact_class ----
-    predictions = model.predict(features)
     correct_mask = (predictions == labels) & (labels == fact_class)
     correct_indices = np.where(correct_mask)[0]
 
@@ -828,9 +904,6 @@ def identify_recurrent_molce_rules(
     if max_compounds is not None and len(correct_indices) > max_compounds:
         rng = np.random.default_rng(seed=42)
         correct_indices = rng.choice(correct_indices, size=max_compounds, replace=False)
-
-    # ---- Build predict function adapters ----
-    predict_func, predict_func_proba = _make_sklearn_predict_funcs(model, n_bits, radius)
 
     # ---- Instantiate MolContrast once (shared across all compounds) ----
     try:
