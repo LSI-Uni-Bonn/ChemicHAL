@@ -10,7 +10,7 @@ explain_with_molanchor            — identify molecular anchors (fragments) cri
 explain_batch_with_molanchor      — run analysis on all correctly predicted compounds of a given class
 identify_recurrent_anchor_rules    — compute substructure & anchor occurrence metrics to identify robust rules
 visualize_molanchor_anchors        — draw molecular structure with identified anchors highlighted
-select_compound_for_xai           — MolAnchor-only selector for a correctly predicted compound
+select_compound_for_xai           — select a correctly predicted compound for any XAI method (sklearn or GNN)
 get_molanchor_info                — reference information about MolAnchor parameters and methods
 
 The MolAnchor methodology identifies which molecular fragments (substructures) are
@@ -45,14 +45,10 @@ from chemagent.featurization.fingerprints import ECFP
 # GNN-compatible graph_func / graph_predict for MolAnchor
 # ---------------------------------------------------------------------------
 # These replace MolAnchor's default_mol_to_nx / default_graph_predict when the
-# model is a chemagent PyTorch GNN (GCN, GraphSAGE, GIN, GC_GNN, GAT, GINE).
-#
-# Feature scheme (4-dim node features) must match gnn_training.py:
-#   [atomic_num/100, formal_charge, num_hs/4, is_aromatic]
-# Bond weights (bond_type_as_double / 3.0) are included so GINE and GAT work.
+# model is a chemagent PyTorch GNN (GCN, GraphSAGE, GIN, GC_GNN, GAT).
+# Model loading is delegated to gnn_compat.load_chemagent_gnn which handles
+# the checkpoint dict format (state_dict + metadata) correctly.
 # ---------------------------------------------------------------------------
-
-_GNN_NODE_FEATURES_DIM = 4
 
 
 def _gnn_mol_to_nx(mol: Chem.Mol):
@@ -103,47 +99,11 @@ def _make_gnn_graph_predict(model):
 
 
 def _load_gnn_model(model_path: str, model_class_name: str, hidden_channels: int, num_classes: int):
-    """Load a chemagent GNN from a .pt state-dict file.
-
-    Args:
-        model_path:        Path to saved state dict (.pt).
-        model_class_name:  One of GCN | GraphSAGE | GAT | GC_GNN | GINE | GIN.
-        hidden_channels:   Hidden dimension used during training.
-        num_classes:       Number of output classes used during training.
-
-    Returns:
-        Loaded torch.nn.Module in eval mode on CPU.
-    """
-    import torch
-    from chemagent.ml.gnn_models import GCN, GAT, GC_GNN, GIN, GraphSAGE
-
-    _MAP = {
-        "GCN": GCN, "GraphSAGE": GraphSAGE, "GAT": GAT,
-        "GC_GNN": GC_GNN, "GIN": GIN,
-    }
-    if model_class_name == "GINE":
-        raise ValueError(
-            "GINE is not supported for MolAnchor graph-based explanations. "
-            "GINE requires edge_weight features, but the standard GNN training "
-            "pipeline (train_gnn_model / train_gnn_model_mcp) does not provide "
-            "edge weights — so a GINE model trained via that pipeline cannot be "
-            "used here consistently. Use GCN, GraphSAGE, GIN, GC_GNN, or GAT instead."
-        )
-    if model_class_name not in _MAP:
-        raise ValueError(
-            f"Unknown GNN model class '{model_class_name}'. "
-            f"Available: {list(_MAP.keys())}"
-        )
-    model_class = _MAP[model_class_name]
-    model = model_class(
-        node_features_dim=_GNN_NODE_FEATURES_DIM,
-        hidden_channels=hidden_channels,
-        num_classes=num_classes,
+    """Load a chemagent GNN — delegates to gnn_compat.load_chemagent_gnn."""
+    from chemagent.explainability.gnn_compat import load_chemagent_gnn
+    return load_chemagent_gnn(
+        model_path, model_class_name, hidden_channels, num_classes,
     )
-    state = torch.load(model_path, map_location="cpu", weights_only=True)
-    model.load_state_dict(state)
-    model.eval()
-    return model
 
 
 def _parse_bool(value: Union[bool, str]) -> bool:
@@ -276,14 +236,20 @@ def _explain_with_molanchor(
     gnn_model_class_name: Optional[str] = None,
     gnn_hidden_channels: int = 64,
     gnn_num_classes: int = 2,
+    _preloaded_model=None,
+    _preloaded_graph_funcs: Optional[tuple] = None,
 ) -> tuple[dict[str, Any], Any]:
     """Run MolAnchor analysis and return (result_dict, mol_anchor) for internal use.
 
     For GNN models set ``representation="graphs"`` and supply:
-    - ``gnn_model_class_name``: one of GCN | GraphSAGE | GAT | GC_GNN | GINE | GIN
+    - ``gnn_model_class_name``: one of GCN | GraphSAGE | GAT | GC_GNN | GIN
     - ``gnn_hidden_channels``:  hidden dim used during training (default 64)
     - ``gnn_num_classes``:      number of output classes (default 2)
     - ``model_path``:           path to the saved .pt state dict
+
+    When called from batch functions, ``_preloaded_model`` and
+    ``_preloaded_graph_funcs`` bypass file I/O so the model is loaded once
+    rather than once per compound.
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -293,30 +259,53 @@ def _explain_with_molanchor(
     graph_func = None
     graph_predict = None
 
-    if representation == "graphs":
-        # GNN path: reconstruct architecture and load state dict
-        if gnn_model_class_name is None:
-            raise ValueError(
-                "representation='graphs' requires gnn_model_class_name "
-                "(e.g. 'GCN', 'GAT', 'GIN', 'GraphSAGE', 'GC_GNN', 'GINE')."
-            )
-        try:
-            model = _load_gnn_model(
-                model_path=model_path,
-                model_class_name=gnn_model_class_name,
-                hidden_channels=gnn_hidden_channels,
-                num_classes=gnn_num_classes,
-            )
-        except Exception as e:
-            raise ValueError(f"Failed to load GNN model from {model_path}: {e}")
-        graph_func = _gnn_mol_to_nx
-        graph_predict = _make_gnn_graph_predict(model)
+    if _preloaded_model is not None:
+        # Caller already loaded the model — skip all file I/O
+        model = _preloaded_model
+        if _preloaded_graph_funcs is not None:
+            graph_func, graph_predict = _preloaded_graph_funcs
+        elif representation == "graphs":
+            graph_func = _gnn_mol_to_nx
+            graph_predict = _make_gnn_graph_predict(model)
     else:
-        # Sklearn / joblib path (ECFP and any other tabular representation)
-        try:
-            model = joblib.load(model_path)
-        except Exception as e:
-            raise ValueError(f"Failed to load model from {model_path}: {e}")
+        # ── Auto-detect GNN checkpoints from .pt metadata ────────────────
+        from chemagent.explainability.gnn_compat import infer_gnn_params
+        gnn_model_class_name, gnn_hidden_channels, gnn_num_classes = infer_gnn_params(
+            model_path, gnn_model_class_name, gnn_hidden_channels, gnn_num_classes,
+        )
+        if gnn_model_class_name is not None and representation != "graphs":
+            representation = "graphs"
+
+        if representation == "graphs":
+            # GNN path: reconstruct architecture and load state dict
+            if gnn_model_class_name is None:
+                raise ValueError(
+                    "representation='graphs' requires gnn_model_class_name "
+                    "(e.g. 'GCN', 'GAT', 'GIN', 'GraphSAGE', 'GC_GNN')."
+                )
+            try:
+                model = _load_gnn_model(
+                    model_path=model_path,
+                    model_class_name=gnn_model_class_name,
+                    hidden_channels=gnn_hidden_channels,
+                    num_classes=gnn_num_classes,
+                )
+            except Exception as e:
+                raise ValueError(f"Failed to load GNN model from {model_path}: {e}")
+            graph_func = _gnn_mol_to_nx
+            graph_predict = _make_gnn_graph_predict(model)
+        elif str(model_path).endswith(".pt"):
+            raise ValueError(
+                f"Model path {model_path!r} is a .pt file but no GNN architecture "
+                "could be inferred from checkpoint metadata. Supply "
+                "gnn_model_class_name explicitly (e.g. 'GCN', 'GraphSAGE')."
+            )
+        else:
+            # Sklearn / joblib path (ECFP and any other tabular representation)
+            try:
+                model = joblib.load(model_path)
+            except Exception as e:
+                raise ValueError(f"Failed to load model from {model_path}: {e}")
 
     bit_inf = None
     original_fp = None
@@ -470,8 +459,9 @@ def explain_with_molanchor(
         Defaults to ``session_dir/plots/molanchor_<session_id>.png``.
     gnn_model_class_name : str, optional
         Required when representation="graphs". GNN architecture name:
-        one of GCN | GraphSAGE | GAT | GC_GNN | GINE | GIN.
+        one of GCN | GraphSAGE | GAT | GC_GNN | GIN.
         Must match the architecture used during training.
+        Auto-detected from .pt checkpoint metadata when omitted.
     gnn_hidden_channels : int, optional
         Hidden dimension of the GNN (default 64). Must match training config.
     gnn_num_classes : int, optional
@@ -548,30 +538,44 @@ def select_compound_for_xai(
     target_class: int,
     split: str = "test",
     seed: Optional[int] = None,
+    gnn_model_class_name: Optional[str] = None,
+    gnn_hidden_channels: int = 64,
+    gnn_num_classes: int = 2,
 ) -> dict[str, Any]:
     """
-    Select a correctly predicted compound for MolAnchor analysis only.
+    Select a correctly predicted compound for any XAI analysis.
 
-    LLM agent routing note: use this helper only when the downstream explainability
-    workflow is MolAnchor. It is a dataset/model selector for choosing a valid
-    compound to hand into MolAnchor, not a generic pre-processing step for SHAP,
-    MolCE, or EdgeSHAPer workflows.
+    Use this tool whenever you need a correctly predicted compound to feed into
+    an explainability method: SHAP, MolAnchor, MolCE, counterfactuals, or
+    EdgeSHAPer. Works with both sklearn (.pkl) and GNN (.pt) models.
+
+    For GNN models, set ``gnn_model_class_name`` (e.g. 'GCN') and point
+    ``model_path`` to the .pt checkpoint. The tool will predict from SMILES
+    via graph inference instead of ECFP fingerprints.
 
     The tool finds compounds that the model predicted correctly and belong to a
-    specified class, so MolAnchor can run on a high-confidence example.
-    
+    specified class, so the downstream XAI method runs on a high-confidence example.
+
     Args:
     split_file_path : str
         Path to the split .pkl file (from split_dataset)
     model_path : str
-        Path to the trained model file (.pkl format)
+        Path to the trained model file (.pkl for sklearn, .pt for GNN)
     target_class : int
         Class label to filter by (e.g., 0 or 1 for binary classification)
     split : str, optional
         Which split to sample from: "train", "val", or "test" (default: "test")
     seed : int, optional
         Random seed for reproducibility
-    
+    gnn_model_class_name : str, optional
+        GNN architecture name (GCN, GraphSAGE, GAT, GC_GNN, GIN). When set,
+        the model is loaded as a PyTorch GNN instead of an sklearn model.
+        Auto-detected from .pt checkpoint metadata when omitted.
+    gnn_hidden_channels : int, optional
+        Hidden dimension of the GNN (default 64). Overridden by checkpoint.
+    gnn_num_classes : int, optional
+        Number of output classes (default 2). Overridden by checkpoint.
+
     Returns:
     dict
         Compound information, including:
@@ -583,59 +587,82 @@ def select_compound_for_xai(
         - split: which split the compound came from
         - total_candidates: total number of correctly predicted compounds in that class
         - status: completion status
-    
+
     Raises:
     ValueError
         If no correctly predicted compounds found for the specified class,
         or if split file/model cannot be loaded
     """
     logger = _get_session_logger()
-    
+
+    # Auto-detect GNN checkpoints from .pt metadata
+    from chemagent.explainability.gnn_compat import infer_gnn_params
+    gnn_model_class_name, gnn_hidden_channels, gnn_num_classes = infer_gnn_params(
+        model_path, gnn_model_class_name, gnn_hidden_channels, gnn_num_classes,
+    )
+
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
-    
+
     # Load split file
     try:
         split_data = joblib.load(split_file_path)
     except Exception as e:
         raise ValueError(f"Failed to load split file from {split_file_path}: {e}")
-    
-    # Get features and labels for the specified split
-    split_key_features = f"{split}_features"
-    split_key_labels = f"{split}_labels"
-    split_key_smiles = f"{split}_smiles" if f"{split}_smiles" in split_data else None
-    
-    if split_key_features not in split_data or split_key_labels not in split_data:
+
+    # Get labels (and features, if sklearn path) for the specified split
+    if f"{split}_labels" not in split_data:
         available = [k for k in split_data.keys() if "features" in k or "labels" in k]
         raise ValueError(
             f"Split '{split}' not found in file. Available splits: {available}"
         )
-    
-    features = split_data[split_key_features]
-    labels = split_data[split_key_labels]
-    smiles_list = split_data.get(split_key_smiles, None)
-    
+
+    labels = split_data[f"{split}_labels"]
+    smiles_list = split_data.get(f"{split}_smiles", None)
     if smiles_list is None:
         smiles_list = [f"compound_{i}" for i in range(len(labels))]
-    
-    # Load model
-    try:
-        model = joblib.load(model_path)
-    except Exception as e:
-        raise ValueError(f"Failed to load model from {model_path}: {e}")
-    
-    # Get predictions
-    try:
-        predictions = model.predict(features)
-        # Try to get prediction probabilities for confidence scores
-        if hasattr(model, "predict_proba"):
-            probabilities = model.predict_proba(features)
-            confidences = np.max(probabilities, axis=1)
-        else:
-            confidences = np.ones(len(predictions))  # Fallback: all confidence = 1
-    except Exception as e:
-        raise ValueError(f"Failed to run model predictions: {e}")
+
+    # Load model and get predictions
+    if gnn_model_class_name is not None:
+        from chemagent.explainability.gnn_compat import load_chemagent_gnn, infer_from_mols
+        try:
+            gnn = load_chemagent_gnn(
+                model_path, gnn_model_class_name,
+                gnn_hidden_channels, gnn_num_classes,
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to load GNN model from {model_path}: {e}")
+        mols = [Chem.MolFromSmiles(s) for s in smiles_list]
+        valid_idx = [i for i, m in enumerate(mols) if m is not None]
+        valid_mols = [mols[i] for i in valid_idx]
+        _preds, _probas = infer_from_mols(gnn, valid_mols)
+        predictions = np.full(len(labels), -1, dtype=int)
+        confidences = np.zeros(len(labels))
+        for arr_i, orig_i in enumerate(valid_idx):
+            predictions[orig_i] = _preds[arr_i]
+            confidences[orig_i] = float(np.max(_probas[arr_i]))
+    elif str(model_path).endswith(".pt"):
+        raise ValueError(
+            f"Model path {model_path!r} is a .pt file but no GNN architecture "
+            "could be inferred from checkpoint metadata. Supply "
+            "gnn_model_class_name explicitly (e.g. 'GCN', 'GraphSAGE')."
+        )
+    else:
+        features = split_data[f"{split}_features"]
+        try:
+            model = joblib.load(model_path)
+        except Exception as e:
+            raise ValueError(f"Failed to load model from {model_path}: {e}")
+        try:
+            predictions = model.predict(features)
+            if hasattr(model, "predict_proba"):
+                probabilities = model.predict_proba(features)
+                confidences = np.max(probabilities, axis=1)
+            else:
+                confidences = np.ones(len(predictions))
+        except Exception as e:
+            raise ValueError(f"Failed to run model predictions: {e}")
     
     # Filter for correctly predicted compounds of the target class
     correct_mask = (predictions == labels) & (labels == target_class)
@@ -676,14 +703,19 @@ def explain_batch_with_molanchor(
     fragment_scheme: str = "BRICS",
     representation: str = "ECFP",
     cutoff: float = 0.95,
-    allow_frag_combinations: bool = True,
-    return_multiple_anchors: bool = False,
-    acc_for_radius: bool = False,
+    allow_frag_combinations: Union[bool, str] = True,
+    return_multiple_anchors: Union[bool, str] = False,
+    acc_for_radius: Union[bool, str] = False,
     n_bits: int = 2048,
     radius: int = 2,
     bit_info_path: Optional[str] = None,
     original_fp_path: Optional[str] = None,
     max_compounds: Optional[int] = None,
+    gnn_model_class_name: Optional[str] = None,
+    gnn_hidden_channels: int = 64,
+    gnn_num_classes: int = 2,
+    _preloaded_model=None,
+    _preloaded_graph_funcs=None,
 ) -> dict[str, Any]:
     """
     Run MolAnchor analysis for all correctly predicted compounds of a given class.
@@ -704,7 +736,7 @@ def explain_batch_with_molanchor(
     split_file_path : str
         Path to the split .pkl file (from split_dataset)
     model_path : str
-        Path to the trained model file (.pkl format)
+        Path to the trained model file (.pkl for sklearn, .pt for GNN).
     target_class : int
         Class label to analyze (e.g., 0 or 1 for binary classification)
     split : str, optional
@@ -712,11 +744,12 @@ def explain_batch_with_molanchor(
     fragment_scheme : str, optional
         Fragmentation scheme to use. Currently supports "BRICS" (default)
     representation : str, optional
-        Molecular representation: "ECFP" (default) or "graphs"
+        Molecular representation: "ECFP" (default) or "graphs".
+        Auto-set to "graphs" when a GNN model is detected.
     cutoff : float, optional
         Precision cutoff (0-1) for identifying anchors (default=0.95)
     allow_frag_combinations : bool, optional
-        If True, search for combinations of fragments if no single atoms anchor (default=True)
+        If True, search for combinations of fragments if no single fragment anchors (default=True)
     return_multiple_anchors : bool, optional
         If True, return all fragments meeting cutoff; if False, return highest precision (default=False)
     acc_for_radius : bool, optional
@@ -733,11 +766,18 @@ def explain_batch_with_molanchor(
     max_compounds : int, optional
         Limit analysis to this many compounds (default None, analyze all).
         Useful for large datasets to speed up computation.
-    
+    gnn_model_class_name : str, optional
+        GNN architecture name: one of GCN | GraphSAGE | GAT | GC_GNN | GIN.
+        Auto-detected from .pt checkpoint metadata when omitted.
+    gnn_hidden_channels : int, optional
+        Hidden dimension of the GNN (default 64). Must match training config.
+    gnn_num_classes : int, optional
+        Number of output classes of the GNN (default 2). Must match training config.
+
     Returns:
     dict
         Aggregated batch analysis results containing:
-        
+
         - split: which split was analyzed
         - target_class: the class analyzed
         - total_compounds: number of correctly predicted compounds of the target class
@@ -746,7 +786,6 @@ def explain_batch_with_molanchor(
         - aggregate_statistics: summary statistics across all compounds:
             - mean_num_fragments: average number of fragments per molecule
             - mean_precision: average anchor precision
-            - mean_coverage: average anchor coverage
             - compounds_with_anchors: count of compounds where anchors were identified
             - anchor_frequency: dict mapping anchor SMILES to count of times identified
             - most_common_anchors: top 5 anchors by frequency
@@ -776,48 +815,91 @@ def explain_batch_with_molanchor(
     ...     max_compounds=10
     ... )
     """
+    allow_frag_combinations = _parse_bool(allow_frag_combinations)
+    return_multiple_anchors = _parse_bool(return_multiple_anchors)
+    acc_for_radius = _parse_bool(acc_for_radius)
+
     logger = _get_session_logger()
-    
+
+    # Auto-detect GNN checkpoints from .pt metadata
+    from chemagent.explainability.gnn_compat import infer_gnn_params
+    gnn_model_class_name, gnn_hidden_channels, gnn_num_classes = infer_gnn_params(
+        model_path, gnn_model_class_name, gnn_hidden_channels, gnn_num_classes,
+    )
+
     # Load split file
     try:
         split_data = joblib.load(split_file_path)
     except Exception as e:
         raise ValueError(f"Failed to load split file from {split_file_path}: {e}")
-    
-    # Get features and labels for the specified split
-    split_key_features = f"{split}_features"
-    split_key_labels = f"{split}_labels"
-    split_key_smiles = f"{split}_smiles" if f"{split}_smiles" in split_data else None
-    
-    if split_key_features not in split_data or split_key_labels not in split_data:
+
+    # Get labels for the specified split
+    if f"{split}_labels" not in split_data:
         available = [k for k in split_data.keys() if "features" in k or "labels" in k]
         raise ValueError(
             f"Split '{split}' not found in file. Available splits: {available}"
         )
-    
-    features = split_data[split_key_features]
-    labels = split_data[split_key_labels]
-    smiles_list = split_data.get(split_key_smiles, None)
-    
+
+    labels = split_data[f"{split}_labels"]
+    smiles_list = split_data.get(f"{split}_smiles", None)
     if smiles_list is None:
         smiles_list = [f"compound_{i}" for i in range(len(labels))]
-    
-    # Load model
-    try:
-        model = joblib.load(model_path)
-    except Exception as e:
-        raise ValueError(f"Failed to load model from {model_path}: {e}")
-    
-    # Get predictions
-    try:
-        predictions = model.predict(features)
-        if hasattr(model, "predict_proba"):
-            probabilities = model.predict_proba(features)
-            confidences = np.max(probabilities, axis=1)
+
+    # Load model and get predictions
+    if gnn_model_class_name is not None:
+        from chemagent.explainability.gnn_compat import load_chemagent_gnn, infer_from_mols
+        if _preloaded_model is not None:
+            gnn = _preloaded_model
         else:
-            confidences = np.ones(len(predictions))
-    except Exception as e:
-        raise ValueError(f"Failed to run model predictions: {e}")
+            try:
+                gnn = load_chemagent_gnn(
+                    model_path, gnn_model_class_name,
+                    gnn_hidden_channels, gnn_num_classes,
+                )
+            except Exception as e:
+                raise ValueError(f"Failed to load GNN model from {model_path}: {e}")
+        mols = [Chem.MolFromSmiles(s) for s in smiles_list]
+        valid_idx = [i for i, m in enumerate(mols) if m is not None]
+        valid_mols = [mols[i] for i in valid_idx]
+        _preds, _probas = infer_from_mols(gnn, valid_mols)
+        predictions = np.full(len(labels), -1, dtype=int)
+        confidences = np.zeros(len(labels))
+        for arr_i, orig_i in enumerate(valid_idx):
+            predictions[orig_i] = _preds[arr_i]
+            confidences[orig_i] = float(np.max(_probas[arr_i]))
+        # Default representation to graphs when using GNN
+        if representation == "ECFP":
+            representation = "graphs"
+        _loaded_model = gnn
+        _loaded_graph_funcs = _preloaded_graph_funcs or (
+            _gnn_mol_to_nx, _make_gnn_graph_predict(gnn),
+        )
+    elif str(model_path).endswith(".pt"):
+        raise ValueError(
+            f"Model path {model_path!r} is a .pt file but no GNN architecture "
+            "could be inferred from checkpoint metadata. Supply "
+            "gnn_model_class_name explicitly (e.g. 'GCN', 'GraphSAGE')."
+        )
+    else:
+        features = split_data[f"{split}_features"]
+        if _preloaded_model is not None:
+            model = _preloaded_model
+        else:
+            try:
+                model = joblib.load(model_path)
+            except Exception as e:
+                raise ValueError(f"Failed to load model from {model_path}: {e}")
+        try:
+            predictions = model.predict(features)
+            if hasattr(model, "predict_proba"):
+                probabilities = model.predict_proba(features)
+                confidences = np.max(probabilities, axis=1)
+            else:
+                confidences = np.ones(len(predictions))
+        except Exception as e:
+            raise ValueError(f"Failed to run model predictions: {e}")
+        _loaded_model = model
+        _loaded_graph_funcs = None
     
     # Filter for correctly predicted compounds of the target class
     correct_mask = (predictions == labels) & (labels == target_class)
@@ -858,6 +940,11 @@ def explain_batch_with_molanchor(
                 radius=radius,
                 bit_info_path=bit_info_path,
                 original_fp_path=original_fp_path,
+                gnn_model_class_name=gnn_model_class_name,
+                gnn_hidden_channels=gnn_hidden_channels,
+                gnn_num_classes=gnn_num_classes,
+                _preloaded_model=_loaded_model,
+                _preloaded_graph_funcs=_loaded_graph_funcs,
             )
 
             # Store detailed result
@@ -928,6 +1015,9 @@ def identify_recurrent_anchor_rules(
     bit_info_path: Optional[str] = None,
     original_fp_path: Optional[str] = None,
     top_n_anchors: Optional[int] = 3,
+    gnn_model_class_name: Optional[str] = None,
+    gnn_hidden_channels: int = 64,
+    gnn_num_classes: int = 2,
 ) -> list:
     """
     Run batch MolAnchor analysis and identify recurrent anchor rules in one step.
@@ -940,10 +1030,13 @@ def identify_recurrent_anchor_rules(
        predicted the target class) where this fragment was identified as an anchor.
        Measures how important the fragment is for the model's predictions.
 
-    2. **Substructure Occurrence**: Fraction of ANALYZED compounds in the split that contain
-       this fragment. Supplies context for anchor occurrence, anchor occurrence can never be higher than substructure occurrence.
-        If substructure occurrence is equal to anchor occurrence, it means that whenever the fragment is present, it is an anchor (strong indicator).
-        If substructure occurrence is much higher than anchor occurrence, it means the fragment is common but not always critical (weaker indicator).
+    2. **Substructure Occurrence**: Fraction of ANALYZED compounds (same set as anchor
+       occurrence) that contain this fragment as a substructure. Anchor occurrence can
+       never be higher than substructure occurrence.
+       If substructure occurrence is close to anchor occurrence, it means that whenever
+       the fragment is present, it is an anchor (strong indicator).
+       If substructure occurrence is much higher than anchor occurrence, the fragment is
+       common but not always critical (weaker indicator).
         
     High-occurrence fragments represent consistent chemical logic your model uses for a given
     class. 
@@ -952,7 +1045,7 @@ def identify_recurrent_anchor_rules(
     split_file_path : str
         Path to the split .pkl file (from split_dataset)
     model_path : str
-        Path to the trained model file (.pkl format)
+        Path to the trained model file (.pkl for sklearn, .pt for GNN).
     target_class : int
         Class label to analyze (e.g., 0 or 1 for binary classification)
     split : str, optional
@@ -960,7 +1053,8 @@ def identify_recurrent_anchor_rules(
     fragment_scheme : str, optional
         Fragmentation scheme to use. Currently supports "BRICS" (default)
     representation : str, optional
-        Molecular representation: "ECFP" (default) or "graphs"
+        Molecular representation: "ECFP" (default) or "graphs".
+        Auto-set to "graphs" when a GNN model is detected.
     cutoff : float, optional
         Precision cutoff (0-1) for identifying anchors (default=0.95)
     allow_frag_combinations : bool, optional
@@ -980,6 +1074,13 @@ def identify_recurrent_anchor_rules(
     top_n_anchors : int, optional
         Maximum number of top anchors to return, sorted by anchor_occurrence then
         substructure_occurrence. Default: 3. Set to None to return all.
+    gnn_model_class_name : str, optional
+        GNN architecture name: one of GCN | GraphSAGE | GAT | GC_GNN | GIN.
+        Auto-detected from .pt checkpoint metadata when omitted.
+    gnn_hidden_channels : int, optional
+        Hidden dimension of the GNN (default 64). Must match training config.
+    gnn_num_classes : int, optional
+        Number of output classes of the GNN (default 2). Must match training config.
 
     Returns:
     list
@@ -990,13 +1091,13 @@ def identify_recurrent_anchor_rules(
         - rank: position in the ranked list (1 = most recurrent)
         - fragment: SMILES string (single-fragment) or list of SMILES (multi-fragment rule)
         - anchor_occurrence: fraction of analyzed compounds where this rule was identified
-        - substructure_occurrence: fraction of ALL split compounds containing the fragment(s)
+        - substructure_occurrence: fraction of analyzed compounds containing the fragment(s)
         - num_compounds_with_anchor: absolute count for anchor_occurrence
         - num_compounds_with_substructure: absolute count for substructure_occurrence
         - image_path: path to the saved highlight image (if visualization succeeded)
 
         The final summary JSON contains:
-        - target_class, split, num_analyzed_compounds, total_compounds_in_split
+        - target_class, split, num_analyzed_compounds
         - total_unique_anchor_rules, top_n_rules_shown, status
 
     Raises:
@@ -1004,16 +1105,15 @@ def identify_recurrent_anchor_rules(
         If split file or model cannot be loaded, or no correctly predicted compounds found
 
     Examples:
-    >>> rules = identify_recurrent_anchor_rules(
+    >>> results = identify_recurrent_anchor_rules(
     ...     split_file_path="session/splits/data.pkl",
     ...     model_path="session/models/model.pkl",
     ...     target_class=1,
     ...     top_n_anchors=3
     ... )
-    >>> for rule in rules["recurrent_rules"]:
-    ...     print(f"Fragment {rule['fragment']}: "
-    ...           f"{rule['anchor_occurrence']:.1%} anchor, "
-    ...           f"{rule['substructure_occurrence']:.1%} substructure")
+    >>> # results is a list: [MCPImage_1, rule_1_json, ..., summary_json]
+    >>> import json
+    >>> summary = json.loads(results[-1])  # last element is the summary
     """
     allow_frag_combinations = _parse_bool(allow_frag_combinations)
     return_multiple_anchors = _parse_bool(return_multiple_anchors)
@@ -1021,7 +1121,36 @@ def identify_recurrent_anchor_rules(
 
     logger = _get_session_logger()
 
-    # Run batch analysis internally
+    # Auto-detect GNN checkpoints from .pt metadata
+    from chemagent.explainability.gnn_compat import infer_gnn_params
+    gnn_model_class_name, gnn_hidden_channels, gnn_num_classes = infer_gnn_params(
+        model_path, gnn_model_class_name, gnn_hidden_channels, gnn_num_classes,
+    )
+
+    # ── Load model once for the entire analysis ──────────────────────────
+    if gnn_model_class_name is not None:
+        try:
+            _model = _load_gnn_model(
+                model_path, gnn_model_class_name,
+                gnn_hidden_channels, gnn_num_classes,
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to load GNN model from {model_path}: {e}")
+        _graph_funcs = (_gnn_mol_to_nx, _make_gnn_graph_predict(_model))
+    elif str(model_path).endswith(".pt"):
+        raise ValueError(
+            f"Model path {model_path!r} is a .pt file but no GNN architecture "
+            "could be inferred from checkpoint metadata. Supply "
+            "gnn_model_class_name explicitly (e.g. 'GCN', 'GraphSAGE')."
+        )
+    else:
+        try:
+            _model = joblib.load(model_path)
+        except Exception as e:
+            raise ValueError(f"Failed to load model from {model_path}: {e}")
+        _graph_funcs = None
+
+    # Run batch analysis internally — reuse the loaded model
     batch_results = explain_batch_with_molanchor(
         split_file_path=split_file_path,
         model_path=model_path,
@@ -1037,31 +1166,19 @@ def identify_recurrent_anchor_rules(
         radius=radius,
         bit_info_path=bit_info_path,
         original_fp_path=original_fp_path,
+        gnn_model_class_name=gnn_model_class_name,
+        gnn_hidden_channels=gnn_hidden_channels,
+        gnn_num_classes=gnn_num_classes,
+        _preloaded_model=_model,
+        _preloaded_graph_funcs=_graph_funcs,
     )
 
-    # Load split file to get all SMILES for substructure searching
-    try:
-        split_data = joblib.load(split_file_path)
-    except Exception as e:
-        raise ValueError(f"Failed to load split file from {split_file_path}: {e}")
-
-    split_key_smiles = f"{split}_smiles" if f"{split}_smiles" in split_data else None
-    split_key_labels = f"{split}_labels"
-
-    if split_key_labels not in split_data:
-        available = [k for k in split_data.keys() if "labels" in k]
-        raise ValueError(f"Split '{split}' not found in file. Available splits: {available}")
-
-    smiles_list = split_data.get(split_key_smiles, None)
-    if smiles_list is None:
-        raise ValueError(f"No SMILES found in {split} split. Cannot perform substructure search.")
-
     # Extract analyzed compounds and build anchor→representative compound mapping
-    analyzed_compounds = {}
-    anchor_representative: dict[str, str] = {}  # anchor key -> first compound SMILES showing it
+    analyzed_compounds: list[str] = []
+    anchor_representative: dict[str, str] = {}   # anchor key -> first compound SMILES
     for result in batch_results.get("detailed_results", []):
         if "compound_index" in result and "smiles" in result and result.get("status") == "completed":
-            analyzed_compounds[result["compound_index"]] = result["smiles"]
+            analyzed_compounds.append(result["smiles"])
             anchor_key = "||".join(result.get("anchor_smiles", []))
             if anchor_key and anchor_key not in anchor_representative:
                 anchor_representative[anchor_key] = result["smiles"]
@@ -1070,24 +1187,31 @@ def identify_recurrent_anchor_rules(
     if num_analyzed_compounds == 0:
         raise ValueError("No successfully analyzed compounds found in batch results")
 
-    total_compounds_in_split = len(smiles_list)
-
     # Get all unique anchors from batch results
     anchor_frequency = batch_results.get("aggregate_statistics", {}).get("anchor_frequency", {})
-    
+
     if not anchor_frequency:
-        return {
-            "recurrent_rules": [],
-            "rule_details": [],
-            "statistics": {
-                "total_unique_anchors": 0,
-            },
-            "status": "no anchors found"
+        summary = {
+            "target_class": target_class,
+            "split": split,
+            "num_analyzed_compounds": num_analyzed_compounds,
+            "total_unique_anchor_rules": 0,
+            "top_n_rules_shown": 0,
+            "status": "no anchors found",
         }
-    
+        return [json.dumps(summary, indent=2)]
+
+    # Pre-parse analyzed compound SMILES to Mol objects once for substructure searching
+    analyzed_mols: list[Optional[Chem.Mol]] = []
+    for s in analyzed_compounds:
+        try:
+            analyzed_mols.append(Chem.MolFromSmiles(s))
+        except Exception:
+            analyzed_mols.append(None)
+
     # Compute metrics for each anchor fragment
     recurrent_rules = []
-    
+
     for anchor_key, anchor_count in anchor_frequency.items():
         # Split key back into individual fragment SMILES
         fragment_smiles_list = anchor_key.split("||")
@@ -1096,14 +1220,13 @@ def identify_recurrent_anchor_rules(
         if not anchor_mols:
             continue
 
-        # Anchor occurrence: fraction of ANALYZED compounds where this rule was identified
+        # Anchor occurrence: fraction of analyzed compounds where this rule was identified
         anchor_occurrence = anchor_count / num_analyzed_compounds if num_analyzed_compounds > 0 else 0.0
 
-        # Substructure occurrence: fraction of ALL compounds in split containing ALL rule fragments
+        # Substructure occurrence: fraction of analyzed compounds containing ALL rule fragments
         substructure_count = 0
-        for compound_smiles in smiles_list:
+        for compound_mol in analyzed_mols:
             try:
-                compound_mol = Chem.MolFromSmiles(compound_smiles)
                 if compound_mol is not None and all(
                     compound_mol.HasSubstructMatch(am) for am in anchor_mols
                 ):
@@ -1160,12 +1283,17 @@ def identify_recurrent_anchor_rules(
                     radius=radius,
                     bit_info_path=bit_info_path,
                     original_fp_path=original_fp_path,
+                    gnn_model_class_name=gnn_model_class_name,
+                    gnn_hidden_channels=gnn_hidden_channels,
+                    gnn_num_classes=gnn_num_classes,
+                    _preloaded_model=_model,
+                    _preloaded_graph_funcs=_graph_funcs,
                 )
                 anchor_indices = vis_result.get("anchor_indices", [])
                 if anchor_indices:
                     img = mol_anchor.map_anchor_to_cpd(anchor_indices)
                     img_path = plots_dir / f"anchor_rule_{i + 1}_{logger.session_id}.png"
-                    img.save(str(img_path))
+                    _persist_image_output(img, img_path)
                     rule["image_path"] = str(img_path)
                     output_items.append(MCPImage(path=img_path))
             except Exception:
@@ -1176,7 +1304,6 @@ def identify_recurrent_anchor_rules(
         "target_class": target_class,
         "split": split,
         "num_analyzed_compounds": num_analyzed_compounds,
-        "total_compounds_in_split": total_compounds_in_split,
         "total_unique_anchor_rules": len(anchor_frequency),
         "top_n_rules_shown": len(final_rules),
         "status": "completed",

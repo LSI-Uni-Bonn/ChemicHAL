@@ -21,6 +21,7 @@ All capabilities are consolidated into a **single FastMCP server** (`chemagent_m
 Notes:
 - `run_pipeline` is currently not registered in the MCP server.
 - XAI and GNN tools are already implemented and available.
+- `explain_with_molanchor`, `identify_recurrent_anchor_rules`, `explain_with_molce`, `identify_recurrent_molce_rules`, `generate_counterfactuals`, and `select_compound_for_xai` all accept optional `gnn_model_class_name` to use PyTorch GNN models (.pt) instead of sklearn (.pkl). Shared GNN loading/inference lives in `chemagent.explainability.gnn_compat`.
 
 ## Preferred Data Flow (data stays on disk)
 Features are never serialised through the LLM context:

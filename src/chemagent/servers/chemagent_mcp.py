@@ -53,13 +53,13 @@ XAI
   explain_smiles                 compute SHAP values for chat SMILES with tabular sklearn models
   plot_shap_mol                  render atom-level SHAP heatmaps on molecular structures
   explain_with_molanchor         identify molecular anchors (critical fragments) for a single prediction
-  identify_recurrent_anchor_rules batch MolAnchor + compute substructure & anchor occurrence metrics
+  identify_recurrent_anchor_rules batch MolAnchor (sklearn or GNN) + compute substructure & anchor occurrence metrics
   get_molanchor_info             reference information about MolAnchor parameters and methods
-  select_compound_for_xai        randomly select a correctly predicted compound of specified class for analysis
-  generate_counterfactuals       generate counterfactual molecules that change the model prediction
+  select_compound_for_xai        select a correctly predicted compound for any XAI method (sklearn or GNN)
+  generate_counterfactuals       generate counterfactual molecules (sklearn or GNN) that change the model prediction
   visualize_counterfactuals      draw query compound + counterfactuals as a molecule grid image
-  explain_with_molce             contrastive R-group + scaffold attribution — why class A and not class B?
-  identify_recurrent_molce_rules global MolCE: aggregate top-3 R-group + scaffold rules across a compound class
+  explain_with_molce             contrastive R-group + scaffold attribution (sklearn or GNN) — why class A and not class B?
+  identify_recurrent_molce_rules global MolCE (sklearn or GNN): aggregate top-3 R-group + scaffold rules across a compound class
   select_compound_for_edgeshaper  randomly select a correctly predicted graph compound for EdgeSHAPer analysis
   explain_gnn_with_edgeshaper    edge-level Shapley values (required tool for GNN prediction explanations)
   visualize_edgeshaper_results   generate edge importance heatmaps on molecular structures and save a PNG artifact

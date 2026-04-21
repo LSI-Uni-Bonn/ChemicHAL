@@ -43,6 +43,34 @@ from chemagent.session_utils import get_session_logger as _get_session_logger
 
 
 # ---------------------------------------------------------------------------
+# GNN-compatible CF generator
+# ---------------------------------------------------------------------------
+
+class _GNNCFGenerator:
+    """CFGenerator subclass that routes predictions through a GNNClassifier.
+
+    Overrides ``_featurize`` to store Mol objects in the GNNClassifier's buffer
+    and return integer indices, so ``model.predict`` / ``predict_proba`` run
+    GNN inference on the original molecules instead of ECFP fingerprints.
+
+    Constructed lazily inside ``generate_counterfactuals`` — only imported when
+    ``gnn_model_class_name`` is provided.
+    """
+
+    @staticmethod
+    def create(CFGeneratorBase, gnn_classifier, **kwargs):
+        """Return a CFGenerator subclass instance with GNN-aware _featurize."""
+        import numpy as _np
+
+        class _Inner(CFGeneratorBase):
+            def _featurize(self, mols):
+                self.model._mol_buffer = list(mols)
+                return _np.arange(len(mols)).reshape(-1, 1)
+
+        return _Inner(model_obj=gnn_classifier, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -126,7 +154,7 @@ def _mol_to_pil(
         d2d = MolDraw2DCairo(size[0], size[1])
         dopts = d2d.drawOptions()
         dopts.useBWAtomPalette()
-        dopts.prepareMolsBeforeDrawing = True
+        dopts.prepareMolsBeforeDrawing = False
         dopts.clearBackground = True
 
         d2d.DrawMolecule(mol, highlightAtoms=atoms_to_highlight)
@@ -189,6 +217,9 @@ def generate_counterfactuals(
     max_multisite_rgroup_combos: int = 500,
     max_rgroups_for_enumeration: int = 1000,
     max_combination_cores: int = 10,
+    gnn_model_class_name: Optional[str] = None,
+    gnn_hidden_channels: int = 64,
+    gnn_num_classes: int = 2,
 ) -> dict[str, Any]:
     """Generate counterfactual molecules for a single query compound.
 
@@ -209,11 +240,15 @@ def generate_counterfactuals(
     counterfactuals, ranked by Tanimoto similarity (highest first).  Tanimoto
     is computed only for confirmed counterfactuals, not the full candidate pool.
 
+    For GNN models, set ``gnn_model_class_name`` (e.g. ``'GCN'``) and point
+    ``model_path`` to the ``.pt`` checkpoint. The ``n_bits`` / ``radius``
+    parameters are ignored in GNN mode.
+
     Args:
     query_smiles : str
         SMILES of the compound to analyse.
     model_path : str
-        Path to the trained sklearn model (.pkl).
+        Path to the trained model (.pkl for sklearn, .pt for GNN).
     split_file_path : str
         Path to the split .pkl file (from split_dataset). All unique SMILES in
         train + test are used to build the R-group library.
@@ -231,15 +266,22 @@ def generate_counterfactuals(
         Tanimoto similarity before trimming.
     max_multisite_rgroup_combos : int, optional
         Maximum number of randomly sampled multi-site R-group combinations
-        (default 200). Set to 0 to disable multi-site generation.
+        (default 500). Set to 0 to disable multi-site generation.
     max_rgroups_for_enumeration : int, optional
         Maximum R-groups sampled from the full library for candidate generation
-        (default 500). Controls the speed/coverage trade-off: O(n × n_positions)
+        (default 1000). Controls the speed/coverage trade-off: O(n × n_positions)
         molzip calls per step. Set to 0 to use the full library.
     max_combination_cores : int, optional
         Maximum alternative scaffold cores tried in the combination step
-        (default 5). Prevents combinatorial explosion when many scaffold matches
+        (default 10). Prevents combinatorial explosion when many scaffold matches
         are found.
+    gnn_model_class_name : str, optional
+        GNN architecture name: one of GCN | GraphSAGE | GAT | GC_GNN | GIN.
+        Auto-detected from .pt checkpoint metadata when omitted.
+    gnn_hidden_channels : int, optional
+        Hidden dimension of the GNN (default 64). Must match training config.
+    gnn_num_classes : int, optional
+        Number of output classes of the GNN (default 2). Must match training config.
 
     Returns:
     dict
@@ -278,12 +320,6 @@ def generate_counterfactuals(
     if Chem.MolFromSmiles(query_smiles) is None:
         raise ValueError(f"Invalid query SMILES: {query_smiles!r}")
 
-    # Load model
-    try:
-        model = joblib.load(model_path)
-    except Exception as e:
-        raise ValueError(f"Failed to load model from {model_path!r}: {e}")
-
     # Collect dataset SMILES for R-group library
     try:
         split_data = joblib.load(split_file_path)
@@ -294,22 +330,56 @@ def generate_counterfactuals(
     if not unique_smiles:
         raise ValueError("No SMILES found in train or test splits of the split file.")
 
+    # Load model (sklearn or GNN)
+    # Auto-detect GNN checkpoints from .pt metadata when gnn_model_class_name
+    # was not explicitly provided by the caller.
+    from chemagent.explainability.gnn_compat import infer_gnn_params
+    gnn_model_class_name, gnn_hidden_channels, gnn_num_classes = infer_gnn_params(
+        model_path, gnn_model_class_name, gnn_hidden_channels, gnn_num_classes,
+    )
+
+    if gnn_model_class_name is not None:
+        from chemagent.explainability.gnn_compat import load_chemagent_gnn, GNNClassifier
+        try:
+            gnn = load_chemagent_gnn(
+                model_path, gnn_model_class_name,
+                gnn_hidden_channels, gnn_num_classes,
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to load GNN model from {model_path!r}: {e}")
+        model = GNNClassifier(gnn)
+    elif str(model_path).endswith(".pt"):
+        raise ValueError(
+            f"Model path {model_path!r} is a .pt file but no GNN architecture "
+            "could be inferred from checkpoint metadata. Supply "
+            "gnn_model_class_name explicitly (e.g. 'GCN', 'GraphSAGE')."
+        )
+    else:
+        try:
+            model = joblib.load(model_path)
+        except Exception as e:
+            raise ValueError(f"Failed to load model from {model_path!r}: {e}")
+
     # Run generator
     from chemagent.explainability.Counterfactuals.CF_generator_v3 import CFGenerator
 
+    gen_kwargs = dict(
+        query_smiles=query_smiles,
+        data_smiles=unique_smiles,
+        n_bits=n_bits,
+        radius=radius,
+        core_dict_path=core_dict_path,
+        similarity_threshold=similarity_threshold,
+        max_multisite_rgroup_combos=max_multisite_rgroup_combos,
+        max_rgroups_for_enumeration=max_rgroups_for_enumeration,
+        max_combination_cores=max_combination_cores,
+    )
+
     try:
-        gen = CFGenerator(
-            query_smiles=query_smiles,
-            model_obj=model,
-            data_smiles=unique_smiles,
-            n_bits=n_bits,
-            radius=radius,
-            core_dict_path=core_dict_path,
-            similarity_threshold=similarity_threshold,
-            max_multisite_rgroup_combos=max_multisite_rgroup_combos,
-            max_rgroups_for_enumeration=max_rgroups_for_enumeration,
-            max_combination_cores=max_combination_cores,
-        )
+        if gnn_model_class_name is not None:
+            gen = _GNNCFGenerator.create(CFGenerator, model, **gen_kwargs)
+        else:
+            gen = CFGenerator(model_obj=model, **gen_kwargs)
     except ValueError as e:
         # Decomposition failed before any candidates were generated
         return {
