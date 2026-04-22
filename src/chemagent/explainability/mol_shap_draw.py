@@ -786,7 +786,7 @@ def get_atom_wise_weight_map(
     ps = Draw.ContourParams()
     ps.fillGrid = True
     ps.gridResolution = 0.1
-    ps.extraGridPadding = 0.1#2.0
+    ps.extraGridPadding = 0.9#2.0
 
     if isinstance(cmap, str):
         cmap = plt.get_cmap(cmap)
