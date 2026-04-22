@@ -387,7 +387,7 @@ class CFGenerator:
         """Return deduplicated (mol, change_type) tuples for all perturbation types."""
         try:
             core, rgroups = self._mc.decompose_molecule(self.query_mol, original=True)
-        except ValueError as e:
+        except (ValueError, KeyError) as e:
             raise ValueError(f"Query molecule cannot be decomposed: {e}")
 
         # Sample R-group subset once — shared by all substituent/combination steps.

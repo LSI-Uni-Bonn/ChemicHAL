@@ -380,7 +380,7 @@ def generate_counterfactuals(
             gen = _GNNCFGenerator.create(CFGenerator, model, **gen_kwargs)
         else:
             gen = CFGenerator(model_obj=model, **gen_kwargs)
-    except ValueError as e:
+    except (ValueError, KeyError) as e:
         # Decomposition failed before any candidates were generated
         return {
             "query_smiles": query_smiles,
@@ -396,7 +396,7 @@ def generate_counterfactuals(
 
     try:
         cf_df = gen.find_cfs(max_counterfactuals=max_counterfactuals)
-    except ValueError as e:
+    except (ValueError, KeyError) as e:
         return {
             "query_smiles": query_smiles,
             "predicted_class": gen.query_class,

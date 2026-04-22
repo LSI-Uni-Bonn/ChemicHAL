@@ -57,10 +57,10 @@ class MolContrast:
         core = MurckoScaffold.GetScaffoldForMol(mol)
         rgd, fails = rdRGroupDecomposition.RGroupDecompose([core], [mol], asRows=False)
 
-        if original is True and len(rgd) == 1:
+        if original is True and (len(rgd) <= 1 or "Core" not in rgd):
             raise ValueError("molecule cannot be decomposed")
 
-        elif len(rgd) == 1:
+        elif len(rgd) <= 1 or "Core" not in rgd:
             return None, None
 
         else:
@@ -92,7 +92,12 @@ class MolContrast:
 
         for smile in data_smiles:
             mol = Chem.MolFromSmiles(smile)
-            core, rgroups = self.decompose_molecule(mol)
+            if mol is None:
+                continue
+            try:
+                core, rgroups = self.decompose_molecule(mol)
+            except Exception:
+                continue
 
             if core is None or rgroups is None:
                 continue
