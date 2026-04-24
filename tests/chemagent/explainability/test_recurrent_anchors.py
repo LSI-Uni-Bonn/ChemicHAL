@@ -4,6 +4,66 @@ import json
 import joblib
 from pathlib import Path
 
+from PIL import Image as PILImage
+
+sys.path.insert(0, "src")
+from chemagent.explainability import molanchor_tools
+
+
+def test_identify_recurrent_anchor_rules_returns_json_only_with_image_paths(monkeypatch, tmp_path):
+    class DummyLogger:
+        session_dir = tmp_path
+        session_id = "testsession"
+
+    class DummyAnchor:
+        def map_anchor_to_cpd(self, anchor_indices):
+            return PILImage.new("RGB", (120, 80), color=(255, 255, 255))
+
+    def fake_explain_batch_with_molanchor(*args, **kwargs):
+        cache = kwargs["_anchor_mol_cache"]
+        cache["fragA"] = ({"anchor_indices": [0]}, DummyAnchor())
+        cache["fragB||fragC"] = ({"anchor_indices": [1]}, DummyAnchor())
+        return {
+            "detailed_results": [
+                {"compound_index": 0, "smiles": "CCO", "status": "completed", "anchor_smiles": ["fragA"]},
+                {"compound_index": 1, "smiles": "CCN", "status": "completed", "anchor_smiles": ["fragB", "fragC"]},
+            ],
+            "aggregate_statistics": {
+                "anchor_frequency": {
+                    "fragA": 2,
+                    "fragB||fragC": 1,
+                }
+            },
+            "compounds_analyzed": 2,
+        }
+
+    monkeypatch.setattr(molanchor_tools, "_get_session_logger", lambda: DummyLogger())
+    monkeypatch.setattr(molanchor_tools, "explain_batch_with_molanchor", fake_explain_batch_with_molanchor)
+    monkeypatch.setattr(molanchor_tools.joblib, "load", lambda path: object())
+    monkeypatch.setattr(molanchor_tools.Chem, "MolFromSmiles", lambda smiles: object())
+    monkeypatch.setattr(molanchor_tools, "_smiles_to_mol_for_matching", lambda smiles: object())
+
+    output = molanchor_tools.identify_recurrent_anchor_rules(
+        split_file_path="split.pkl",
+        model_path="model.pkl",
+        target_class=1,
+        top_n_anchors=2,
+    )
+
+    assert isinstance(output, list)
+    assert len(output) == 1
+    assert isinstance(output[0], str)
+
+    metadata = json.loads(output[0])
+    assert metadata["status"] == "completed"
+    assert len(metadata["recurrent_rules"]) == 2
+    assert metadata["statistics"]["total_unique_anchors"] == 2
+    assert metadata["statistics"]["top_n_rules_shown"] == 2
+    assert len(metadata["image_paths"]) == 2
+    for image_path in metadata["image_paths"]:
+        assert Path(image_path).exists()
+
+
 # Windows multiprocessing requires the __main__ guard.
 if __name__ == "__main__":
     SPLIT_PATH = Path(

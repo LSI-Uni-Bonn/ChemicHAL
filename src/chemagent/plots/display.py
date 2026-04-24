@@ -31,13 +31,19 @@ def show_plot(plot_path: str) -> list:
                    plot_regression_results().
 
     Returns:
-        A list of [{"plot": path}, Image] so the image renders inline alongside
-        a text confirmation in MCP-compatible chat UIs.
-        The image is returned as inline PNG bytes for maximum cross-client reliability.
+        A list containing a text dict and an inline PNG Image object.
+        IMPORTANT: The tool result will contain an image object with a "markdown"
+        field. You MUST copy that markdown string verbatim into your response
+        (e.g. ``![Image](./image-xyz.png)``) so the image renders in the chat.
+        Do NOT describe or paraphrase the image — output the markdown string exactly
+        as it appears in the tool result, with no surrounding text required.
     """
     p = Path(plot_path)
     if not p.exists():
         p = WORKSPACE_ROOT / plot_path
     if not p.exists():
         raise FileNotFoundError(f"Plot file not found: {plot_path}")
-    return [{"plot": str(p)}, Image(data=p.read_bytes(), format="png")]
+    return [
+        {"instruction": "Copy the image markdown below VERBATIM into your response to display it inline. Do NOT describe it — output the exact markdown string from the image object."},
+        Image(data=p.read_bytes(), format="png"),
+    ]

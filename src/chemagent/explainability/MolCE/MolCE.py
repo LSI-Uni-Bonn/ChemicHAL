@@ -1,6 +1,7 @@
 from typing import *
 import pandas as pd
 import pickle
+from pathlib import Path
 import numpy as np
 import re
 import random
@@ -117,7 +118,8 @@ class MolContrast:
             dict: Dictionary mapping generic cores to scaffold lists.
         """
 
-        with open('core_dict_generic.pkl', 'rb') as f:
+        path = Path(__file__).resolve().parent / 'core_dict_generic.pkl'
+        with open(path, 'rb') as f:
             core_dict = pickle.load(f)
 
         return core_dict
@@ -188,9 +190,6 @@ class MolContrast:
                 # and finally yield the product molecule
                 yield prod
 
-            else:
-                print("failed product")
-
     def generate_ext_r_foils(self, core: Chem.Mol, order: List[List[Optional[Chem.Mol]]],
                              external_rgroups_used: List[Chem.Mol]) -> Tuple[List[Chem.Mol], List[str]]:
         """
@@ -219,8 +218,6 @@ class MolContrast:
                     products.append(prod)
                     rgroups.append(rgroup)
                     seen.add(smi)
-                else:
-                    print("seen product before")
 
         assert len(products) == len(rgroups)
 

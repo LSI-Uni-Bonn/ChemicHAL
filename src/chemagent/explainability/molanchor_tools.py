@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional, Union
 import random
 import base64
+import hashlib
 
 import joblib
 import json
@@ -40,6 +41,9 @@ if str(_SRC) not in sys.path:
 from chemagent.explainability.MolAnchor.MolAnchor import MolecularAnchor
 from chemagent.session_utils import get_session_logger as _get_session_logger
 from chemagent.featurization.fingerprints import ECFP
+# Reuse the MolCE/counterfactual drawing primitives so the recurrent-rule
+# grid matches their visual style (PIL render + legend + column stitch).
+from chemagent.explainability.molce_tools import _show_mol_as_pil, _make_mol_grid
 
 # ---------------------------------------------------------------------------
 # GNN-compatible graph_func / graph_predict for MolAnchor
@@ -456,7 +460,7 @@ def explain_with_molanchor(
         Path to original fingerprint array (.npy). Rarely needed.
     output_path : str, optional
         Path to save the visualization image (.png).
-        Defaults to ``session_dir/plots/molanchor_<session_id>.png``.
+        Defaults to ``session_dir/plots/molanchor_class<target_class>_<smi_hash>_<session_id>.png``.
     gnn_model_class_name : str, optional
         Required when representation="graphs". GNN architecture name:
         one of GCN | GraphSAGE | GAT | GC_GNN | GIN.
@@ -520,7 +524,13 @@ def explain_with_molanchor(
     img = mol_anchor.map_anchor_to_cpd(anchor_indices)
 
     if output_path is None:
-        img_path = logger.session_dir / "plots" / f"molanchor_{logger.session_id}.png"
+        # Qualify by class + SMILES hash so repeat calls with different
+        # target_class / SMILES don't overwrite each other in the same session.
+        smi_h = hashlib.md5(smiles.encode("utf-8")).hexdigest()[:8]
+        img_path = (
+            logger.session_dir / "plots"
+            / f"molanchor_class{target_class}_{smi_h}_{logger.session_id}.png"
+        )
     else:
         img_path = Path(output_path)
 
@@ -716,6 +726,7 @@ def explain_batch_with_molanchor(
     gnn_num_classes: int = 2,
     _preloaded_model=None,
     _preloaded_graph_funcs=None,
+    _anchor_mol_cache: Optional[dict] = None,
 ) -> dict[str, Any]:
     """
     Run MolAnchor analysis for all correctly predicted compounds of a given class.
@@ -921,12 +932,12 @@ def explain_batch_with_molanchor(
     num_fragments_list = []
     precision_list = []
     compounds_with_anchors = 0
-    
+
     for compound_idx in correct_indices:
         smiles = smiles_list[compound_idx]
-        
+
         try:
-            result, _ = _explain_with_molanchor(
+            result, mol_anchor = _explain_with_molanchor(
                 smiles=smiles,
                 model_path=model_path,
                 fragment_scheme=fragment_scheme,
@@ -952,26 +963,30 @@ def explain_batch_with_molanchor(
             result["true_label"] = int(labels[compound_idx])
             result["predicted_confidence"] = float(confidences[compound_idx])
             detailed_results.append(result)
-            
+
             # Aggregate statistics
             num_fragments_list.append(result.get("num_fragments", 0))
             precision_list.append(result.get("precision", 0.0))
-            
+
             # Track anchor frequency (whole rule as one unit, single- or multi-fragment)
             if result.get("anchor_smiles"):
                 compounds_with_anchors += 1
                 anchor_key = "||".join(result["anchor_smiles"])
                 anchor_frequency[anchor_key] = anchor_frequency.get(anchor_key, 0) + 1
-                    
+
+                # Cache first mol_anchor per rule for downstream visualization
+                if _anchor_mol_cache is not None and anchor_key not in _anchor_mol_cache:
+                    _anchor_mol_cache[anchor_key] = (result, mol_anchor)
+
         except Exception as e:
-            # Log error but continue with other compounds
             detailed_results.append({
                 "smiles": smiles,
                 "compound_index": int(compound_idx),
                 "status": "failed",
                 "error": str(e)
             })
-    
+
+
     # Sort anchors by frequency, get top 5
     most_common_anchors = sorted(
         anchor_frequency.items(),
@@ -1084,21 +1099,18 @@ def identify_recurrent_anchor_rules(
 
     Returns:
     list
-        Interleaved per-rule items followed by a summary JSON:
-        [MCPImage_1, rule_1_json, MCPImage_2, rule_2_json, ..., summary_json]
+        [MCPImage, metadata_json] when at least one rule renders, otherwise
+        [metadata_json]. The image is a single grid showing the top-N rules
+        side by side: each cell is a representative compound with the anchor
+        atoms highlighted and a legend giving rank, anchor occurrence, and
+        substructure occurrence — matching the MolCE / counterfactual
+        visualisation style.
 
-        Each rule JSON contains:
-        - rank: position in the ranked list (1 = most recurrent)
-        - fragment: SMILES string (single-fragment) or list of SMILES (multi-fragment rule)
-        - anchor_occurrence: fraction of analyzed compounds where this rule was identified
-        - substructure_occurrence: fraction of analyzed compounds containing the fragment(s)
-        - num_compounds_with_anchor: absolute count for anchor_occurrence
-        - num_compounds_with_substructure: absolute count for substructure_occurrence
-        - image_path: path to the saved highlight image (if visualization succeeded)
-
-        The final summary JSON contains:
-        - target_class, split, num_analyzed_compounds
-        - total_unique_anchor_rules, top_n_rules_shown, status
+        The metadata JSON contains:
+        - recurrent_rules: ranked list of rule dicts
+        - statistics: aggregate counts for the analysis
+        - image_path: path to the saved grid PNG (or None)
+        - status, target_class, split, num_analyzed_compounds
 
     Raises:
     ValueError
@@ -1111,9 +1123,9 @@ def identify_recurrent_anchor_rules(
     ...     target_class=1,
     ...     top_n_anchors=3
     ... )
-    >>> # results is a list: [MCPImage_1, rule_1_json, ..., summary_json]
+    >>> # results is [MCPImage, metadata_json] or [metadata_json]
     >>> import json
-    >>> summary = json.loads(results[-1])  # last element is the summary
+    >>> metadata = json.loads(results[-1])
     """
     allow_frag_combinations = _parse_bool(allow_frag_combinations)
     return_multiple_anchors = _parse_bool(return_multiple_anchors)
@@ -1150,7 +1162,9 @@ def identify_recurrent_anchor_rules(
             raise ValueError(f"Failed to load model from {model_path}: {e}")
         _graph_funcs = None
 
-    # Run batch analysis internally — reuse the loaded model
+    # Run batch analysis internally — reuse the loaded model and cache
+    # mol_anchor objects so we can visualize without re-running analysis
+    _anchor_mol_cache: dict[str, tuple] = {}
     batch_results = explain_batch_with_molanchor(
         split_file_path=split_file_path,
         model_path=model_path,
@@ -1171,6 +1185,7 @@ def identify_recurrent_anchor_rules(
         gnn_num_classes=gnn_num_classes,
         _preloaded_model=_model,
         _preloaded_graph_funcs=_graph_funcs,
+        _anchor_mol_cache=_anchor_mol_cache,
     )
 
     # Extract analyzed compounds and build anchor→representative compound mapping
@@ -1195,8 +1210,12 @@ def identify_recurrent_anchor_rules(
             "target_class": target_class,
             "split": split,
             "num_analyzed_compounds": num_analyzed_compounds,
-            "total_unique_anchor_rules": 0,
-            "top_n_rules_shown": 0,
+            "recurrent_rules": [],
+            "statistics": {
+                "total_unique_anchors": 0,
+                "top_n_rules_shown": 0,
+            },
+            "image_path": None,
             "status": "no anchors found",
         }
         return [json.dumps(summary, indent=2)]
@@ -1258,57 +1277,376 @@ def identify_recurrent_anchor_rules(
     if top_n_anchors is not None and len(final_rules) > top_n_anchors:
         final_rules = final_rules[:top_n_anchors]
     
-    # Generate one highlighted image per anchor rule; interleave with per-rule JSON
+    # Render top rules as a single grid: one cell per rule, representative
+    # compound with anchor atoms highlighted, legend showing the metrics.
+    import itertools as _it
+
     plots_dir = logger.session_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
-    output_items = []  # alternating: MCPImage, rule_json_str, MCPImage, rule_json_str, ...
+
+    rule_pils: list = []
     for i, rule in enumerate(final_rules):
         rule["rank"] = i + 1
         frag = rule["fragment"]
         lookup_key = "||".join(frag) if isinstance(frag, list) else frag
-        rep_smiles = anchor_representative.get(lookup_key)
-        if rep_smiles:
-            try:
-                vis_result, mol_anchor = _explain_with_molanchor(
-                    smiles=rep_smiles,
-                    model_path=model_path,
-                    fragment_scheme=fragment_scheme,
-                    representation=representation,
-                    target_class=target_class,
-                    cutoff=cutoff,
-                    allow_frag_combinations=allow_frag_combinations,
-                    return_multiple_anchors=return_multiple_anchors,
-                    acc_for_radius=acc_for_radius,
-                    n_bits=n_bits,
-                    radius=radius,
-                    bit_info_path=bit_info_path,
-                    original_fp_path=original_fp_path,
-                    gnn_model_class_name=gnn_model_class_name,
-                    gnn_hidden_channels=gnn_hidden_channels,
-                    gnn_num_classes=gnn_num_classes,
-                    _preloaded_model=_model,
-                    _preloaded_graph_funcs=_graph_funcs,
-                )
-                anchor_indices = vis_result.get("anchor_indices", [])
-                if anchor_indices:
-                    img = mol_anchor.map_anchor_to_cpd(anchor_indices)
-                    img_path = plots_dir / f"anchor_rule_{i + 1}_{logger.session_id}.png"
-                    _persist_image_output(img, img_path)
-                    rule["image_path"] = str(img_path)
-                    output_items.append(MCPImage(path=img_path))
-            except Exception:
-                pass
-        output_items.append(json.dumps(rule, indent=2))
+        cached = _anchor_mol_cache.get(lookup_key)
+        if cached is None:
+            continue
+        try:
+            vis_result, mol_anchor = cached
+            anchor_frag_ids = vis_result.get("anchor_indices", [])
+            if not anchor_frag_ids:
+                continue
+            atom_ids = list(_it.chain.from_iterable(
+                mol_anchor.mol_atom_ids[f] for f in anchor_frag_ids
+            ))
+            legend = (
+                f"Rank {i + 1}\n"
+                f"anchor occurrence: {rule['anchor_occurrence']:.2f}\n"
+                f"substructure occurrence: {rule['substructure_occurrence']:.2f}"
+            )
+            pil = _show_mol_as_pil(
+                mol_anchor.mol, legend=legend, highlightAtoms=atom_ids,
+            )
+            if pil is not None:
+                rule_pils.append(pil)
+        except Exception:
+            continue
+
+    image_path: Optional[Path] = None
+    if rule_pils:
+        image_path = plots_dir / f"recurrent_anchors_class{target_class}_{logger.session_id}.png"
+        try:
+            _make_mol_grid(rule_pils, cols=len(rule_pils)).save(str(image_path))
+        except Exception:
+            image_path = None
+
+    # Persist results to disk so aggregate_substructure_anchor_rules can load them later.
+    results_dir = logger.session_dir / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    results_file_path = results_dir / f"recurrent_anchors_class{target_class}_{logger.session_id}.json"
+    try:
+        results_payload = {
+            "target_class": target_class,
+            "split": split,
+            "num_analyzed_compounds": num_analyzed_compounds,
+            "recurrent_rules": final_rules,
+            "detailed_results": [
+                r for r in batch_results.get("detailed_results", [])
+                if r.get("status") == "completed"
+            ],
+            "statistics": {
+                "total_unique_anchors": len(anchor_frequency),
+                "top_n_rules_shown": len(final_rules),
+            },
+            "image_path": str(image_path) if image_path is not None else None,
+            "status": "completed",
+        }
+        with open(results_file_path, "w", encoding="utf-8") as _rf:
+            json.dump(results_payload, _rf, indent=2)
+    except Exception as _e:
+        results_file_path = None
 
     summary = {
         "target_class": target_class,
         "split": split,
         "num_analyzed_compounds": num_analyzed_compounds,
-        "total_unique_anchor_rules": len(anchor_frequency),
-        "top_n_rules_shown": len(final_rules),
+        "recurrent_rules": final_rules,
+        "statistics": {
+            "total_unique_anchors": len(anchor_frequency),
+            "top_n_rules_shown": len(final_rules),
+        },
+        "image_path": str(image_path) if image_path is not None else None,
+        "results_file_path": str(results_file_path) if results_file_path is not None else None,
         "status": "completed",
     }
-    return output_items + [json.dumps(summary, indent=2)]
+    output: list = []
+    if image_path is not None:
+        output.append(MCPImage(path=image_path))
+    output.append(json.dumps(summary, indent=2))
+    return output
 
 
+def aggregate_substructure_anchor_rules(
+    results_file_path: str,
+    output_path: Optional[str] = None,
+) -> list:
+    """
+    Aggregate single-fragment anchor rules that are substructures of other anchor rules.
 
+    Reads the JSON results file produced by ``identify_recurrent_anchor_rules``
+    (via the ``results_file_path`` field in its output) and merges rules where
+    one fragment is a substructure of another: the more **general** (root)
+    fragment is kept as the representative and the more specific (child)
+    fragments are absorbed into its group. Statistics (anchor occurrence and
+    substructure occurrence) are then recalculated for each aggregated group
+    directly from the saved per-compound results, so no model re-evaluation is
+    required.
+
+    Only **single-fragment** rules are candidates for aggregation. Multi-fragment
+    (combination-anchor) rules are passed through unchanged.
+
+    The substructure relationship is established via RDKit SMARTS matching:
+    fragment A is "more general than" fragment B when every atom of A is
+    present in B, i.e. ``mol_B.HasSubstructMatch(mol_A)`` is True. Chains of
+    such relationships are collapsed using BFS so that A → B → C all become a
+    single group with A as the representative.
+
+    Args:
+        results_file_path : str
+            Path to the JSON file produced by ``identify_recurrent_anchor_rules``.
+            Typically found in ``<session_dir>/results/recurrent_anchors_class<N>_<session_id>.json``.
+        output_path : str, optional
+            Path where the aggregated-rules PNG grid should be saved.
+            Defaults to the ``plots/`` directory adjacent to ``results_file_path``.
+
+    Returns:
+        list
+            ``[MCPImage, metadata_json]`` when a grid image is produced,
+            otherwise ``[metadata_json]``.
+
+            The metadata JSON contains:
+
+            - ``aggregated_rules``: re-ranked list of rule dicts, each with
+              ``fragment`` (representative SMARTS), ``merged_fragments``
+              (all fragments in the group), recalculated ``anchor_occurrence``,
+              ``substructure_occurrence``, ``num_compounds_with_anchor``,
+              ``num_compounds_with_substructure``, ``rank``, and
+              ``aggregated`` (bool).
+            - ``num_rules_before_aggregation``: total rules before merging
+            - ``num_rules_after_aggregation``: total rules after merging
+            - ``num_analyzed_compounds``: compounds in the analysis
+            - ``image_path``: path to the PNG grid (or None)
+            - ``status``, ``target_class``, ``split``
+
+    Raises:
+        ValueError
+            If ``results_file_path`` does not exist or cannot be parsed.
+
+    Examples:
+        >>> out = identify_recurrent_anchor_rules(
+        ...     split_file_path="session/splits/data.pkl",
+        ...     model_path="session/models/model.pkl",
+        ...     target_class=1,
+        ... )
+        >>> meta = json.loads(out[-1])
+        >>> results = aggregate_substructure_anchor_rules(
+        ...     results_file_path=meta["results_file_path"]
+        ... )
+        >>> import json; agg = json.loads(results[-1])
+        >>> agg["aggregated_rules"][0]["aggregated"]   # True if merged
+    """
+    results_path = Path(results_file_path)
+    if not results_path.exists():
+        return [json.dumps({
+            "status": "error",
+            "message": f"Results file not found: {results_file_path}",
+        }, indent=2)]
+
+    try:
+        with open(results_path, "r", encoding="utf-8") as _f:
+            data = json.load(_f)
+    except Exception as e:
+        return [json.dumps({
+            "status": "error",
+            "message": f"Failed to parse results file: {e}",
+        }, indent=2)]
+
+    recurrent_rules: list[dict] = data.get("recurrent_rules", [])
+    detailed_results: list[dict] = data.get("detailed_results", [])
+    num_analyzed_compounds: int = data.get("num_analyzed_compounds", 0)
+    target_class = data.get("target_class")
+    split = data.get("split", "test")
+
+    if not recurrent_rules:
+        return [json.dumps({
+            "status": "no rules",
+            "message": "No recurrent rules found in the results file.",
+            "aggregated_rules": [],
+        }, indent=2)]
+
+    # ── Separate single-fragment rules (candidates) from multi-fragment rules ──
+    single_rules = [r for r in recurrent_rules if isinstance(r.get("fragment"), str)]
+    multi_rules  = [r for r in recurrent_rules if not isinstance(r.get("fragment"), str)]
+
+    # ── Parse each single-fragment rule into an RDKit query mol (SMARTS) ──────
+    n = len(single_rules)
+    rule_mols: list[Optional[Chem.Mol]] = []
+    for rule in single_rules:
+        frag = rule["fragment"]
+        mol = Chem.MolFromSmarts(frag)
+        rule_mols.append(mol)
+
+    # ── Build directed substructure graph: edge i→j means i is a substructure
+    #    of j, i.e. j is MORE SPECIFIC than i, so j gets merged into i's group. ──
+    # children[i] = set of rules that are more specific than i (absorbed by i)
+    children: list[set[int]] = [set() for _ in range(n)]
+    parents:  list[set[int]] = [set() for _ in range(n)]
+
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            mol_i = rule_mols[i]
+            mol_j = rule_mols[j]
+            if mol_i is None or mol_j is None:
+                continue
+            try:
+                # mol_j.HasSubstructMatch(mol_i): mol_i IS a substructure of mol_j
+                # → i is more general, j is more specific → j gets merged into i
+                if mol_j.HasSubstructMatch(mol_i):
+                    children[i].add(j)
+                    parents[j].add(i)
+            except Exception:
+                pass
+
+    # ── Find group roots: rules with no parents (most general) that absorb
+    #    at least one child, OR isolated nodes that absorb no one. ─────────────
+    # We only group nodes that participate in at least one relationship.
+    from collections import deque
+
+    def _bfs_descendants(root_idx: int) -> set[int]:
+        """Collect all descendants of root_idx via BFS through children."""
+        visited: set[int] = set()
+        queue = deque(children[root_idx])
+        while queue:
+            node = queue.popleft()
+            if node in visited:
+                continue
+            visited.add(node)
+            queue.extend(children[node] - visited)
+        return visited
+
+    roots = [i for i in range(n) if not parents[i]]  # rules with no parent
+
+    # ── Build groups {root → frozenset(all descendants incl. root)} ──────────
+    groups: dict[int, set[int]] = {}
+    for r in roots:
+        desc = _bfs_descendants(r)
+        groups[r] = {r} | desc  # include root itself
+
+    # Rules that appear in no group at all (pure singletons that were not
+    # reachable from any root with children) are already handled since all
+    # rules without a parent are roots — a root with no children forms a
+    # trivially sized group of 1.
+
+    # ── Collect SMILES sets per group for fast anchor lookup ─────────────────
+    # Map each compound's anchor_smiles[0] to the group root it belongs to.
+    fragment_to_root: dict[str, int] = {}
+    for root_idx, member_indices in groups.items():
+        for idx in member_indices:
+            fragment_to_root[single_rules[idx]["fragment"]] = root_idx
+
+    # ── Recalculate statistics for each group from detailed_results ───────────
+    output_rules: list[dict] = []
+
+    for root_idx, member_indices in groups.items():
+        group_fragments: set[str] = {single_rules[idx]["fragment"] for idx in member_indices}
+        representative_frag: str = single_rules[root_idx]["fragment"]
+        representative_mol = rule_mols[root_idx]
+        is_aggregated = len(member_indices) > 1
+
+        # Anchor count: compounds where the single anchor SMILES is in the group
+        num_with_anchor = 0
+        for res in detailed_results:
+            anchors = res.get("anchor_smiles", [])
+            if len(anchors) == 1 and anchors[0] in group_fragments:
+                num_with_anchor += 1
+
+        # Substructure count: compounds whose SMILES contain the representative fragment
+        num_with_substructure = 0
+        if representative_mol is not None:
+            for res in detailed_results:
+                smi = res.get("smiles", "")
+                if not smi:
+                    continue
+                try:
+                    parent_mol = Chem.MolFromSmiles(smi)
+                    if parent_mol is not None and parent_mol.HasSubstructMatch(representative_mol):
+                        num_with_substructure += 1
+                except Exception:
+                    pass
+
+        anchor_occ = num_with_anchor / num_analyzed_compounds if num_analyzed_compounds > 0 else 0.0
+        sub_occ    = num_with_substructure / num_analyzed_compounds if num_analyzed_compounds > 0 else 0.0
+
+        rule_out: dict = {
+            "fragment":                        representative_frag,
+            "merged_fragments":                sorted(group_fragments),
+            "substructure_occurrence":         float(sub_occ),
+            "anchor_occurrence":               float(anchor_occ),
+            "num_compounds_with_substructure": int(num_with_substructure),
+            "num_compounds_with_anchor":       int(num_with_anchor),
+            "aggregated":                      is_aggregated,
+        }
+        output_rules.append(rule_out)
+
+    # ── Append multi-fragment rules unchanged ─────────────────────────────────
+    for rule in multi_rules:
+        rule_copy = dict(rule)
+        rule_copy["aggregated"] = False
+        rule_copy["merged_fragments"] = rule.get("fragment") if isinstance(rule.get("fragment"), list) else [rule.get("fragment")]
+        output_rules.append(rule_copy)
+
+    # ── Sort + assign ranks ───────────────────────────────────────────────────
+    output_rules.sort(
+        key=lambda x: (x["anchor_occurrence"], x["substructure_occurrence"]),
+        reverse=True,
+    )
+    for i, rule in enumerate(output_rules):
+        rule["rank"] = i + 1
+
+    # ── Render image: one cell per output rule (representative fragment) ──────
+    logger = _get_session_logger()
+    rule_pils: list = []
+    for rule in output_rules:
+        frag = rule["fragment"]
+        mol_to_draw = Chem.MolFromSmarts(frag) if isinstance(frag, str) else None
+        if mol_to_draw is None:
+            continue
+        try:
+            from rdkit.Chem import Draw, rdDepictor
+            rdDepictor.Compute2DCoords(mol_to_draw)
+            agg_note = " (merged)" if rule.get("aggregated") else ""
+            legend = (
+                f"Rank {rule['rank']}{agg_note}\n"
+                f"anchor: {rule['anchor_occurrence']:.2f}  "
+                f"sub: {rule['substructure_occurrence']:.2f}"
+            )
+            pil = _show_mol_as_pil(mol_to_draw, legend=legend)
+            if pil is not None:
+                rule_pils.append(pil)
+        except Exception:
+            continue
+
+    image_path: Optional[Path] = None
+    if rule_pils:
+        if output_path is not None:
+            img_dir = Path(output_path).parent
+        else:
+            img_dir = results_path.parent.parent / "plots"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        session_id = logger.session_id if hasattr(logger, "session_id") else "agg"
+        img_name = f"aggregated_anchors_class{target_class}_{session_id}.png"
+        image_path = Path(output_path) if output_path else img_dir / img_name
+        try:
+            _make_mol_grid(rule_pils, cols=max(1, len(rule_pils))).save(str(image_path))
+        except Exception:
+            image_path = None
+
+    # ── Build summary and return ──────────────────────────────────────────────
+    agg_summary = {
+        "target_class": target_class,
+        "split": split,
+        "num_analyzed_compounds": num_analyzed_compounds,
+        "num_rules_before_aggregation": len(recurrent_rules),
+        "num_rules_after_aggregation": len(output_rules),
+        "aggregated_rules": output_rules,
+        "image_path": str(image_path) if image_path is not None else None,
+        "status": "completed",
+    }
+    out: list = []
+    if image_path is not None:
+        out.append(MCPImage(path=image_path))
+    out.append(json.dumps(agg_summary, indent=2))
+    return out
