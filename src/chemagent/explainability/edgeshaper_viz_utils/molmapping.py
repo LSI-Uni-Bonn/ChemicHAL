@@ -68,6 +68,7 @@ def mapvalues2mol(mol: Chem.Mol,
         draw_opt = canvas.drawOptions()
         draw_opt.padding = 0.2
         draw_opt.bondLineWidth = 3
+        draw_opt.useBWAtomPalette()
         canvas.SetDrawOptions(draw_opt)
 
     if grid_resolution is None:
@@ -204,6 +205,7 @@ def get_depiction_limits(mol: Chem.Mol,
         draw_opt = canvas.drawOptions()
         draw_opt.padding = 0.2
         draw_opt.bondLineWidth = 3
+        draw_opt.useBWAtomPalette()
         canvas.SetDrawOptions(draw_opt)
 
     if grid_resolution is None:
