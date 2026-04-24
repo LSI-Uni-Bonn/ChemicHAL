@@ -25,6 +25,7 @@ ranked by Tanimoto similarity to the original.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from io import BytesIO
@@ -618,7 +619,8 @@ def get_most_confident_counterfactual(
     )
 
     if output_path is None:
-        out = logger.session_dir / "plots" / f"confident_cfs_{logger.session_id}.png"
+        smi_h = hashlib.md5(query_smiles.encode("utf-8")).hexdigest()[:8]
+        out = logger.session_dir / "plots" / f"confident_cfs_{smi_h}_{logger.session_id}.png"
     else:
         out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -764,7 +766,8 @@ def visualize_counterfactuals(
 
     # Save
     if output_path is None:
-        out = logger.session_dir / "plots" / f"counterfactuals_{logger.session_id}.png"
+        smi_h = hashlib.md5(query_smiles.encode("utf-8")).hexdigest()[:8]
+        out = logger.session_dir / "plots" / f"counterfactuals_{smi_h}_{logger.session_id}.png"
     else:
         out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)

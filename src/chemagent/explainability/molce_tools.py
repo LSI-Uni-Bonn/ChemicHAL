@@ -17,6 +17,7 @@ the predicted class from the foil.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -373,7 +374,7 @@ def explain_with_molce(
     output_path : str, optional
         Base path for output images (.png).  Two images are saved:
         ``<base>_rgroups.png`` and ``<base>_scaffolds.png``.
-        Defaults to ``session_dir/plots/molce_<session_id>``.
+        Defaults to ``session_dir/plots/molce_foil<foil_class>_<smi_hash>_<session_id>``.
     include_anti_contrastive : bool, optional
         When True, also return the top-3 anti-contrastive substituents and
         scaffolds — those that *reinforce* the predicted class (negative
@@ -506,8 +507,12 @@ def explain_with_molce(
     predicted_class = predict_func(model, mol, singular=True)
 
     # ---- Base output path ----
+    # Qualify by foil_class + SMILES hash so repeat calls with different
+    # foil_class / SMILES don't overwrite each other in the same session.
+    smi_h = hashlib.md5(smiles.encode("utf-8")).hexdigest()[:8]
     base_path = (
-        logger.session_dir / "plots" / f"molce_{logger.session_id}"
+        logger.session_dir / "plots"
+        / f"molce_foil{foil_class}_{smi_h}_{logger.session_id}"
         if output_path is None
         else Path(output_path)
     )
@@ -763,7 +768,7 @@ def identify_recurrent_molce_rules(
     output_path : str, optional
         Base path for output images (.png).  Two images are saved:
         ``<base>_rgroups.png`` and ``<base>_scaffolds.png``.
-        Defaults to ``session_dir/plots/molce_global_<session_id>``.
+        Defaults to ``session_dir/plots/molce_global_fact<fact_class>_foil<foil_class>_<session_id>``.
     include_anti_contrastive : bool, optional
         When True, also return the top-3 anti-contrastive substituents and
         scaffolds — those that *reinforce* the fact class (negative mean
@@ -1017,8 +1022,13 @@ def identify_recurrent_molce_rules(
         )
 
     # ---- Base output path ----
+    # Qualify by fact_class + foil_class so repeat calls with different
+    # class pairings don't overwrite each other in the same session.
     if output_path is None:
-        base_path = logger.session_dir / "plots" / f"molce_global_{logger.session_id}"
+        base_path = (
+            logger.session_dir / "plots"
+            / f"molce_global_fact{fact_class}_foil{foil_class}_{logger.session_id}"
+        )
     else:
         base_path = Path(output_path)
     base_path.parent.mkdir(parents=True, exist_ok=True)

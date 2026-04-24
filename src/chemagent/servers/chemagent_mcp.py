@@ -126,6 +126,7 @@ from chemagent.explainability.shap_explainer import (
 from chemagent.explainability.molanchor_tools import (
     explain_with_molanchor,
     identify_recurrent_anchor_rules,
+    aggregate_substructure_anchor_rules,
     get_molanchor_info,
     select_compound_for_xai,
 )
@@ -227,6 +228,7 @@ _register(get_top_k_bit_environments_from_shap)
 _register(plot_top_k_parent_molecule_environments_from_shap)
 _register(explain_with_molanchor)
 _register(identify_recurrent_anchor_rules)
+_register(aggregate_substructure_anchor_rules)
 _register(get_molanchor_info)
 _register(select_compound_for_xai)
 _register(generate_counterfactuals)

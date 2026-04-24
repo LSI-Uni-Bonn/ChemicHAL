@@ -354,7 +354,6 @@ class MolecularAnchor:
 
         # if all fragments can constitute a anchor
         if len(anchors) == len(fragments):
-            print("All fragments anchor")
             return pd.DataFrame([{"smile": Chem.MolToSmiles(self.mol),
                                                   "mol": self.mol,
                                                   "anchor_mol": "all_frags",
@@ -381,12 +380,6 @@ class MolecularAnchor:
             precision_dict[frag_max_prec] = prec_val
 
             anchors = set([frag_max_prec])
-
-        print(f"anchors identified = {anchors},",
-              f"num fragments = {len(fragments)},",
-              f"plural_rule = {multiple_used},",
-              f"Precision = { [v for v in precision_dict.values()]},",
-              f"Coverage = {[v for v in coverage_dict.values()]}")
 
         # indices of anchoring fragments
         always_present_indices = [int(frag.split('_')[1]) for frag in anchors]

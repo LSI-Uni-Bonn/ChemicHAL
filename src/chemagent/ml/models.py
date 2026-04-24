@@ -48,6 +48,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from imblearn.ensemble import BalancedRandomForestClassifier
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 
@@ -72,6 +73,12 @@ PARAM_GRIDS: dict[str, dict[str, list]] = {
         "C":      [0.1, 1, 10],
         "kernel": ["rbf", "linear"],
         "gamma":  ["scale", "auto"],
+    },
+    "BRF": {
+        "n_estimators":      [50, 100, 200],
+        "max_features":      ["sqrt", "log2"],
+        "min_samples_split": [2, 5, 10],
+        "min_samples_leaf":  [1, 2, 4],
     },
     # ── add new grids below ──────────────────────────────────────────────────
 }
@@ -122,6 +129,12 @@ def build_estimator(algorithm: str, reg_class: str, random_seed: int) -> Any:
             class_weight="balanced" if class_weighted else None,
         )
 
+    if algorithm == "BRF":
+        return BalancedRandomForestClassifier(
+            random_state=random_seed,
+            n_jobs=-1,
+        )
+
     #add new algorithms below
 
     raise ValueError(
@@ -153,6 +166,11 @@ MODEL_INFO: dict[str, dict] = {
         "description": "Feed-forward PyTorch neural network; supports classification, class-weighted classification, and regression.",
         "task":        "both",
         "extra_deps":  ["torch"],
+    },
+    "BRF": {
+        "description": "Balanced Random Forest Classifier — samples each bootstrap with replacement to balance classes; suitable for imbalanced datasets.",
+        "task":        "classification",
+        "extra_deps":  ["imbalanced-learn"],
     },
     #add new metadata below
 }

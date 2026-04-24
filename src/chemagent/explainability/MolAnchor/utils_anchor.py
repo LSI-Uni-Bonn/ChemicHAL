@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 from itertools import combinations
+import random as _random
 import re
 import networkx as nx
 from torch_geometric.utils.convert import from_networkx
@@ -73,24 +74,68 @@ def bit_not_turn_off(bits_to_turn_off, bitinf, atoms_present):
     return set(bits_to_keep_on)
 
 
-def generate_combinations(bit_dict):
+def generate_combinations(bit_dict, max_sampled_combinations=4095):
     """
-    Generate all possible combinations of fragments.
+    Generate fragment combinations for anchor analysis.
+
+    Uses full enumeration when the molecule has 12 or fewer fragments.
+    For molecules with more than 12 fragments, uses stratified sampling
+    to keep the total number of combinations manageable while ensuring
+    every fragment appears across multiple combination sizes.
 
     Parameters:
-        bit_dict (dict): Dictionary of bits for each fragment.
+        bit_dict (dict): Dictionary of bits/atoms for each fragment.
+        max_sampled_combinations (int): Maximum number of combinations when
+            sampling is used (default 4095, matching the full-enumeration cap
+            at n=12 fragments so coverage doesn't drop abruptly at the boundary).
 
     Returns:
-        list: List of all fragment combinations.
+        list: List of fragment combinations (tuples of fragment keys).
     """
 
     fragment_keys = list(bit_dict.keys())
-    all_combinations = []
-    for r in range(len(fragment_keys) + 1):
-        comb = combinations(fragment_keys, r)
-        all_combinations.extend(comb)  # Generate all combinations of fragments
+    n = len(fragment_keys)
 
-    return all_combinations[1:len(all_combinations)]
+    # Full enumeration for ≤12 fragments (up to 4095 combinations)
+    if n <= 12:
+        all_combinations = []
+        for r in range(1, n + 1):
+            all_combinations.extend(combinations(fragment_keys, r))
+        return all_combinations
+
+    # Stratified sampling for >12 fragments
+    sampled = []
+    seen = set()
+
+    def _add(combos):
+        for c in combos:
+            key = tuple(sorted(c))
+            if key not in seen:
+                seen.add(key)
+                sampled.append(c)
+
+    # Always include: singles (size 1), full molecule (size n),
+    # and leave-one-out (size n-1) — essential for anchor identification
+    _add(combinations(fragment_keys, 1))
+    _add(combinations(fragment_keys, n))
+    _add(combinations(fragment_keys, n - 1))
+
+    remaining_budget = max_sampled_combinations - len(sampled)
+    if remaining_budget <= 0:
+        return sampled
+
+    # Distribute remaining budget across intermediate sizes (2..n-2)
+    middle_sizes = list(range(2, n - 1))
+    per_size_budget = max(1, remaining_budget // len(middle_sizes))
+
+    for r in middle_sizes:
+        size_combos = list(combinations(fragment_keys, r))
+        if len(size_combos) <= per_size_budget:
+            _add(size_combos)
+        else:
+            _add(_random.sample(size_combos, per_size_budget))
+
+    return sampled
 
 
 def get_union_of_values(fragments_list, fragments_to_include, bit_dict):
