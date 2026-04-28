@@ -63,6 +63,7 @@ XAI
   select_compound_for_edgeshaper  randomly select a correctly predicted graph compound for EdgeSHAPer analysis
   explain_gnn_with_edgeshaper    edge-level Shapley values (required tool for GNN prediction explanations)
   visualize_edgeshaper_results   generate edge importance heatmaps on molecular structures and save a PNG artifact
+  get_edgeshaper_bond_environments map EdgeSHAPer edge attributions to bond-level structures (text-friendly)
   get_edgeshaper_info            reference information about EdgeSHAPer parameters and methods
 
 Utilities
@@ -142,6 +143,7 @@ from chemagent.explainability.edgeshaper_tools import (
   select_compound_for_edgeshaper,
     explain_gnn_with_edgeshaper,
     visualize_edgeshaper_results,
+    get_edgeshaper_bond_environments,
     get_edgeshaper_info,
 )
 from chemagent.servers.session_tools import (
@@ -238,6 +240,7 @@ _register(identify_recurrent_molce_rules)
 _register(select_compound_for_edgeshaper)
 _register(explain_gnn_with_edgeshaper)
 _register(visualize_edgeshaper_results)
+_register(get_edgeshaper_bond_environments)
 _register(get_edgeshaper_info)
 
 

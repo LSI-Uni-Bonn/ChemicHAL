@@ -9,6 +9,7 @@ Functions
 select_compound_for_edgeshaper — choose a correctly predicted GNN test compound for EdgeSHAPer
 explain_gnn_with_edgeshaper    — compute edge importance scores for a GNN model on a test compound
 visualize_edgeshaper_results   — render atom/edge-level SHAP heatmaps on molecular structures
+get_edgeshaper_bond_environments — map EdgeSHAPer edge attributions to bond-level structures
 
 The EdgeSHAPer algorithm computes Shapley value approximations for edge importance
 in Graph Neural Networks, enabling edge-level explainability.
@@ -529,6 +530,62 @@ def _predict_gnn_logits(
     return logits
 
 
+def _coerce_json_payload(value: Any, name: str) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{name} must be valid JSON when provided as a string.") from exc
+    return value
+
+
+def _normalize_edge_index(edge_index_raw: Any) -> np.ndarray:
+    edge_index = np.asarray(edge_index_raw)
+    if edge_index.ndim != 2:
+        raise ValueError("edge_index must be a 2D array-like payload.")
+    if edge_index.shape[0] != 2 and edge_index.shape[1] == 2:
+        edge_index = edge_index.T
+    if edge_index.shape[0] != 2:
+        raise ValueError(
+            f"edge_index must have shape [2, num_edges], got {tuple(edge_index.shape)}"
+        )
+    return edge_index.astype(int)
+
+
+def _bond_environment_smiles(
+    mol: Chem.Mol,
+    bond_idx: int,
+    radius: int,
+) -> tuple[str, list[int], list[int]]:
+    bond = mol.GetBondWithIdx(bond_idx)
+    atom1 = bond.GetBeginAtomIdx()
+    atom2 = bond.GetEndAtomIdx()
+    bond_smiles = Chem.MolFragmentToSmiles(
+        mol,
+        atomsToUse=[atom1, atom2],
+        bondsToUse=[bond_idx],
+        isomericSmiles=True,
+        kekuleSmiles=False,
+    )
+    if radius <= 0:
+        return bond_smiles, [atom1, atom2], [bond_idx]
+
+    bond_indices = {bond_idx}
+    for atom_idx in (atom1, atom2):
+        env = Chem.FindAtomEnvironmentOfRadiusN(mol, radius, atom_idx)
+        bond_indices.update(env)
+
+    if not bond_indices:
+        return bond_smiles, [atom1, atom2], [bond_idx]
+
+    atom_map: dict[int, int] = {}
+    submol = Chem.PathToSubmol(mol, list(bond_indices), atomMap=atom_map)
+    env_smiles = Chem.MolToSmiles(submol, isomericSmiles=True)
+    env_atom_indices = sorted(atom_map.keys())
+    env_bond_indices = sorted(bond_indices)
+    return env_smiles, env_atom_indices, env_bond_indices
+
+
 def select_compound_for_edgeshaper(
     model: Optional[Any] = None,
     model_path: Optional[str] = None,
@@ -700,6 +757,192 @@ def select_compound_for_edgeshaper(
             "error": error_msg,
             "job_id": f"edgeshaper_select_failed_{int(np.random.random() * 1e9)}",
         }
+
+
+def get_edgeshaper_bond_environments(
+    smiles: str,
+    phi_edges_json: Union[str, list[float]],
+    edge_index_json: Union[str, list[list[int]]],
+    top_k: Optional[int] = 10,
+    ranking: Literal["absolute", "descending", "ascending"] = "descending",
+    env_radius: int = 1,
+    include_unmapped_edges: bool = False,
+) -> dict[str, Any]:
+    """Return top-k bond environments from EdgeSHAPer edge attributions.
+
+    Use this tool when you need structured, text-friendly bond mappings for
+    LLM interpretation (positive vs. negative edges) rather than a heatmap.
+
+    Args:
+        smiles: SMILES string for the explained compound.
+        phi_edges_json: JSON string or list of edge Shapley values.
+        edge_index_json: JSON string or list with edge indices.
+        top_k: Number of bonds to return. Use None to return all bonds.
+        ranking: "absolute" (by magnitude), "descending" (phi_sum high→low),
+            or "ascending" (phi_sum low→high).
+        env_radius: Bond environment radius (in bonds) used to build
+            bond_environment_smiles. Use 0 for the bare bond only.
+        include_unmapped_edges: If True, include unmapped directed edges
+            in the response for debugging.
+
+    Returns:
+        JSON-serializable dict with bond environments and contributions.
+    """
+    if top_k is not None and top_k <= 0:
+        raise ValueError(f"top_k must be > 0 or None, got {top_k}.")
+    if ranking not in {"absolute", "descending", "ascending"}:
+        raise ValueError(
+            f"ranking must be one of ['absolute', 'descending', 'ascending'], got {ranking!r}."
+        )
+
+    phi_edges_raw = _coerce_json_payload(phi_edges_json, "phi_edges_json")
+    edge_index_raw = _coerce_json_payload(edge_index_json, "edge_index_json")
+
+    if not isinstance(phi_edges_raw, (list, tuple, np.ndarray)):
+        raise ValueError("phi_edges_json must resolve to a list of numbers.")
+
+    phi_edges = [float(v) for v in phi_edges_raw]
+    edge_index = _normalize_edge_index(edge_index_raw)
+
+    if len(phi_edges) != int(edge_index.shape[1]):
+        raise ValueError(
+            "edge_index and phi_edges length mismatch: "
+            f"len(phi_edges)={len(phi_edges)}, edge_index_edges={edge_index.shape[1]}."
+        )
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Invalid SMILES: {smiles}")
+
+    bond_lookup: dict[tuple[int, int], int] = {}
+    for bond in mol.GetBonds():
+        a1 = bond.GetBeginAtomIdx()
+        a2 = bond.GetEndAtomIdx()
+        bond_lookup[(a1, a2)] = bond.GetIdx()
+        bond_lookup[(a2, a1)] = bond.GetIdx()
+
+    bond_to_edges: dict[int, list[dict[str, Any]]] = {}
+    unmapped_edges: list[dict[str, Any]] = []
+    for i, phi in enumerate(phi_edges):
+        init_atom = int(edge_index[0, i])
+        end_atom = int(edge_index[1, i])
+        bond_idx = bond_lookup.get((init_atom, end_atom))
+        if bond_idx is None:
+            unmapped_edges.append(
+                {
+                    "edge_index": int(i),
+                    "atoms": [init_atom, end_atom],
+                    "phi": float(phi),
+                }
+            )
+            continue
+        bond_to_edges.setdefault(bond_idx, []).append(
+            {
+                "edge_index": int(i),
+                "atoms": [init_atom, end_atom],
+                "phi": float(phi),
+            }
+        )
+
+    bond_entries: list[dict[str, Any]] = []
+    for bond_idx, edge_entries in bond_to_edges.items():
+        bond = mol.GetBondWithIdx(int(bond_idx))
+        atom1 = bond.GetBeginAtomIdx()
+        atom2 = bond.GetEndAtomIdx()
+        atom1_obj = mol.GetAtomWithIdx(atom1)
+        atom2_obj = mol.GetAtomWithIdx(atom2)
+
+        phi_values = [entry["phi"] for entry in edge_entries]
+        phi_sum = float(np.sum(phi_values))
+        phi_abs_sum = float(np.sum(np.abs(phi_values)))
+        phi_mean = float(np.mean(phi_values)) if phi_values else 0.0
+
+        bond_smiles = Chem.MolFragmentToSmiles(
+            mol,
+            atomsToUse=[atom1, atom2],
+            bondsToUse=[bond_idx],
+            isomericSmiles=True,
+            kekuleSmiles=False,
+        )
+        env_smiles, env_atoms, env_bonds = _bond_environment_smiles(
+            mol, int(bond_idx), int(env_radius)
+        )
+
+        bond_entries.append(
+            {
+                "bond_index": int(bond_idx),
+                "atom_indices": [int(atom1), int(atom2)],
+                "atom_symbols": [atom1_obj.GetSymbol(), atom2_obj.GetSymbol()],
+                "atom_details": [
+                    {
+                        "index": int(atom1),
+                        "symbol": atom1_obj.GetSymbol(),
+                        "formal_charge": int(atom1_obj.GetFormalCharge()),
+                        "is_aromatic": bool(atom1_obj.GetIsAromatic()),
+                        "degree": int(atom1_obj.GetDegree()),
+                        "total_hs": int(atom1_obj.GetTotalNumHs()),
+                    },
+                    {
+                        "index": int(atom2),
+                        "symbol": atom2_obj.GetSymbol(),
+                        "formal_charge": int(atom2_obj.GetFormalCharge()),
+                        "is_aromatic": bool(atom2_obj.GetIsAromatic()),
+                        "degree": int(atom2_obj.GetDegree()),
+                        "total_hs": int(atom2_obj.GetTotalNumHs()),
+                    },
+                ],
+                "bond_type": str(bond.GetBondType()),
+                "bond_order": float(bond.GetBondTypeAsDouble()),
+                "is_aromatic": bool(bond.GetIsAromatic()),
+                "is_conjugated": bool(bond.GetIsConjugated()),
+                "is_in_ring": bool(bond.IsInRing()),
+                "bond_smiles": bond_smiles,
+                "bond_environment_smiles": env_smiles,
+                "environment_atom_indices": [int(v) for v in env_atoms],
+                "environment_bond_indices": [int(v) for v in env_bonds],
+                "phi_sum": phi_sum,
+                "phi_abs_sum": phi_abs_sum,
+                "phi_mean": phi_mean,
+                "sign": "positive" if phi_sum > 0 else "negative" if phi_sum < 0 else "neutral",
+                "directed_edges": edge_entries,
+            }
+        )
+
+    if ranking == "descending":
+        ranked = list(bond_entries)
+        ranked.sort(key=lambda e: e["phi_sum"], reverse=True)
+    elif ranking == "ascending":
+        ranked = list(bond_entries)
+        ranked.sort(key=lambda e: e["phi_sum"])
+    else:
+        ranked = list(bond_entries)
+        ranked.sort(key=lambda e: abs(e["phi_sum"]), reverse=True)
+
+    selected = ranked if top_k is None else ranked[:top_k]
+    result = {
+        "status": "completed",
+        "smiles": smiles,
+        "ranking": ranking,
+        "top_k": int(top_k) if top_k is not None else None,
+        "env_radius": int(env_radius),
+        "num_edges": int(edge_index.shape[1]),
+        "num_bonds": int(mol.GetNumBonds()),
+        "matched_directed_edges": int(sum(len(v) for v in bond_to_edges.values())),
+        "matched_bonds": int(len(bond_to_edges)),
+        "n_selected_bonds": int(len(selected)),
+        "bond_environments": selected,
+    }
+
+    if include_unmapped_edges:
+        result["unmapped_edges"] = unmapped_edges
+
+    if result["num_edges"] > 0 and result["matched_directed_edges"] < max(2, int(0.5 * result["num_edges"])):
+        result["warning"] = (
+            "Low edge-to-bond mapping ratio detected. The provided SMILES likely does not match "
+            "the explained graph. Use compound_smiles returned by explain_gnn_with_edgeshaper."
+        )
+
+    return result
 
 
 def explain_gnn_with_edgeshaper(
