@@ -50,7 +50,6 @@ def mapvalues2mol(mol: Chem.Mol,
     padding: Optional[Sequence[float]]
         Increase of heatmap size, relative to size of molecule. Usually the heatmap is increased by 100% in each axis
         by padding 50% in each side.
-
     Returns:
     rdMolDraw2D.MolDraw2D
         Drawing of molecule and corresponding heatmap.
