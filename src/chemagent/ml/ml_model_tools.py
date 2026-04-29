@@ -99,6 +99,13 @@ def get_ml_info() -> dict[str, Any]:
             "supports_multiclass": True,
             "description": "PyTorch MLP wrapped as a scikit-learn estimator; no grid-search hyperparameters configured by default",
         },
+        "BRF": {
+            "name": "Balanced Random Forest Classifier",
+            "task_type": "classification",
+            "hyperparameters": _to_serialisable(HYPERPARAMETERS.get("BRF", {})),
+            "supports_multiclass": True,
+            "description": "imblearn BalancedRandomForestClassifier — bootstrap samples are class-balanced; preferred for imbalanced data over RFC + classification-cw",
+        },
         # Graph Neural Networks (PyTorch Geometric)
         "GCN": {
             "name": "Graph Convolutional Network",
@@ -151,7 +158,7 @@ def get_ml_info() -> dict[str, Any]:
         "binary_imbalanced": {
             "optimization": ["f1", "average_precision", "roc_auc"],
             "evaluation":   ["MCC", "F1", "Precision", "Recall", "BA"],
-            "note":         "Pass task='classification-cw' to train_model() for auto class-weighting",
+            "note":         "Use algorithm='BRF' (Balanced Random Forest) for imbalanced data, or pass task='classification-cw' to train_model() for auto class-weighting with RFC/SVC/DNN",
         },
         "multiclass": {
             "optimization": ["f1_macro", "f1_weighted", "balanced_accuracy"],

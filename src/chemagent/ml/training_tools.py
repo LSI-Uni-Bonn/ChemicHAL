@@ -90,7 +90,7 @@ def _run_job_in_background(job_id: str, fn, *args, **kwargs) -> None:
 
 def build_model_from_split_file(
     split_file_path: str,
-    algorithm: Literal["RFC", "RFR", "SVC", "DNN"] = "RFC",
+    algorithm: Literal["RFC", "RFR", "SVC", "DNN", "BRF"] = "RFC",
     task: Literal["classification", "classification-cw", "regression"] = "classification",
     cv_fold: int = 5,
     opt_metric: Optional[str] = "balanced_accuracy",
@@ -130,7 +130,7 @@ def build_model_from_split_file(
 # MCP tool functions
 def train_model(
     split_file_path: str,
-    algorithm: Literal["RFC", "RFR", "SVC", "DNN"] = "RFC",
+    algorithm: Literal["RFC", "RFR", "SVC", "DNN", "BRF"] = "RFC",
     task: Literal["classification", "classification-cw", "regression"] = "classification",
     cv_fold: int = 5,
     opt_metric: Optional[str] = "balanced_accuracy",
@@ -149,7 +149,7 @@ def train_model(
     Args:
         split_file_path: Path to .pkl produced by split_dataset(). Must contain
                          train_features, train_labels, test_features, test_labels.
-        algorithm: "RFC", "RFR", "SVC", or "DNN" (default "RFC"). See get_ml_info().
+        algorithm: "RFC", "RFR", "SVC", "DNN", or "BRF" (default "RFC"). See get_ml_info().
         task: "classification" (default), "classification-cw", or "regression".
         cv_fold: GridSearchCV folds (default 5).
         opt_metric: Scoring metric for GridSearchCV (default "balanced_accuracy").

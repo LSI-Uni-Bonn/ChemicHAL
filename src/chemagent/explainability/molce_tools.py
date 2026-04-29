@@ -153,6 +153,43 @@ def _make_mol_grid(images: list, cols: int = 4) -> "PIL.Image.Image":
     return grid
 
 
+def _morgan_fp(mol: "Chem.Mol"):
+    """Morgan fingerprint (radius=2, 2048 bits) — matches MolCE.calculate_sims."""
+    from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
+    return GetMorganGenerator(radius=2, fpSize=2048).GetFingerprint(mol)
+
+
+def _foil_tanimoto(query_fp, foil_mol: Optional["Chem.Mol"]) -> float:
+    """Tanimoto similarity foil-vs-query, or ``-1.0`` if either input is missing.
+
+    A negative sentinel (rather than 0.0) lets sort-by-similarity-desc
+    consistently push unbuildable foils to the bottom even when a real foil
+    happens to score 0 against the query.
+    """
+    if query_fp is None or foil_mol is None:
+        return -1.0
+    from rdkit import DataStructs
+    return float(DataStructs.TanimotoSimilarity(query_fp, _morgan_fp(foil_mol)))
+
+
+def _foil_passes_similarity(
+    query_fp,
+    foil_mol: Optional["Chem.Mol"],
+    min_similarity: Optional[float],
+) -> bool:
+    """Return True if the foil clears the Tanimoto cutoff vs the query.
+
+    With ``min_similarity is None`` the filter is disabled (always passes).
+    A foil that could not be reconstructed (``None``) fails the check when
+    a cutoff is active — we cannot vouch for its similarity.
+    """
+    if min_similarity is None:
+        return True
+    if foil_mol is None:
+        return False
+    return _foil_tanimoto(query_fp, foil_mol) >= min_similarity
+
+
 def _make_sklearn_predict_funcs(model, n_bits: int, radius: int):
     """Return (predict_func, predict_func_proba) adapters for an sklearn model.
 
@@ -232,12 +269,12 @@ class _MolContrastWrapper:
         return self._mc.get_contrastive_rgroups(mol, foil_class, random_order)
 
     def get_contrastive_cores(
-        self, mol, foil_class: int, similarity_threshold: Optional[float] = None
+        self, mol, foil_class: int, scaffold_similarity_threshold: Optional[float] = None
     ):
         from rdkit.Chem import AllChem
 
         df = self._mc.get_contrastive_cores(
-            mol, foil_class, similarity_threshold=similarity_threshold
+            mol, foil_class, similarity_threshold=scaffold_similarity_threshold
         )
 
         # Remove any row whose scaffold is identical to the original core so
@@ -272,13 +309,13 @@ class _MolContrastWrapper:
         self,
         mol: "Chem.Mol",
         core_smiles: str,
-        similarity_threshold: Optional[float] = None,
+        scaffold_similarity_threshold: Optional[float] = None,
     ) -> "tuple[Optional[Chem.Mol], Optional[Chem.Mol]]":
         """Build a foil by attaching the original R-groups onto a new core scaffold.
 
         Mirrors the approach used in the MolCE notebook:
 
-            scaffolds = CE.get_scaffolds(original_core, similarity_threshold)
+            scaffolds = CE.get_scaffolds(original_core, scaffold_similarity_threshold)
             gen = CE.ext_core_rgroup_enumeration(original_r, scaffolds)
             for prod, core in zip(gen, scaffolds):
                 if Chem.MolToSmiles(core) == target_core_smiles:
@@ -294,7 +331,7 @@ class _MolContrastWrapper:
             if not rgroups:
                 return None, None
 
-            scaffolds = self._mc.get_scaffolds(original_core, similarity_threshold)
+            scaffolds = self._mc.get_scaffolds(original_core, scaffold_similarity_threshold)
             if not scaffolds:
                 return None, None
 
@@ -320,7 +357,8 @@ def explain_with_molce(
     n_bits: int = 2048,
     radius: int = 2,
     core_dict_path: Optional[str] = None,
-    similarity_threshold: Optional[float] = None,
+    scaffold_similarity_threshold: Optional[float] = None,
+    min_similarity: Optional[float] = None,
     output_path: Optional[str] = None,
     include_anti_contrastive: bool = False,
     gnn_model_class_name: Optional[str] = None,
@@ -367,10 +405,19 @@ def explain_with_molce(
     core_dict_path : str, optional
         Path to a custom ``core_dict_generic.pkl`` scaffold library.  When
         omitted the bundled library is used.
-    similarity_threshold : float, optional
+    scaffold_similarity_threshold : float, optional
         Size-similarity filter (0–1) for external scaffolds: keeps only those
         whose atom count differs from the original core by at most
-        ``(1 - similarity_threshold) * 100 %``.
+        ``(1 - scaffold_similarity_threshold) * 100 %``.  Narrows the
+        candidate pool used to enumerate scaffold foils.
+    min_similarity : float, optional
+        Tanimoto cutoff (0–1) on the rebuilt foil molecule vs the query
+        compound (Morgan radius 2, 2048 bits).  When set, only R-group and
+        scaffold foils whose reconstruction clears the cutoff are reported and
+        visualized.  Applied **before** top-3 selection so you get the top
+        among similar-enough foils, not the top-3 with some filtered out.
+        Ties on contrast score are always broken by foil-vs-query Tanimoto
+        similarity, descending — the more similar foil ranks first.
     output_path : str, optional
         Base path for output images (.png).  Two images are saved:
         ``<base>_rgroups.png`` and ``<base>_scaffolds.png``.
@@ -486,7 +533,7 @@ def explain_with_molce(
         if not hasattr(model, "predict_proba"):
             raise ValueError(
                 "Model does not support predict_proba.  MolCE requires probability "
-                "estimates — use a probabilistic classifier (e.g. RFC, GBC, SVC with "
+                "estimates — use a probabilistic classifier (e.g. RFC, BRF, GBC, SVC with "
                 "probability=True)."
             )
         predict_func, predict_func_proba = _make_sklearn_predict_funcs(model, n_bits, radius)
@@ -533,25 +580,61 @@ def explain_with_molce(
         raise ValueError(f"MolCE R-group attribution failed: {e}")
 
     rgroup_df = rgroup_df.reset_index()
-    rgroup_records = []
-    for rank, (_, row) in enumerate(rgroup_df.head(3).iterrows(), start=1):
-        rgroup_records.append({
-            "rank": rank,
-            "r_group_smiles": str(row["R-group"]),
-            "r_group_site": int(row["R_group_site"]),
-            "contrast_score": float(row["contrast"]),
-        })
+
+    # Query FP needed both for the optional cutoff filter and for the
+    # similarity tie-break on contrast. Computing one fingerprint is cheap.
+    query_fp = _morgan_fp(mol)
+
+    def _select_top_rgroup_foils(df_subset, max_count: int = 3, anti: bool = False):
+        """Iterate ranked rows, build foil + compute Tanimoto sim for each.
+        Returns up to max_count picks, sorted by primary contrast direction
+        (desc for contrastive, asc for anti) with sim desc as tiebreaker.
+        Applies ``min_similarity`` cutoff if set.
+
+        Early-stops once enough candidates are collected and the next row's
+        contrast can no longer displace a current pick on the primary key.
+        """
+        # Sort key: (contrast in iter direction, -sim) — more similar wins ties
+        sort_key = (lambda c: (c[0], -c[1])) if anti else (lambda c: (-c[0], -c[1]))
+        candidates: list = []  # (contrast, sim, rec, foil_mol)
+        for _, row in df_subset.iterrows():
+            contrast = float(row["contrast"])
+            if len(candidates) >= max_count:
+                worst = sorted(candidates, key=sort_key)[max_count - 1][0]
+                if (anti and contrast > worst) or (not anti and contrast < worst):
+                    break
+            rgroup_smi = str(row["R-group"])
+            site = int(row["R_group_site"])
+            foil_mol = _try_build_foil(mol, rgroup_smi, site)
+            sim = _foil_tanimoto(query_fp, foil_mol)
+            if min_similarity is not None and (foil_mol is None or sim < min_similarity):
+                continue
+            rec = {
+                "rank": -1,  # assigned after final sort
+                "r_group_smiles": rgroup_smi,
+                "r_group_site": site,
+                "contrast_score": contrast,
+            }
+            candidates.append((contrast, sim, rec, foil_mol))
+
+        candidates.sort(key=sort_key)
+        out = []
+        for rank, (_, _, rec, foil_mol) in enumerate(candidates[:max_count], start=1):
+            rec["rank"] = rank
+            out.append((rec, foil_mol))
+        return out
+
+    rgroup_picks = _select_top_rgroup_foils(rgroup_df)
+    rgroup_records = [rec for rec, _ in rgroup_picks]
 
     # Anti-contrastive: substituents that reinforce the predicted class (negative scores)
-    anti_rgroup_records = []
+    anti_rgroup_picks: list = []
     if include_anti_contrastive:
-        for rank, (_, row) in enumerate(rgroup_df[rgroup_df["contrast"] < 0].tail(3).iloc[::-1].iterrows(), start=1):
-            anti_rgroup_records.append({
-                "rank": rank,
-                "r_group_smiles": str(row["R-group"]),
-                "r_group_site": int(row["R_group_site"]),
-                "contrast_score": float(row["contrast"]),
-            })
+        anti_df = rgroup_df[rgroup_df["contrast"] < 0].sort_values(
+            "contrast", ascending=True
+        )
+        anti_rgroup_picks = _select_top_rgroup_foils(anti_df, anti=True)
+    anti_rgroup_records = [rec for rec, _ in anti_rgroup_picks]
 
     # Pre-render query molecule (reused in both grids)
     from rdkit.Chem.Scaffolds import MurckoScaffold
@@ -561,29 +644,29 @@ def explain_with_molce(
     # ==== R-group foil grid — same core, contrastive substituents highlighted ====
     img_path_rgroups: Optional[Path] = None
     rgroup_foil_pils = []
-    for rec in rgroup_records:
-        foil_mol = _try_build_foil(mol, rec["r_group_smiles"], rec["r_group_site"])
-        if foil_mol is not None:
-            pil = _show_mol_as_pil(
-                foil_mol,
-                legend=f"Rank {rec['rank']} | site {rec['r_group_site']}\ncontrast={rec['contrast_score']:.3f}",
-                original_cpd=mol,
-            )
-            if pil is not None:
-                rgroup_foil_pils.append(pil)
+    for rec, foil_mol in rgroup_picks:
+        if foil_mol is None:
+            continue
+        pil = _show_mol_as_pil(
+            foil_mol,
+            legend=f"Rank {rec['rank']} | site {rec['r_group_site']}\ncontrast={rec['contrast_score']:.3f}",
+            original_cpd=mol,
+        )
+        if pil is not None:
+            rgroup_foil_pils.append(pil)
 
     # Anti-contrastive R-group foils (negative scores — reinforce predicted class)
     anti_rgroup_foil_pils = []
-    for rec in anti_rgroup_records:
-        foil_mol = _try_build_foil(mol, rec["r_group_smiles"], rec["r_group_site"])
-        if foil_mol is not None:
-            pil = _show_mol_as_pil(
-                foil_mol,
-                legend=f"Anti-{rec['rank']} | site {rec['r_group_site']}\ncontrast={rec['contrast_score']:.3f}",
-                original_cpd=mol,
-            )
-            if pil is not None:
-                anti_rgroup_foil_pils.append(pil)
+    for rec, foil_mol in anti_rgroup_picks:
+        if foil_mol is None:
+            continue
+        pil = _show_mol_as_pil(
+            foil_mol,
+            legend=f"Anti-{rec['rank']} | site {rec['r_group_site']}\ncontrast={rec['contrast_score']:.3f}",
+            original_cpd=mol,
+        )
+        if pil is not None:
+            anti_rgroup_foil_pils.append(pil)
 
     try:
         all_rgroup_pils = (
@@ -606,65 +689,95 @@ def explain_with_molce(
 
     try:
         core_df = mc.get_contrastive_cores(
-            mol, foil_class=foil_class, similarity_threshold=similarity_threshold
+            mol, foil_class=foil_class,
+            scaffold_similarity_threshold=scaffold_similarity_threshold,
         )
         num_scaffolds_evaluated = len(core_df)
         core_df = core_df.reset_index()
-        for rank, (_, row) in enumerate(core_df.head(3).iterrows(), start=1):
-            scaffold_records.append({
-                "rank": rank,
-                "core_smiles": str(row["index"] if "index" in row.index else row.iloc[0]),
-                "contrast_score": float(row["contrast"]),
-            })
+
+        def _select_top_scaffold_foils(df_subset, max_count: int = 3, anti: bool = False):
+            """Iterate ranked rows, build core foil + compute Tanimoto sim for
+            each. Returns up to max_count picks, sorted by primary contrast
+            direction (desc for contrastive, asc for anti) with sim desc as
+            tiebreaker. Applies ``min_similarity`` cutoff if set.
+            Returns [(rec, foil_mol, annotated_core)]."""
+            sort_key = (lambda c: (c[0], -c[1])) if anti else (lambda c: (-c[0], -c[1]))
+            candidates: list = []  # (contrast, sim, rec, foil_mol, annotated_core)
+            for _, row in df_subset.iterrows():
+                contrast = float(row["contrast"])
+                if len(candidates) >= max_count:
+                    worst = sorted(candidates, key=sort_key)[max_count - 1][0]
+                    if (anti and contrast > worst) or (not anti and contrast < worst):
+                        break
+                core_smi = str(row["index"] if "index" in row.index else row.iloc[0])
+                foil_mol, annotated_core = mc.build_core_foil(
+                    mol, core_smi,
+                    scaffold_similarity_threshold=scaffold_similarity_threshold,
+                )
+                sim = _foil_tanimoto(query_fp, foil_mol)
+                if min_similarity is not None and (foil_mol is None or sim < min_similarity):
+                    continue
+                rec = {
+                    "rank": -1,
+                    "core_smiles": core_smi,
+                    "contrast_score": contrast,
+                }
+                candidates.append((contrast, sim, rec, foil_mol, annotated_core))
+
+            candidates.sort(key=sort_key)
+            out = []
+            for rank, (_, _, rec, foil_mol, annotated_core) in enumerate(
+                candidates[:max_count], start=1
+            ):
+                rec["rank"] = rank
+                out.append((rec, foil_mol, annotated_core))
+            return out
+
+        scaffold_picks = _select_top_scaffold_foils(core_df)
+        scaffold_records = [rec for rec, _, _ in scaffold_picks]
 
         # Anti-contrastive scaffolds (negative scores — reinforce predicted class)
+        anti_scaffold_picks: list = []
         if include_anti_contrastive:
-            for rank, (_, row) in enumerate(
-                core_df[core_df["contrast"] < 0].tail(3).iloc[::-1].iterrows(), start=1
-            ):
-                anti_scaffold_records.append({
-                    "rank": rank,
-                    "core_smiles": str(row["index"] if "index" in row.index else row.iloc[0]),
-                    "contrast_score": float(row["contrast"]),
-                })
+            anti_core_df = core_df[core_df["contrast"] < 0].sort_values(
+                "contrast", ascending=True
+            )
+            anti_scaffold_picks = _select_top_scaffold_foils(anti_core_df, anti=True)
+        anti_scaffold_records = [rec for rec, _, _ in anti_scaffold_picks]
 
         # Draw core foil grid — original, extracted core, then foils with substituents highlighted
         original_core_pil = _show_mol_as_pil(original_core, legend="Extracted core")
 
         core_foil_pils = []
-        for rec in scaffold_records:
-            foil_mol, annotated_core = mc.build_core_foil(
-                mol, rec["core_smiles"], similarity_threshold=similarity_threshold
+        for rec, foil_mol, annotated_core in scaffold_picks:
+            if foil_mol is None:
+                continue
+            pil = _show_mol_as_pil(
+                foil_mol,
+                legend=f"Rank {rec['rank']}\ncontrast={rec['contrast_score']:.3f}",
+                corestructure=annotated_core,
+                highlight_subs=True,
+                alt_dummy=True,
+                ref_mol=mol,
             )
-            if foil_mol is not None:
-                pil = _show_mol_as_pil(
-                    foil_mol,
-                    legend=f"Rank {rec['rank']}\ncontrast={rec['contrast_score']:.3f}",
-                    corestructure=annotated_core,
-                    highlight_subs=True,
-                    alt_dummy=True,
-                    ref_mol=mol,
-                )
-                if pil is not None:
-                    core_foil_pils.append(pil)
+            if pil is not None:
+                core_foil_pils.append(pil)
 
         # Anti-contrastive scaffold foils
         anti_core_foil_pils = []
-        for rec in anti_scaffold_records:
-            foil_mol, annotated_core = mc.build_core_foil(
-                mol, rec["core_smiles"], similarity_threshold=similarity_threshold
+        for rec, foil_mol, annotated_core in anti_scaffold_picks:
+            if foil_mol is None:
+                continue
+            pil = _show_mol_as_pil(
+                foil_mol,
+                legend=f"Anti-{rec['rank']}\ncontrast={rec['contrast_score']:.3f}",
+                corestructure=annotated_core,
+                highlight_subs=True,
+                alt_dummy=True,
+                ref_mol=mol,
             )
-            if foil_mol is not None:
-                pil = _show_mol_as_pil(
-                    foil_mol,
-                    legend=f"Anti-{rec['rank']}\ncontrast={rec['contrast_score']:.3f}",
-                    corestructure=annotated_core,
-                    highlight_subs=True,
-                    alt_dummy=True,
-                    ref_mol=mol,
-                )
-                if pil is not None:
-                    anti_core_foil_pils.append(pil)
+            if pil is not None:
+                anti_core_foil_pils.append(pil)
 
         try:
             all_core_pils = (
@@ -714,7 +827,8 @@ def identify_recurrent_molce_rules(
     min_core_occurrences: int = 3,
     max_compounds: Optional[int] = None,
     core_dict_path: Optional[str] = None,
-    similarity_threshold: Optional[float] = None,
+    scaffold_similarity_threshold: Optional[float] = None,
+    min_similarity: Optional[float] = None,
     output_path: Optional[str] = None,
     include_anti_contrastive: bool = False,
     gnn_model_class_name: Optional[str] = None,
@@ -763,8 +877,19 @@ def identify_recurrent_molce_rules(
     core_dict_path : str, optional
         Path to a custom ``core_dict_generic.pkl``.  When omitted the bundled
         library is used.
-    similarity_threshold : float, optional
-        Size-similarity filter (0–1) for external scaffolds.
+    scaffold_similarity_threshold : float, optional
+        Size-similarity filter (0–1) for external scaffolds: narrows the
+        candidate pool used to enumerate scaffold foils per compound.
+    min_similarity : float, optional
+        Tanimoto cutoff (0–1) on each rebuilt foil molecule vs its query
+        compound (Morgan radius 2, 2048 bits).  When set, R-group and
+        scaffold rows whose reconstruction does not clear the cutoff are
+        dropped **per compound, before aggregation** — so the global mean
+        contrast scores reflect only similar-enough foils.  Ties on
+        ``mean_contrast`` are then broken by ``mean_similarity`` desc — the
+        rule whose foils are on average more similar to their parents ranks
+        first.  When ``min_similarity`` is unset, no foils are built and ties
+        fall back to pandas' stable order.
     output_path : str, optional
         Base path for output images (.png).  Two images are saved:
         ``<base>_rgroups.png`` and ``<base>_scaffolds.png``.
@@ -890,7 +1015,7 @@ def identify_recurrent_molce_rules(
         if not hasattr(model, "predict_proba"):
             raise ValueError(
                 "Model does not support predict_proba. MolCE requires probability "
-                "estimates — use a probabilistic classifier (e.g. RFC, GBC)."
+                "estimates — use a probabilistic classifier (e.g. RFC, BRF, GBC)."
             )
         features = split_data[f"{split}_features"]
         predictions = model.predict(features)
@@ -935,23 +1060,50 @@ def identify_recurrent_molce_rules(
             compounds_failed += 1
             continue
 
+        # Compute query FP once per compound when similarity filter is active
+        query_fp = _morgan_fp(mol) if min_similarity is not None else None
+
         success = False
         try:
             df_r = mc.get_contrastive_rgroups(mol, foil_class=foil_class)
             df_r = df_r.reset_index()
             df_r["compound_smiles"] = smi
-            all_rgroup_rows.append(df_r)
-            success = True
+            if min_similarity is not None:
+                df_r["similarity"] = [
+                    _foil_tanimoto(
+                        query_fp,
+                        _try_build_foil(mol, str(row["R-group"]), int(row["R_group_site"])),
+                    )
+                    for _, row in df_r.iterrows()
+                ]
+                df_r = df_r[df_r["similarity"] >= min_similarity]
+            if not df_r.empty:
+                all_rgroup_rows.append(df_r)
+                success = True
         except Exception:
             pass
 
         try:
             df_c = mc.get_contrastive_cores(
-                mol, foil_class=foil_class, similarity_threshold=similarity_threshold
+                mol, foil_class=foil_class,
+                scaffold_similarity_threshold=scaffold_similarity_threshold,
             )
             df_c = df_c.reset_index().rename(columns={"index": "core_smiles"})
             df_c["compound_smiles"] = smi
-            all_scaffold_rows.append(df_c)
+            if min_similarity is not None:
+                df_c["similarity"] = [
+                    _foil_tanimoto(
+                        query_fp,
+                        mc.build_core_foil(
+                            mol, str(row["core_smiles"]),
+                            scaffold_similarity_threshold=scaffold_similarity_threshold,
+                        )[0],
+                    )
+                    for _, row in df_c.iterrows()
+                ]
+                df_c = df_c[df_c["similarity"] >= min_similarity]
+            if not df_c.empty:
+                all_scaffold_rows.append(df_c)
         except Exception:
             pass
 
@@ -966,29 +1118,42 @@ def identify_recurrent_molce_rules(
             "Ensure the dataset contains drug-like molecules with clear ring systems."
         )
 
+    # ---- Sort key plumbing — tie-break by mean_similarity desc when available ----
+    has_sim = min_similarity is not None
+    sort_cols = ["mean_contrast", "mean_similarity"] if has_sim else ["mean_contrast"]
+    contrastive_asc = [False, False] if has_sim else [False]
+    anti_asc = [True, False] if has_sim else [True]
+
     # ---- Aggregate R-groups ----
     combined_r = pd.concat(all_rgroup_rows, ignore_index=True)
     total_rgroup_evals = len(combined_r)
 
+    rgroup_agg_kwargs: dict = {
+        "mean_contrast": ("contrast", "mean"),
+        "std_contrast": ("contrast", "std"),
+        "occurrences": ("contrast", "count"),
+        "r_group_site_most_common": ("R_group_site", lambda x: int(x.mode().iloc[0])),
+    }
+    if has_sim:
+        rgroup_agg_kwargs["mean_similarity"] = ("similarity", "mean")
+
     grouped_r = (
         combined_r.groupby("R-group")
-        .agg(
-            mean_contrast=("contrast", "mean"),
-            std_contrast=("contrast", "std"),
-            occurrences=("contrast", "count"),
-            r_group_site_most_common=("R_group_site", lambda x: int(x.mode().iloc[0])),
-        )
+        .agg(**rgroup_agg_kwargs)
         .reset_index()
         .rename(columns={"R-group": "r_group_smiles"})
     )
-    grouped_r = (
-        grouped_r[grouped_r["occurrences"] >= min_occurrences]
-        .sort_values("mean_contrast", ascending=False)
+    grouped_r = grouped_r[grouped_r["occurrences"] >= min_occurrences]
+    top_rgroups = (
+        grouped_r.sort_values(sort_cols, ascending=contrastive_asc)
+        .head(3)
         .reset_index(drop=True)
     )
-    top_rgroups = grouped_r.head(3)
     anti_top_rgroups = (
-        grouped_r[grouped_r["mean_contrast"] < 0].tail(3).iloc[::-1].reset_index(drop=True)
+        grouped_r[grouped_r["mean_contrast"] < 0]
+        .sort_values(sort_cols, ascending=anti_asc)
+        .head(3)
+        .reset_index(drop=True)
         if include_anti_contrastive else pd.DataFrame()
     )
 
@@ -1001,23 +1166,30 @@ def identify_recurrent_molce_rules(
         combined_c = pd.concat(all_scaffold_rows, ignore_index=True)
         total_scaffold_evals = len(combined_c)
 
+        scaffold_agg_kwargs: dict = {
+            "mean_contrast": ("contrast", "mean"),
+            "std_contrast": ("contrast", "std"),
+            "occurrences": ("contrast", "count"),
+        }
+        if has_sim:
+            scaffold_agg_kwargs["mean_similarity"] = ("similarity", "mean")
+
         grouped_c = (
             combined_c.groupby("core_smiles")
-            .agg(
-                mean_contrast=("contrast", "mean"),
-                std_contrast=("contrast", "std"),
-                occurrences=("contrast", "count"),
-            )
+            .agg(**scaffold_agg_kwargs)
             .reset_index()
         )
-        grouped_c = (
-            grouped_c[grouped_c["occurrences"] >= min_core_occurrences]
-            .sort_values("mean_contrast", ascending=False)
+        grouped_c = grouped_c[grouped_c["occurrences"] >= min_core_occurrences]
+        top_scaffolds = (
+            grouped_c.sort_values(sort_cols, ascending=contrastive_asc)
+            .head(3)
             .reset_index(drop=True)
         )
-        top_scaffolds = grouped_c.head(3)
         anti_top_scaffolds = (
-            grouped_c[grouped_c["mean_contrast"] < 0].tail(3).iloc[::-1].reset_index(drop=True)
+            grouped_c[grouped_c["mean_contrast"] < 0]
+            .sort_values(sort_cols, ascending=anti_asc)
+            .head(3)
+            .reset_index(drop=True)
             if include_anti_contrastive else pd.DataFrame()
         )
 
@@ -1113,6 +1285,8 @@ def identify_recurrent_molce_rules(
             r["mean_contrast"] = float(r["mean_contrast"])
             r["std_contrast"] = float(r["std_contrast"])
             r["occurrences"] = int(r["occurrences"])
+            if "mean_similarity" in r:
+                r["mean_similarity"] = float(r["mean_similarity"])
         return out
 
     rgroup_rules_out = _serialize(top_rgroups)

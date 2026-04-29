@@ -215,7 +215,7 @@ def _predict(
 
 def train_on_split_file(
     split_file_path: str,
-    ml_algorithm: Literal["RFR", "RFC", "SVC", "DNN"],
+    ml_algorithm: Literal["RFR", "RFC", "SVC", "DNN", "BRF"],
     reg_class: Literal["regression", "classification", "classification-cw"],
     split: Literal["train", "val", "test"] = "train",
     opt_metric: Optional[str] = None,
@@ -241,7 +241,7 @@ def train_on_split_file(
 
     Args:
         split_file_path: Path to .pkl produced by split_prepared_dataset().
-        ml_algorithm: "RFR", "RFC", "SVC", or "DNN".
+        ml_algorithm: "RFR", "RFC", "SVC", "DNN", or "BRF".
         reg_class: "regression", "classification", or "classification-cw".
         split: Which partition to train on (default: "train").
         opt_metric: GridSearchCV scoring metric.
