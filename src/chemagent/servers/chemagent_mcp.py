@@ -12,11 +12,6 @@ STANDARD WORKFLOW (data stays on disk — preferred):
     plot_classification_results(predictions_path)
     explain_with_molanchor(smiles="CCO", model_path="model.pkl", dataset_id=dataset_id)  # use saved bit info
 
-SHORTCUT (load+featurize+split synchronously, then trains in background):
-    job = run_pipeline("data/datasets/chembl_activity_data_O00329_P42336.csv",
-                       algorithm="RFC", task="classification",
-                       featurizer_kwargs={"n_bits": 2048, "radius": 2})
-    result = check_training(job["job_id"], model_save_path=job["model_save_path"])  # poll every 30 s
 
 TOOLS
 ─────────────────────────────────────────────
@@ -70,7 +65,6 @@ Utilities
   log_thought            record reasoning in the session log
   set_chat_scope         bind session logging to a host chat/window identifier
   start_new_session      start a fresh session directory
-  #run_pipeline           non-blocking shortcut: load → featurize → split → train (not used)
 """
 
 from __future__ import annotations
@@ -102,8 +96,8 @@ from chemagent.ml.ml_model_tools import (
     get_ml_info,
     export_predictions,
     compare_exported_predictions,
-    #run_pipeline,
 )
+
 from chemagent.ml.training_tools import (
     train_model,
     check_training,
@@ -205,13 +199,6 @@ _register(load_gnn_model_mcp)
 
 _register(plot_classification_results)
 _register(plot_regression_results)
-
-
-# ===========================================================================
-# Shortcut tool
-# ===========================================================================
-
-#_register(run_pipeline)
 
 # ===========================================================================
 # Inline image display
