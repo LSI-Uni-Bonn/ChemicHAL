@@ -579,69 +579,6 @@ def render_top_k_parent_molecule_environment_highlights(
     return _grid_image_to_pil_or_original(grid_image)
 
 
-def map_top_k_features_to_parent_molecule(
-    mol: Chem.Mol,
-    dict_bit_info: dict,
-    shapley_values: np.ndarray,
-    top_k: int = 10,
-    ranking: str = "absolute",
-) -> Dict[str, Any]:
-    """Map top-k bit environments into one combined parent-molecule highlight map.
-
-    This aggregates all selected top-k environments at once and sums their
-    SHAP contributions into per-atom and per-bond scores.
-
-    Args:
-    mol:
-        RDKit molecule object.
-    dict_bit_info:
-        Bit-info map for *mol*, as returned by
-        :func:`get_ecfp_morgan_generator_bit_info`.
-    shapley_values:
-        1-D array of per-bit SHAP values for one sample.
-    top_k:
-        Number of top bits to consider.
-    ranking:
-        Ranking strategy: ``"absolute"`` (default), ``"positive"``, or
-        ``"negative"``.
-
-    Returns:
-    dict
-        ``{"selected_bits", "atom_contributions", "bond_contributions",
-        "highlight_atoms", "highlight_bonds"}``.
-    """
-    top_env = get_top_k_bit_environments_with_contribution(
-        mol=mol,
-        dict_bit_info=dict_bit_info,
-        shapley_values=shapley_values,
-        top_k=top_k,
-        ranking=ranking,
-    )
-
-    atom_scores: Dict[int, float] = defaultdict(float)
-    bond_scores: Dict[int, float] = defaultdict(float)
-
-    for item in top_env:
-        contribution = float(item["contribution"])
-        for env in item["environments"]:
-            for atom_idx in env.get("atom_indices", []):
-                atom_scores[int(atom_idx)] += contribution
-            for bond_idx in env.get("bond_indices", []):
-                bond_scores[int(bond_idx)] += contribution
-
-    selected_bits = [int(item["bit"]) for item in top_env]
-    highlight_atoms = sorted(atom_scores.keys())
-    highlight_bonds = sorted(bond_scores.keys())
-
-    return {
-        "selected_bits": selected_bits,
-        "atom_contributions": dict(atom_scores),
-        "bond_contributions": dict(bond_scores),
-        "highlight_atoms": highlight_atoms,
-        "highlight_bonds": highlight_bonds,
-    }
-
-
 def plot_bit_contribution_summary(
     bit_summary: Dict[str, List[Dict[str, float]]],
     title: str = "Top SHAP Bit Contributions",

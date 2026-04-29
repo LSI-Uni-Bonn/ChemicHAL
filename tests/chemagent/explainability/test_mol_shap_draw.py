@@ -13,7 +13,6 @@ from chemagent.explainability.mol_shap_draw import (
     render_top_k_bit_environments_image,
     render_top_positive_negative_bit_environments_images,
     render_top_k_parent_molecule_environment_highlights,
-    map_top_k_features_to_parent_molecule,
     plot_bit_contribution_summary,
 )
 
@@ -317,25 +316,3 @@ def test_render_top_k_parent_molecule_environment_highlights_returns_pil_image()
     assert image.size[0] > 0
     assert image.size[1] > 0
 
-
-def test_map_top_k_features_to_parent_molecule_returns_aggregated_mapping():
-    smiles = "CCO"
-    mol = Chem.MolFromSmiles(smiles)
-    bit_info = get_ecfp_morgan_generator_bit_info(smiles, radius=2, n_bits=128)
-
-    shap_values = np.zeros(128, dtype=float)
-    bits = sorted(bit_info.keys())
-    shap_values[bits[0]] = 0.7
-
-    mapping = map_top_k_features_to_parent_molecule(
-        mol,
-        bit_info,
-        shap_values,
-        top_k=1,
-        ranking="absolute",
-    )
-
-    assert mapping["selected_bits"] == [bits[0]]
-    assert isinstance(mapping["atom_contributions"], dict)
-    assert isinstance(mapping["bond_contributions"], dict)
-    assert len(mapping["highlight_atoms"]) >= 1
