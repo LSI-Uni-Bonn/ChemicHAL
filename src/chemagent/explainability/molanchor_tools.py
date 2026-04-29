@@ -39,6 +39,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from chemagent.explainability.MolAnchor.MolAnchor import MolecularAnchor
+from chemagent.explainability.MolAnchor.utils_anchor import delete_numbers_next_to_asterisk
 from chemagent.session_utils import get_session_logger as _get_session_logger
 from chemagent.featurization.fingerprints import ECFP
 # Reuse the MolCE/counterfactual drawing primitives so the recurrent-rule
@@ -379,6 +380,11 @@ def _explain_with_molanchor(
                 if any(frag_mol.GetNumAtoms() == am.GetNumAtoms() for am in anchor_mols)
             ]
 
+    fragment_smiles_all = [
+        delete_numbers_next_to_asterisk(Chem.MolToSmiles(f))
+        for f in mol_anchor.mol_frags
+    ]
+
     result = {
         "smiles": smiles,
         "fragment_combinations": df_combinations.drop(
@@ -388,6 +394,7 @@ def _explain_with_molanchor(
             columns=["mol", "anchor_mol"] if "mol" in anchors_df.columns else []
         ).to_dict("records"),
         "num_fragments": len(mol_anchor.mol_frags),
+        "fragment_smiles": fragment_smiles_all,
         "anchor_indices": anchor_indices,
         "anchor_smiles": anchor_smiles_list,
         "precision": precision,
@@ -1045,13 +1052,16 @@ def identify_recurrent_anchor_rules(
        predicted the target class) where this fragment was identified as an anchor.
        Measures how important the fragment is for the model's predictions.
 
-    2. **Substructure Occurrence**: Fraction of ANALYZED compounds (same set as anchor
-       occurrence) that contain this fragment as a substructure. Anchor occurrence can
-       never be higher than substructure occurrence.
+    2. **Substructure Occurrence**: Fraction of ANALYZED compounds whose BRICS decomposition
+       produces this fragment (or, for combination rules, all rule fragments). This is the
+       population from which the anchor could actually be drawn — compounds where the pattern
+       only appears inside a larger BRICS fragment do NOT count, since MolAnchor could never
+       have selected it as an anchor for them. Anchor occurrence can never be higher than
+       substructure occurrence.
        If substructure occurrence is close to anchor occurrence, it means that whenever
-       the fragment is present, it is an anchor (strong indicator).
+       the fragment is decomposable from the compound, it is an anchor (strong indicator).
        If substructure occurrence is much higher than anchor occurrence, the fragment is
-       common but not always critical (weaker indicator).
+       commonly produced by decomposition but not always critical (weaker indicator).
         
     High-occurrence fragments represent consistent chemical logic your model uses for a given
     class. 
@@ -1220,13 +1230,14 @@ def identify_recurrent_anchor_rules(
         }
         return [json.dumps(summary, indent=2)]
 
-    # Pre-parse analyzed compound SMILES to Mol objects once for substructure searching
-    analyzed_mols: list[Optional[Chem.Mol]] = []
-    for s in analyzed_compounds:
-        try:
-            analyzed_mols.append(Chem.MolFromSmiles(s))
-        except Exception:
-            analyzed_mols.append(None)
+    # Per-compound BRICS-fragment sets, used to count compounds whose
+    # decomposition actually yields a given rule's fragment(s). Built from the
+    # `fragment_smiles` field that `_explain_with_molanchor` populates with the
+    # same canonicalisation used for anchor SMILES, so equality matching is exact.
+    analyzed_fragment_sets: list[set[str]] = []
+    for result in batch_results.get("detailed_results", []):
+        if "compound_index" in result and "smiles" in result and result.get("status") == "completed":
+            analyzed_fragment_sets.append(set(result.get("fragment_smiles", [])))
 
     # Compute metrics for each anchor fragment
     recurrent_rules = []
@@ -1234,24 +1245,20 @@ def identify_recurrent_anchor_rules(
     for anchor_key, anchor_count in anchor_frequency.items():
         # Split key back into individual fragment SMILES
         fragment_smiles_list = anchor_key.split("||")
-        anchor_mols = [_smiles_to_mol_for_matching(smi) for smi in fragment_smiles_list]
-        anchor_mols = [m for m in anchor_mols if m is not None]
-        if not anchor_mols:
+        if not fragment_smiles_list or not all(fragment_smiles_list):
             continue
 
         # Anchor occurrence: fraction of analyzed compounds where this rule was identified
         anchor_occurrence = anchor_count / num_analyzed_compounds if num_analyzed_compounds > 0 else 0.0
 
-        # Substructure occurrence: fraction of analyzed compounds containing ALL rule fragments
-        substructure_count = 0
-        for compound_mol in analyzed_mols:
-            try:
-                if compound_mol is not None and all(
-                    compound_mol.HasSubstructMatch(am) for am in anchor_mols
-                ):
-                    substructure_count += 1
-            except Exception:
-                pass
+        # Substructure occurrence: fraction of analyzed compounds whose BRICS decomposition
+        # produces all rule fragments. This is the population from which the anchor
+        # was actually drawable — compounds containing the pattern only inside a
+        # larger BRICS fragment do not count.
+        substructure_count = sum(
+            1 for frag_set in analyzed_fragment_sets
+            if all(fs in frag_set for fs in fragment_smiles_list)
+        )
 
         substructure_occurrence = substructure_count / num_analyzed_compounds if num_analyzed_compounds > 0 else 0.0
 
@@ -1381,7 +1388,10 @@ def aggregate_substructure_anchor_rules(
     fragments are absorbed into its group. Statistics (anchor occurrence and
     substructure occurrence) are then recalculated for each aggregated group
     directly from the saved per-compound results, so no model re-evaluation is
-    required.
+    required. ``substructure_occurrence`` for a merged group counts compounds
+    whose BRICS decomposition produces any fragment in the group (the union of
+    the representative and its absorbed variants), matching the
+    decomposition-based semantics used in ``identify_recurrent_anchor_rules``.
 
     Only **single-fragment** rules are candidates for aggregation. Multi-fragment
     (combination-anchor) rules are passed through unchanged.
@@ -1553,10 +1563,18 @@ def aggregate_substructure_anchor_rules(
             if len(anchors) == 1 and anchors[0] in group_fragments:
                 num_with_anchor += 1
 
-        # Substructure count: compounds whose SMILES contain the representative fragment
+        # Substructure count: compounds whose BRICS decomposition produces any
+        # fragment in the merged group. For aggregated groups this means the
+        # representative covers all the more-specific variants. Falls back to
+        # whole-molecule SMARTS matching when older results pre-date the
+        # `fragment_smiles` field.
         num_with_substructure = 0
-        if representative_mol is not None:
-            for res in detailed_results:
+        for res in detailed_results:
+            frag_smiles = res.get("fragment_smiles")
+            if frag_smiles is not None:
+                if set(frag_smiles) & group_fragments:
+                    num_with_substructure += 1
+            elif representative_mol is not None:
                 smi = res.get("smiles", "")
                 if not smi:
                     continue
