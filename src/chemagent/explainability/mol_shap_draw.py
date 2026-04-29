@@ -387,7 +387,6 @@ def render_top_k_bit_environments_image(
                 "\n".join(
                     [
                         f"bit {item['bit']} | SHAP {item['contribution']:+.4f}",
-                        f"r={env['radius']}, center={env['center_atom']}",
                     ]
                 )
             )
@@ -400,11 +399,14 @@ def render_top_k_bit_environments_image(
     if not env_mols:
         raise ValueError("No valid bit environments available to render.")
 
+    draw_opts = Draw.MolDrawOptions()
+    draw_opts.useBWAtomPalette()
     grid_image = Draw.MolsToGridImage(
         env_mols,
         legends=legends,
         molsPerRow=int(mols_per_row),
         subImgSize=tuple(sub_img_size),
+        drawOptions=draw_opts,
         useSVG=False,
         returnPNG=True,
     )
@@ -552,7 +554,6 @@ def render_top_k_parent_molecule_environment_highlights(
                 "\n".join(
                     [
                         f"bit {item['bit']} | SHAP {item['contribution']:+.4f}",
-                        #f"r={env['radius']}, center={env['center_atom']}",
                     ]
                 )
             )
@@ -565,6 +566,8 @@ def render_top_k_parent_molecule_environment_highlights(
     if not parent_mols:
         raise ValueError("No valid bit environments available to render on parent molecule.")
 
+    draw_opts = Draw.MolDrawOptions()
+    draw_opts.useBWAtomPalette()
     grid_image = Draw.MolsToGridImage(
         parent_mols,
         legends=legends,
@@ -572,6 +575,7 @@ def render_top_k_parent_molecule_environment_highlights(
         subImgSize=tuple(sub_img_size),
         highlightAtomLists=highlight_atom_lists,
         highlightBondLists=highlight_bond_lists,
+        drawOptions=draw_opts,
         useSVG=False,
         returnPNG=True,
     )
