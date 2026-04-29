@@ -9,6 +9,7 @@ Functions
 select_compound_for_edgeshaper — choose a correctly predicted GNN test compound for EdgeSHAPer
 explain_gnn_with_edgeshaper    — compute edge importance scores for a GNN model on a test compound
 visualize_edgeshaper_results   — render atom/edge-level SHAP heatmaps on molecular structures
+get_edgeshaper_bond_environments — map EdgeSHAPer edge attributions to bond-level structures
 
 The EdgeSHAPer algorithm computes Shapley value approximations for edge importance
 in Graph Neural Networks, enabling edge-level explainability.
@@ -529,6 +530,265 @@ def _predict_gnn_logits(
     return logits
 
 
+def _coerce_json_payload(value: Any, name: str) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{name} must be valid JSON when provided as a string.") from exc
+    return value
+
+
+def _normalize_edge_index(edge_index_raw: Any) -> np.ndarray:
+    edge_index = np.asarray(edge_index_raw)
+    if edge_index.ndim != 2:
+        raise ValueError("edge_index must be a 2D array-like payload.")
+    if edge_index.shape[0] != 2 and edge_index.shape[1] == 2:
+        edge_index = edge_index.T
+    if edge_index.shape[0] != 2:
+        raise ValueError(
+            f"edge_index must have shape [2, num_edges], got {tuple(edge_index.shape)}"
+        )
+    return edge_index.astype(int)
+
+
+def _bond_environment_smiles(
+    mol: Chem.Mol,
+    bond_idx: int,
+    radius: int,
+) -> tuple[str, list[int], list[int]]:
+    bond = mol.GetBondWithIdx(bond_idx)
+    atom1 = bond.GetBeginAtomIdx()
+    atom2 = bond.GetEndAtomIdx()
+    bond_smiles = Chem.MolFragmentToSmiles(
+        mol,
+        atomsToUse=[atom1, atom2],
+        bondsToUse=[bond_idx],
+        isomericSmiles=True,
+        kekuleSmiles=False,
+    )
+    if radius <= 0:
+        return bond_smiles, [atom1, atom2], [bond_idx]
+
+    bond_indices = {bond_idx}
+    for atom_idx in (atom1, atom2):
+        env = Chem.FindAtomEnvironmentOfRadiusN(mol, radius, atom_idx)
+        bond_indices.update(env)
+
+    if not bond_indices:
+        return bond_smiles, [atom1, atom2], [bond_idx]
+
+    atom_map: dict[int, int] = {}
+    submol = Chem.PathToSubmol(mol, list(bond_indices), atomMap=atom_map)
+    env_smiles = Chem.MolToSmiles(submol, isomericSmiles=True)
+    env_atom_indices = sorted(atom_map.keys())
+    env_bond_indices = sorted(bond_indices)
+    return env_smiles, env_atom_indices, env_bond_indices
+
+
+def _rank_bonds_by_phi(
+    bond_phi_values: list[float],
+    ranking: Literal["absolute", "descending", "ascending"],
+) -> list[tuple[int, float]]:
+    ranked = [(idx, float(phi)) for idx, phi in enumerate(bond_phi_values)]
+    if ranking == "descending":
+        ranked.sort(key=lambda item: item[1], reverse=True)
+    elif ranking == "ascending":
+        ranked.sort(key=lambda item: item[1])
+    else:
+        ranked.sort(key=lambda item: abs(item[1]), reverse=True)
+    return ranked
+
+
+def _draw_top_k_bond_overlay(
+    img_pil,
+    canvas,
+    mol: Chem.Mol,
+    overlay_entries: list[dict[str, Any]],
+    label_mode: Literal["rank", "bond_index"],
+):
+    """Draw visible dashed contours and labels over the rendered heatmap PNG."""
+    if not overlay_entries:
+        return img_pil
+
+    from PIL import ImageDraw, ImageFont
+
+    img = img_pil.convert("RGB")
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+
+    def _text_size(text: str) -> tuple[int, int]:
+        if hasattr(draw, "textbbox"):
+            bbox = draw.textbbox((0, 0), text, font=font)
+            return int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
+        if font is not None and hasattr(font, "getbbox"):
+            bbox = font.getbbox(text)
+            return int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
+        if font is not None and hasattr(font, "getsize"):
+            width, height = font.getsize(text)
+            return int(width), int(height)
+        return (int(draw.textlength(text, font=font)) if hasattr(draw, "textlength") else 8, 12)
+
+    def _draw_dashed_line(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        fill: tuple[int, int, int],
+        width: int,
+        dash: float = 10.0,
+        gap: float = 6.0,
+    ) -> None:
+        x1, y1 = start
+        x2, y2 = end
+        dx = x2 - x1
+        dy = y2 - y1
+        length = (dx * dx + dy * dy) ** 0.5
+        if length <= 0:
+            return
+
+        ux = dx / length
+        uy = dy / length
+        distance = 0.0
+        while distance < length:
+            segment_end = min(distance + dash, length)
+            draw.line(
+                (
+                    x1 + ux * distance,
+                    y1 + uy * distance,
+                    x1 + ux * segment_end,
+                    y1 + uy * segment_end,
+                ),
+                fill=fill,
+                width=width,
+            )
+            distance += dash + gap
+
+    def _draw_dashed_contour(corners: list[tuple[float, float]], fill: tuple[int, int, int], width: int) -> None:
+        for idx, start in enumerate(corners):
+            end = corners[(idx + 1) % len(corners)]
+            _draw_dashed_line(start, end, fill=fill, width=width)
+
+    for entry in overlay_entries:
+        bond_idx = int(entry["bond_index"])
+        bond = mol.GetBondWithIdx(bond_idx)
+        atom1 = bond.GetBeginAtomIdx()
+        atom2 = bond.GetEndAtomIdx()
+
+        p1 = canvas.GetDrawCoords(atom1)
+        p2 = canvas.GetDrawCoords(atom2)
+        x1, y1 = float(p1.x), float(p1.y)
+        x2, y2 = float(p2.x), float(p2.y)
+
+        label = str(entry["rank"]) if label_mode == "rank" else str(bond_idx)
+        center_x = (x1 + x2) / 2.0
+        center_y = (y1 + y2) / 2.0
+        dx = x2 - x1
+        dy = y2 - y1
+        length = max((dx * dx + dy * dy) ** 0.5, 1.0)
+        ux = dx / length
+        uy = dy / length
+        nx = -dy / length
+        ny = dx / length
+
+        contour_pad = 14.0
+        contour_half_width = 16.0
+        corners = [
+            (x1 - ux * contour_pad + nx * contour_half_width, y1 - uy * contour_pad + ny * contour_half_width),
+            (x2 + ux * contour_pad + nx * contour_half_width, y2 + uy * contour_pad + ny * contour_half_width),
+            (x2 + ux * contour_pad - nx * contour_half_width, y2 + uy * contour_pad - ny * contour_half_width),
+            (x1 - ux * contour_pad - nx * contour_half_width, y1 - uy * contour_pad - ny * contour_half_width),
+        ]
+        _draw_dashed_contour(corners, fill=(20, 20, 20), width=5)
+        _draw_dashed_contour(corners, fill=(255, 218, 65), width=3)
+
+        label_x = center_x + nx * 28.0
+        label_y = center_y + ny * 28.0
+
+        text_w, text_h = _text_size(label)
+        radius = max(12, int(max(text_w, text_h) / 2) + 6)
+        bbox = (
+            label_x - radius,
+            label_y - radius,
+            label_x + radius,
+            label_y + radius,
+        )
+        draw.ellipse(bbox, fill=(255, 255, 255), outline=(20, 20, 20), width=2)
+        draw.text(
+            (label_x - text_w / 2.0, label_y - text_h / 2.0 - 1.0),
+            label,
+            fill=(20, 20, 20),
+            font=font,
+        )
+
+    return img
+
+
+def _append_overlay_legend(
+    img_pil,
+    overlay_entries: list[dict[str, Any]],
+    overlay_top_k: int,
+    overlay_ranking: str,
+    overlay_label: str,
+):
+    if not overlay_entries:
+        return img_pil
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    def _text_size(draw: ImageDraw.ImageDraw, text: str, font: Any) -> tuple[int, int]:
+        """Measure text across Pillow versions."""
+        sample = text or "Ag"
+        if hasattr(draw, "textbbox"):
+            bbox = draw.textbbox((0, 0), sample, font=font)
+            return int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
+        if font is not None and hasattr(font, "getbbox"):
+            bbox = font.getbbox(sample)
+            return int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
+        if font is not None and hasattr(font, "getsize"):
+            width, height = font.getsize(sample)
+            return int(width), int(height)
+        return (int(draw.textlength(sample, font=font)) if hasattr(draw, "textlength") else 0, 12)
+
+    legend_width = 280
+    padding = 10
+    bg_color = (255, 255, 255)
+    text_color = (0, 0, 0)
+
+    new_img = Image.new("RGB", (img_pil.width + legend_width, img_pil.height), bg_color)
+    new_img.paste(img_pil, (0, 0))
+
+    draw = ImageDraw.Draw(new_img)
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+
+    lines = [
+        f"Top-{overlay_top_k} bonds",
+        f"Ranking: {overlay_ranking}",
+        f"Label: {overlay_label}",
+        "",
+    ]
+
+    for entry in overlay_entries:
+        label = entry["rank"] if overlay_label == "rank" else entry["bond_index"]
+        phi_value = entry.get("phi_sum", 0.0)
+        lines.append(f"{label}. bond {entry['bond_index']} (phi={phi_value:.3f})")
+
+    y = padding
+    max_y = new_img.height - padding
+    for line in lines:
+        if y >= max_y:
+            break
+        draw.text((img_pil.width + padding, y), line, fill=text_color, font=font)
+        line_height = _text_size(draw, line, font)[1] + 2
+        y += line_height
+
+    return new_img
+
+
 def select_compound_for_edgeshaper(
     model: Optional[Any] = None,
     model_path: Optional[str] = None,
@@ -700,6 +960,192 @@ def select_compound_for_edgeshaper(
             "error": error_msg,
             "job_id": f"edgeshaper_select_failed_{int(np.random.random() * 1e9)}",
         }
+
+
+def get_edgeshaper_bond_environments(
+    smiles: str,
+    phi_edges_json: Union[str, list[float]],
+    edge_index_json: Union[str, list[list[int]]],
+    top_k: Optional[int] = 10,
+    ranking: Literal["absolute", "descending", "ascending"] = "descending",
+    env_radius: int = 1,
+    include_unmapped_edges: bool = False,
+) -> dict[str, Any]:
+    """Return top-k bond environments from EdgeSHAPer edge attributions.
+
+    Use this tool when you need structured, text-friendly bond mappings for
+    LLM interpretation (positive vs. negative edges) rather than a heatmap.
+
+    Args:
+        smiles: SMILES string for the explained compound.
+        phi_edges_json: JSON string or list of edge Shapley values.
+        edge_index_json: JSON string or list with edge indices.
+        top_k: Number of bonds to return. Use None to return all bonds.
+        ranking: "absolute" (by magnitude), "descending" (phi_sum high→low),
+            or "ascending" (phi_sum low→high).
+        env_radius: Bond environment radius (in bonds) used to build
+            bond_environment_smiles. Use 0 for the bare bond only.
+        include_unmapped_edges: If True, include unmapped directed edges
+            in the response for debugging.
+
+    Returns:
+        JSON-serializable dict with bond environments and contributions.
+    """
+    if top_k is not None and top_k <= 0:
+        raise ValueError(f"top_k must be > 0 or None, got {top_k}.")
+    if ranking not in {"absolute", "descending", "ascending"}:
+        raise ValueError(
+            f"ranking must be one of ['absolute', 'descending', 'ascending'], got {ranking!r}."
+        )
+
+    phi_edges_raw = _coerce_json_payload(phi_edges_json, "phi_edges_json")
+    edge_index_raw = _coerce_json_payload(edge_index_json, "edge_index_json")
+
+    if not isinstance(phi_edges_raw, (list, tuple, np.ndarray)):
+        raise ValueError("phi_edges_json must resolve to a list of numbers.")
+
+    phi_edges = [float(v) for v in phi_edges_raw]
+    edge_index = _normalize_edge_index(edge_index_raw)
+
+    if len(phi_edges) != int(edge_index.shape[1]):
+        raise ValueError(
+            "edge_index and phi_edges length mismatch: "
+            f"len(phi_edges)={len(phi_edges)}, edge_index_edges={edge_index.shape[1]}."
+        )
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Invalid SMILES: {smiles}")
+
+    bond_lookup: dict[tuple[int, int], int] = {}
+    for bond in mol.GetBonds():
+        a1 = bond.GetBeginAtomIdx()
+        a2 = bond.GetEndAtomIdx()
+        bond_lookup[(a1, a2)] = bond.GetIdx()
+        bond_lookup[(a2, a1)] = bond.GetIdx()
+
+    bond_to_edges: dict[int, list[dict[str, Any]]] = {}
+    unmapped_edges: list[dict[str, Any]] = []
+    for i, phi in enumerate(phi_edges):
+        init_atom = int(edge_index[0, i])
+        end_atom = int(edge_index[1, i])
+        bond_idx = bond_lookup.get((init_atom, end_atom))
+        if bond_idx is None:
+            unmapped_edges.append(
+                {
+                    "edge_index": int(i),
+                    "atoms": [init_atom, end_atom],
+                    "phi": float(phi),
+                }
+            )
+            continue
+        bond_to_edges.setdefault(bond_idx, []).append(
+            {
+                "edge_index": int(i),
+                "atoms": [init_atom, end_atom],
+                "phi": float(phi),
+            }
+        )
+
+    bond_entries: list[dict[str, Any]] = []
+    for bond_idx, edge_entries in bond_to_edges.items():
+        bond = mol.GetBondWithIdx(int(bond_idx))
+        atom1 = bond.GetBeginAtomIdx()
+        atom2 = bond.GetEndAtomIdx()
+        atom1_obj = mol.GetAtomWithIdx(atom1)
+        atom2_obj = mol.GetAtomWithIdx(atom2)
+
+        phi_values = [entry["phi"] for entry in edge_entries]
+        phi_sum = float(np.sum(phi_values))
+        phi_abs_sum = float(np.sum(np.abs(phi_values)))
+        phi_mean = float(np.mean(phi_values)) if phi_values else 0.0
+
+        bond_smiles = Chem.MolFragmentToSmiles(
+            mol,
+            atomsToUse=[atom1, atom2],
+            bondsToUse=[bond_idx],
+            isomericSmiles=True,
+            kekuleSmiles=False,
+        )
+        env_smiles, env_atoms, env_bonds = _bond_environment_smiles(
+            mol, int(bond_idx), int(env_radius)
+        )
+
+        bond_entries.append(
+            {
+                "bond_index": int(bond_idx),
+                "atom_indices": [int(atom1), int(atom2)],
+                "atom_symbols": [atom1_obj.GetSymbol(), atom2_obj.GetSymbol()],
+                "atom_details": [
+                    {
+                        "index": int(atom1),
+                        "symbol": atom1_obj.GetSymbol(),
+                        "formal_charge": int(atom1_obj.GetFormalCharge()),
+                        "is_aromatic": bool(atom1_obj.GetIsAromatic()),
+                        "degree": int(atom1_obj.GetDegree()),
+                        "total_hs": int(atom1_obj.GetTotalNumHs()),
+                    },
+                    {
+                        "index": int(atom2),
+                        "symbol": atom2_obj.GetSymbol(),
+                        "formal_charge": int(atom2_obj.GetFormalCharge()),
+                        "is_aromatic": bool(atom2_obj.GetIsAromatic()),
+                        "degree": int(atom2_obj.GetDegree()),
+                        "total_hs": int(atom2_obj.GetTotalNumHs()),
+                    },
+                ],
+                "bond_type": str(bond.GetBondType()),
+                "bond_order": float(bond.GetBondTypeAsDouble()),
+                "is_aromatic": bool(bond.GetIsAromatic()),
+                "is_conjugated": bool(bond.GetIsConjugated()),
+                "is_in_ring": bool(bond.IsInRing()),
+                "bond_smiles": bond_smiles,
+                "bond_environment_smiles": env_smiles,
+                "environment_atom_indices": [int(v) for v in env_atoms],
+                "environment_bond_indices": [int(v) for v in env_bonds],
+                "phi_sum": phi_sum,
+                "phi_abs_sum": phi_abs_sum,
+                "phi_mean": phi_mean,
+                "sign": "positive" if phi_sum > 0 else "negative" if phi_sum < 0 else "neutral",
+                "directed_edges": edge_entries,
+            }
+        )
+
+    if ranking == "descending":
+        ranked = list(bond_entries)
+        ranked.sort(key=lambda e: e["phi_sum"], reverse=True)
+    elif ranking == "ascending":
+        ranked = list(bond_entries)
+        ranked.sort(key=lambda e: e["phi_sum"])
+    else:
+        ranked = list(bond_entries)
+        ranked.sort(key=lambda e: abs(e["phi_sum"]), reverse=True)
+
+    selected = ranked if top_k is None else ranked[:top_k]
+    result = {
+        "status": "completed",
+        "smiles": smiles,
+        "ranking": ranking,
+        "top_k": int(top_k) if top_k is not None else None,
+        "env_radius": int(env_radius),
+        "num_edges": int(edge_index.shape[1]),
+        "num_bonds": int(mol.GetNumBonds()),
+        "matched_directed_edges": int(sum(len(v) for v in bond_to_edges.values())),
+        "matched_bonds": int(len(bond_to_edges)),
+        "n_selected_bonds": int(len(selected)),
+        "bond_environments": selected,
+    }
+
+    if include_unmapped_edges:
+        result["unmapped_edges"] = unmapped_edges
+
+    if result["num_edges"] > 0 and result["matched_directed_edges"] < max(2, int(0.5 * result["num_edges"])):
+        result["warning"] = (
+            "Low edge-to-bond mapping ratio detected. The provided SMILES likely does not match "
+            "the explained graph. Use compound_smiles returned by explain_gnn_with_edgeshaper."
+        )
+
+    return result
 
 
 def explain_gnn_with_edgeshaper(
@@ -1019,6 +1465,9 @@ def visualize_edgeshaper_results(
     smiles: str,
     phi_edges_json: str,
     edge_index_json: str,
+    overlay_top_k: Optional[int] = None,
+    overlay_ranking: Literal["absolute", "descending", "ascending"] = "absolute",
+    overlay_label: Literal["rank", "bond_index"] = "rank",
     save_results: bool = True,
 ) -> Any:
     """Visualize EdgeSHAPer explanations as molecular heatmaps.
@@ -1033,6 +1482,12 @@ def visualize_edgeshaper_results(
         JSON string containing list of Shapley values (one per edge)
     edge_index_json : str
         JSON string containing edge indices as [source_nodes, target_nodes]
+    overlay_top_k : int, optional
+        If set, overlay labels for the top-k bonds on the heatmap.
+    overlay_ranking : str, optional
+        Ranking strategy for overlay labels: "absolute", "descending", or "ascending".
+    overlay_label : str, optional
+        Label mode for overlay: "rank" (1..k) or "bond_index".
     save_results : bool, optional
         If True, saves PNG files to session directory (default: True)
 
@@ -1107,11 +1562,39 @@ def visualize_edgeshaper_results(
                 matched_directed_edges += 1
 
         matched_bonds = sum(1 for v in rdkit_bonds_phi if abs(v) > 0.0)
+        overlay_entries: list[dict[str, Any]] = []
+
+        if overlay_top_k is not None:
+            if overlay_top_k <= 0:
+                raise ValueError(f"overlay_top_k must be > 0, got {overlay_top_k}.")
+            if overlay_ranking not in {"absolute", "descending", "ascending"}:
+                raise ValueError(
+                    "overlay_ranking must be one of ['absolute', 'descending', 'ascending'], "
+                    f"got {overlay_ranking!r}."
+                )
+            if overlay_label not in {"rank", "bond_index"}:
+                raise ValueError(
+                    f"overlay_label must be 'rank' or 'bond_index', got {overlay_label!r}."
+                )
+
+            ranked_bonds = _rank_bonds_by_phi(rdkit_bonds_phi, overlay_ranking)
+            top_count = min(overlay_top_k, len(ranked_bonds))
+            for rank, (bond_idx, phi_sum) in enumerate(ranked_bonds[:top_count], start=1):
+                overlay_entries.append(
+                    {
+                        "rank": rank,
+                        "bond_index": int(bond_idx),
+                        "phi_sum": float(phi_sum),
+                    }
+                )
 
         # Generate heatmap visualization
         try:
             from chemagent.explainability.edgeshaper_viz_utils.molmapping import mapvalues2mol
             from chemagent.explainability.edgeshaper_viz_utils.utils import transform2png
+            import matplotlib
+
+            matplotlib.use("Agg", force=True)
             import matplotlib.pyplot as plt
 
             plt.clf()
@@ -1124,6 +1607,21 @@ def visualize_edgeshaper_results(
                 bond_width=0.5,
             )
             img_pil = transform2png(canvas.GetDrawingText())
+            if overlay_entries:
+                img_pil = _draw_top_k_bond_overlay(
+                    img_pil,
+                    canvas,
+                    mol_prep,
+                    overlay_entries,
+                    overlay_label,
+                )
+                img_pil = _append_overlay_legend(
+                    img_pil,
+                    overlay_entries,
+                    int(overlay_top_k),
+                    overlay_ranking,
+                    overlay_label,
+                )
             plt.clf()
 
             result = {
@@ -1134,6 +1632,15 @@ def visualize_edgeshaper_results(
                 "matched_bonds": matched_bonds,
                 "note": "A PNG visualization was generated; whether it appears inline depends on the MCP client.",
             }
+
+            if overlay_entries:
+                result["overlay"] = {
+                    "top_k": int(overlay_top_k),
+                    "ranking": overlay_ranking,
+                    "label_mode": overlay_label,
+                    "bonds": overlay_entries,
+                    "note": "Overlay labels correspond to the selected ranking order.",
+                }
 
             if num_edges > 0 and matched_directed_edges < max(2, int(0.5 * num_edges)):
                 result["warning"] = (

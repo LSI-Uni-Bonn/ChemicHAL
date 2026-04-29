@@ -32,10 +32,6 @@ uv sync
 
 Download **LM Studio** from [lmstudio.ai](https://lmstudio.ai) and install it on your system.
 
-### 2. Install LM Studio
-
-Download **LM Studio** from [lmstudio.ai](https://lmstudio.ai) and install it on your system.
-
 > **Note:** LM Studio has been tested as the primary MCP host. Other MCP-compatible interfaces (Ollama, Claude Desktop, etc.) may also be explored for alternative workflows.
 
 ### 3. Import MCP Server
@@ -65,18 +61,11 @@ Keep the prompt in version control and copy/paste it directly from the file.
 Canonical prompt file:
 - `prompts/lm_studio_system_prompt.md`
 
-Alternative prompt kept for experimentation (non-canonical):
-- `prompts/structured_system_prompt`
-
 Then in LM Studio GUI:
 1. Open `prompts/lm_studio_system_prompt.md` and copy the content
 2. Open your chat preset (or active chat settings)
 3. Paste into the System Prompt field
 4. Save preset
-
-Recommended workflow:
-- Edit `prompts/lm_studio_system_prompt.md` in this repo
-- Paste once into LM Studio
 
 ## Agent Capabilities
 
