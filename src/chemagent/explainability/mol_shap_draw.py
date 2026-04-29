@@ -675,7 +675,7 @@ def shap_to_atom_weight(mol: Chem.Mol, dict_bit_info: dict, shapley_values: np.n
 def get_atom_wise_weight_map(
     mol: Chem.Mol,
     weights: List[float],
-    mol_size: tuple = (500, 500),
+    mol_size: tuple = (1200, 1200),
     cmap: Union[str, Any] = DEFAULT_COLORMAP,
     return_png: bool = True,
 ) -> Union[Image.Image, Draw.MolDraw2D]:
@@ -699,23 +699,25 @@ def get_atom_wise_weight_map(
         Molecule image with atom-importance heatmap overlay.
     """
     draw2d = Draw.MolDraw2DCairo(*mol_size)
-    draw2d.drawOptions().fixedScale = 0
-    draw2d.drawOptions().useBWAtomPalette()
+    dopts = draw2d.drawOptions()
+    dopts.fixedScale = 0
+    dopts.useBWAtomPalette()
+    dopts.bondLineWidth = 2
 
     mol = Draw.rdMolDraw2D.PrepareMolForDrawing(mol, addChiralHs=False)
-    
+
     if not mol.GetNumConformers():
         rdDepictor.Compute2DCoords(mol)
-    
+
     if mol.GetNumBonds() > 0:
         bond = mol.GetBondWithIdx(0)
         idx1 = bond.GetBeginAtomIdx()
         idx2 = bond.GetEndAtomIdx()
-        sigma = 0.3 * (mol.GetConformer().GetAtomPosition(idx1) -
-                       mol.GetConformer().GetAtomPosition(idx2)).Length()
+        sigma = 0.22 * (mol.GetConformer().GetAtomPosition(idx1) -
+                        mol.GetConformer().GetAtomPosition(idx2)).Length()
     else:
-        sigma = 0.3 * (mol.GetConformer().GetAtomPosition(0) -
-                       mol.GetConformer().GetAtomPosition(1)).Length()
+        sigma = 0.22 * (mol.GetConformer().GetAtomPosition(0) -
+                        mol.GetConformer().GetAtomPosition(1)).Length()
     sigma = round(sigma, 2)
     sigmas = [sigma] * mol.GetNumAtoms()
     locs = []
@@ -726,17 +728,17 @@ def get_atom_wise_weight_map(
     draw2d.ClearDrawing()
     ps = Draw.ContourParams()
     ps.fillGrid = True
-    ps.gridResolution = 0.1
-    ps.extraGridPadding = 0.9#2.0
+    ps.gridResolution = 0.04
+    ps.extraGridPadding = 0.4
 
     if isinstance(cmap, str):
         cmap = plt.get_cmap(cmap)
     clrs = [tuple(cmap.get_under()), (1, 1, 1), tuple(cmap.get_over())]
     ps.setColourMap(clrs)
 
-    contourLines = 10
+    contourLines = 20
     Draw.ContourAndDrawGaussians(draw2d, locs, weights, sigmas, nContours=contourLines, params=ps)
-    draw2d.drawOptions().clearBackground = False
+    dopts.clearBackground = False
     draw2d.DrawMolecule(mol)
 
     if return_png:

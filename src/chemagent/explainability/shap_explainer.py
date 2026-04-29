@@ -6,12 +6,13 @@ Thin wrapper that selects the right SHAP explainer for a trained sklearn model.
 Important routing rule for LLM tool callers
 -------------------------------------------
 These SHAP helpers are for tabular sklearn-style models saved as .pkl/.joblib
-(RFC/RFR/SVC/DNN tabular path). They are not for GNN checkpoints (.pt/.pth).
+(RFC/RFR/SVC/DNN/BRF tabular path). They are not for GNN checkpoints (.pt/.pth).
 For GNN explanations, use explain_gnn_with_edgeshaper.
 
 Supported models
 ----------------
 * RandomForestClassifier / RandomForestRegressor  →  ``shap.TreeExplainer``
+* BalancedRandomForestClassifier (imblearn, BRF)  →  ``shap.TreeExplainer``
 * DNNClassifier / DNNRegressor                    →  ``shap.GradientExplainer`` (Deep fallback)
 * SVC                                             →  ``shap.KernelExplainer``
 
@@ -65,6 +66,9 @@ _TREE_MODEL_NAMES: frozenset[str] = frozenset(
         "GradientBoostingRegressor",
         "DecisionTreeClassifier",
         "DecisionTreeRegressor",
+        # imblearn BalancedRandomForestClassifier subclasses sklearn's
+        # RandomForestClassifier and is fully compatible with TreeExplainer.
+        "BalancedRandomForestClassifier",
     }
 )
 
@@ -768,7 +772,7 @@ def plot_shap_mol(
 
     n_samples = int(shap_values.shape[0])
     indices   = sample_indices if sample_indices is not None else list(range(min(5, n_samples)))
-    size      = tuple(mol_size) if mol_size is not None else (400, 300)
+    size      = tuple(mol_size) if mol_size is not None else (1200, 1200)
 
     out_dir = _get_session_logger().session_dir / "plots"
     out_dir.mkdir(parents=True, exist_ok=True)
