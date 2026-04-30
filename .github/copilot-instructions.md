@@ -7,7 +7,7 @@ An AI agent for **compound selectivity prediction and explainability** using the
 ## Architecture
 All capabilities are consolidated into a **single FastMCP server** (`chemagent_mcp.py`) that runs as a subprocess over `stdio` transport. The server lives at `src/chemagent/servers/chemagent_mcp.py` and is registered in `lm_studio_mcp_config.json` as `"chemagent"`.
 
-### MCP Tools exposed by `chemagent_mcp.py` (41 total)
+### MCP Tools exposed by `chemagent_mcp.py` (42 total)
 
 | Group | Tools |
 |---|---|
@@ -15,13 +15,15 @@ All capabilities are consolidated into a **single FastMCP server** (`chemagent_m
 | **ML** | `get_ml_info`, `train_model`, `check_training`, `export_predictions` |
 | **GNN** | `prepare_gnn_dataset`, `train_gnn_model_mcp`, `check_gnn_training`, `load_gnn_model`, `load_gnn_model_mcp` |
 | **Plots** | `plot_classification_results`, `plot_regression_results`, `show_plot` |
-| **XAI** | `explain_with_shap`, `explain_smiles_with_shap`, `plot_shap_mol`, `explain_with_molanchor`, `identify_recurrent_anchor_rules`, `get_molanchor_info`, `select_compound_for_xai`, `generate_counterfactuals`, `visualize_counterfactuals`, `explain_with_molce`, `identify_recurrent_molce_rules`, `select_compound_for_edgeshaper`, `explain_gnn_with_edgeshaper`, `visualize_edgeshaper_results`, `get_edgeshaper_info` |
+| **XAI** | `explain_with_shap`, `explain_smiles_with_shap`, `plot_shap_mol`, `explain_with_molanchor`, `identify_recurrent_anchor_rules`, `get_molanchor_info`, `select_compound_for_xai`, `generate_counterfactuals`, `visualize_counterfactuals`, `explain_with_molce`, `identify_recurrent_molce_rules`, `select_compound_for_edgeshaper`, `select_compound_for_edgeshaper_agreement`, `explain_gnn_with_edgeshaper`, `visualize_edgeshaper_results`, `get_edgeshaper_info` |
 | **Utility / Session** | `log_thought`, `log_answer`, `generate_report`, `generate_pdf_report`, `export_chat_html`, `set_chat_scope`, `start_new_session` |
 
 Notes:
 - `run_pipeline` is currently not registered in the MCP server.
 - XAI and GNN tools are already implemented and available.
-- `explain_with_molanchor`, `identify_recurrent_anchor_rules`, `explain_with_molce`, `identify_recurrent_molce_rules`, `generate_counterfactuals`, and `select_compound_for_xai` all accept optional `gnn_model_class_name` to use PyTorch GNN models (.pt) instead of sklearn (.pkl). `select_compound_for_xai` is for non-EdgeSHAPer XAI only; use `select_compound_for_edgeshaper` for EdgeSHAPer workflows. Shared GNN loading/inference lives in `chemagent.explainability.gnn_compat`.
+- `explain_with_molanchor`, `identify_recurrent_anchor_rules`, `explain_with_molce`, `identify_recurrent_molce_rules`, `generate_counterfactuals`, and `select_compound_for_xai` all accept optional `gnn_model_class_name` to use PyTorch GNN models (.pt) instead of sklearn (.pkl).
+- For EdgeSHAPer explainability workflows: use `select_compound_for_edgeshaper` when working with a single GNN model. Use `select_compound_for_edgeshaper_agreement` to select a compound that at least 2+ models predict with the **same label** — this ensures high-confidence consensus predictions suitable for edge-level explanation.
+- Shared GNN loading/inference lives in `chemagent.explainability.gnn_compat`.
 
 ## Preferred Data Flow (data stays on disk)
 Features are never serialised through the LLM context:

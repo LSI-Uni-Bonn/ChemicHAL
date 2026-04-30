@@ -7,6 +7,7 @@ Registered via ``_register()`` in ``chemagent_mcp.py``.
 Functions
 ---------
 select_compound_for_edgeshaper — choose a correctly predicted GNN test compound for EdgeSHAPer
+select_compound_for_edgeshaper_agreement — choose a compound where two or more GNN models agree on the same label
 explain_gnn_with_edgeshaper    — compute edge importance scores for a GNN model on a test compound
 visualize_edgeshaper_results   — render atom/edge-level SHAP heatmaps on molecular structures
 get_edgeshaper_bond_environments — map EdgeSHAPer edge attributions to bond-level structures
@@ -427,6 +428,50 @@ def _load_edgeshaper_model(
     return model
 
 
+def _load_edgeshaper_model_for_path(
+    model_path: str,
+    model_class_name: Optional[str] = None,
+    node_features_dim: int = 4,
+    hidden_channels: int = 64,
+    num_classes: int = 2,
+    num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
+    custom_model_module: Optional[str] = None,
+    custom_model_class_name: Optional[str] = None,
+    device: str = "cpu",
+) -> tuple[torch.nn.Module, str, int, int]:
+    """Load one EdgeSHAPer-compatible GNN, inferring checkpoint metadata when needed."""
+    from chemagent.explainability.gnn_compat import infer_gnn_params
+
+    resolved_model_class_name, resolved_hidden_channels, resolved_num_classes = infer_gnn_params(
+        model_path,
+        model_class_name,
+        hidden_channels,
+        num_classes,
+    )
+
+    if resolved_model_class_name is None:
+        raise ValueError(
+            f"Could not infer a GNN model class for {model_path!r}. "
+            "Supply model_class_name explicitly."
+        )
+
+    model = _load_edgeshaper_model(
+        model=None,
+        model_path=model_path,
+        model_class_name=resolved_model_class_name,
+        node_features_dim=node_features_dim,
+        hidden_channels=resolved_hidden_channels,
+        num_classes=resolved_num_classes,
+        num_layers=num_layers,
+        aggregation_method=aggregation_method,
+        custom_model_module=custom_model_module,
+        custom_model_class_name=custom_model_class_name,
+        device=device,
+    )
+    return model, resolved_model_class_name, resolved_hidden_channels, resolved_num_classes
+
+
 def _get_graph_count(graph_data: Any) -> int:
     """Best-effort graph count for supported serialized graph containers."""
     if isinstance(graph_data, tuple) and len(graph_data) >= 2 and isinstance(graph_data[1], dict):
@@ -756,6 +801,199 @@ def select_compound_for_edgeshaper(
             "status": "failed",
             "error": error_msg,
             "job_id": f"edgeshaper_select_failed_{int(np.random.random() * 1e9)}",
+        }
+
+
+def select_compound_for_edgeshaper_agreement(
+    model_paths: list[str],
+    graph_data_path: str,
+    split: Literal["train", "val", "test"] = "test",
+    split_file_path: Optional[str] = None,
+    target_class: Optional[int] = None,
+    min_agreeing_models: int = 2,
+    require_correct_prediction: bool = True,
+    model_class_name: Optional[str] = None,
+    node_features_dim: int = 4,
+    hidden_channels: int = 64,
+    num_classes: int = 2,
+    num_layers: int = 4,
+    aggregation_method: Optional[str] = None,
+    custom_model_module: Optional[str] = None,
+    custom_model_class_name: Optional[str] = None,
+    seed: Optional[int] = None,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+) -> dict[str, Any]:
+    """Select a compound where 2+ GNN models predict the SAME class label (consensus selection).
+
+    **Use this tool when:**
+    - You have multiple trained GNN models and want to find compounds where they agree on the same prediction.
+    - You need high-confidence predictions for EdgeSHAPer explanation (consensus = robustness).
+    - Downstream EdgeSHAPer analysis requires a compound with agreement across model architectures.
+
+    Returns a randomly selected compound from test set where:
+    1. At least ``min_agreeing_models`` (default: 2) GNN models predict the same class label.
+    2. Optionally (default: True), that agreed label matches the true label (correctly predicted by consensus).
+    3. Metadata includes all per-model predictions, confidences, and the model paths that agree.
+    
+    This ensures EdgeSHAPer explanations are computed on high-confidence, multi-model-validated examples.
+    """
+    from collections import Counter
+
+    logger = _get_session_logger()
+
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    if not isinstance(model_paths, (list, tuple)):
+        raise ValueError("model_paths must be a list or tuple of model checkpoint paths.")
+    if len(model_paths) < 2:
+        raise ValueError("Provide at least two GNN model paths for agreement selection.")
+    if min_agreeing_models < 2:
+        raise ValueError("min_agreeing_models must be >= 2.")
+    if min_agreeing_models > len(model_paths):
+        raise ValueError(
+            "min_agreeing_models cannot exceed the number of provided model paths."
+        )
+
+    try:
+        if not graph_data_path:
+            raise ValueError("graph_data_path is required for EdgeSHAPer agreement selection.")
+
+        graph_file = Path(graph_data_path)
+        if not graph_file.exists():
+            raise FileNotFoundError(f"Graph data not found: {graph_file}")
+
+        graph_data = torch.load(graph_file, map_location=device, weights_only=False)
+        graph_smiles = _extract_graph_smiles(graph_data)
+        split_smiles = _load_split_smiles(split_file_path, split) if split_file_path else None
+        n_graphs = _get_graph_count(graph_data)
+
+        models: list[tuple[torch.nn.Module, str, str]] = []
+        for model_path in model_paths:
+            loaded_model, resolved_class_name, _, _ = _load_edgeshaper_model_for_path(
+                model_path=model_path,
+                model_class_name=model_class_name,
+                node_features_dim=node_features_dim,
+                hidden_channels=hidden_channels,
+                num_classes=num_classes,
+                num_layers=num_layers,
+                aggregation_method=aggregation_method,
+                custom_model_module=custom_model_module,
+                custom_model_class_name=custom_model_class_name,
+                device=device,
+            )
+            models.append((loaded_model, resolved_class_name, str(model_path)))
+
+        candidates: list[dict[str, Any]] = []
+        for idx in range(n_graphs):
+            x, edge_index, edge_weight, _ = _extract_graph_components(graph_data, idx)
+            true_label = _extract_graph_label(graph_data, idx)
+            if target_class is not None and true_label != target_class:
+                continue
+
+            per_model_predictions: list[int] = []
+            per_model_confidences: list[float] = []
+            for loaded_model, _, _ in models:
+                logits = _predict_gnn_logits(loaded_model, x, edge_index, edge_weight, device)
+                predicted_label = int(logits.argmax(dim=1).item())
+                if hasattr(torch, "softmax") and logits.shape[1] > 1:
+                    confidence = float(torch.softmax(logits, dim=1).max(dim=1).values.item())
+                else:
+                    confidence = float(torch.sigmoid(logits).view(-1)[0].item())
+                per_model_predictions.append(predicted_label)
+                per_model_confidences.append(confidence)
+
+            counts = Counter(per_model_predictions)
+            if not counts:
+                continue
+
+            consensus_label, consensus_count = max(
+                sorted(counts.items()),
+                key=lambda item: (item[1], -item[0]),
+            )
+            if consensus_count < min_agreeing_models:
+                continue
+            if require_correct_prediction and consensus_label != true_label:
+                continue
+
+            agreeing_model_indices = [
+                model_idx
+                for model_idx, predicted_label in enumerate(per_model_predictions)
+                if predicted_label == consensus_label
+            ]
+            if len(agreeing_model_indices) < min_agreeing_models:
+                continue
+
+            smiles = None
+            if graph_smiles is not None and idx < len(graph_smiles):
+                smiles = graph_smiles[idx]
+            elif split_smiles is not None and idx < len(split_smiles):
+                smiles = split_smiles[idx]
+            if smiles is None:
+                smiles = f"compound_{idx}"
+
+            agreeing_model_paths = [models[i][2] for i in agreeing_model_indices]
+            candidates.append(
+                {
+                    "compound_idx": int(idx),
+                    "compound_smiles": smiles,
+                    "true_label": int(true_label),
+                    "predicted_label": int(consensus_label),
+                    "agreement_count": int(consensus_count),
+                    "prediction_confidence": float(
+                        np.mean([per_model_confidences[i] for i in agreeing_model_indices])
+                    ),
+                    "model_predictions": [int(v) for v in per_model_predictions],
+                    "model_confidences": [float(v) for v in per_model_confidences],
+                    "agreeing_model_indices": [int(v) for v in agreeing_model_indices],
+                    "agreeing_model_paths": agreeing_model_paths,
+                    "selection_source": "graph_data",
+                }
+            )
+
+        if not candidates:
+            class_note = f" for class {target_class}" if target_class is not None else ""
+            requirement_note = " with the requested agreement threshold"
+            if require_correct_prediction:
+                requirement_note += " and correct prediction"
+            raise ValueError(
+                f"No compounds found in the '{split}' graph set{class_note}{requirement_note}."
+            )
+
+        selected = random.choice(candidates)
+        result = {
+            **selected,
+            "split": split,
+            "total_candidates": len(candidates),
+            "total_models": len(models),
+            "min_agreeing_models": int(min_agreeing_models),
+            "require_correct_prediction": bool(require_correct_prediction),
+            "status": "completed",
+        }
+
+        logger.log_event(
+            "edgeshaper_compound_agreement_selected",
+            split=split,
+            total_candidates=len(candidates),
+            compound_idx=result["compound_idx"],
+            compound_smiles=result["compound_smiles"],
+            true_label=result["true_label"],
+            predicted_label=result["predicted_label"],
+            agreement_count=result["agreement_count"],
+            min_agreeing_models=min_agreeing_models,
+            require_correct_prediction=require_correct_prediction,
+        )
+
+        return result
+
+    except Exception as exc:
+        error_msg = f"{type(exc).__name__}: {str(exc)}"
+        logger.log_event("edgeshaper_compound_agreement_selection_failed", error=error_msg)
+        return {
+            "status": "failed",
+            "error": error_msg,
+            "job_id": f"edgeshaper_agreement_select_failed_{int(np.random.random() * 1e9)}",
         }
 
 

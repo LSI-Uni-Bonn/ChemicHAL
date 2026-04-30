@@ -55,7 +55,8 @@ XAI
   visualize_counterfactuals      draw query compound + counterfactuals as a molecule grid image
   explain_with_molce             contrastive R-group + scaffold attribution (sklearn or GNN) — why class A and not class B?
   identify_recurrent_molce_rules global MolCE (sklearn or GNN): aggregate top-3 R-group + scaffold rules across a compound class
-  select_compound_for_edgeshaper  randomly select a correctly predicted graph compound for EdgeSHAPer analysis (use this instead of select_compound_for_xai)
+  select_compound_for_edgeshaper  randomly select a correctly predicted graph compound for EdgeSHAPer analysis (single GNN model)
+  select_compound_for_edgeshaper_agreement **USE THIS** when you need a compound predicted with the same class by 2+ GNN models for high-confidence EdgeSHAPer analysis
   explain_gnn_with_edgeshaper    edge-level Shapley values (required tool for GNN prediction explanations)
   visualize_edgeshaper_results   generate edge importance heatmaps on molecular structures and save a PNG artifact
   get_edgeshaper_bond_environments map EdgeSHAPer edge attributions to bond-level structures (text-friendly)
@@ -135,6 +136,7 @@ from chemagent.explainability.molce_tools import (
 )
 from chemagent.explainability.edgeshaper_tools import (
   select_compound_for_edgeshaper,
+  select_compound_for_edgeshaper_agreement,
     explain_gnn_with_edgeshaper,
     visualize_edgeshaper_results,
     get_edgeshaper_bond_environments,
@@ -225,6 +227,7 @@ _register(visualize_counterfactuals)
 _register(explain_with_molce)
 _register(identify_recurrent_molce_rules)
 _register(select_compound_for_edgeshaper)
+_register(select_compound_for_edgeshaper_agreement)
 _register(explain_gnn_with_edgeshaper)
 _register(visualize_edgeshaper_results)
 _register(get_edgeshaper_bond_environments)
