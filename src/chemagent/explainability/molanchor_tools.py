@@ -10,7 +10,7 @@ explain_with_molanchor            — identify molecular anchors (fragments) cri
 explain_batch_with_molanchor      — run analysis on all correctly predicted compounds of a given class
 identify_recurrent_anchor_rules    — compute substructure & anchor occurrence metrics to identify robust rules
 visualize_molanchor_anchors        — draw molecular structure with identified anchors highlighted
-select_compound_for_xai           — select a correctly predicted compound for any XAI method (sklearn or GNN)
+select_compound_for_xai           — select a correctly predicted compound for MolAnchor, SHAP, MolCE, or counterfactuals; not EdgeSHAPer
 get_molanchor_info                — reference information about MolAnchor parameters and methods
 
 The MolAnchor methodology identifies which molecular fragments (substructures) are
@@ -563,8 +563,10 @@ def select_compound_for_xai(
     Select a correctly predicted compound for any XAI analysis.
 
     Use this tool whenever you need a correctly predicted compound to feed into
-    an explainability method: SHAP, MolAnchor, MolCE, counterfactuals, or
-    EdgeSHAPer. Works with both sklearn (.pkl) and GNN (.pt) models.
+    an explainability method: SHAP, MolAnchor, MolCE, or counterfactuals. Do not
+    use it for EdgeSHAPer; EdgeSHAPer has a dedicated selector,
+    select_compound_for_edgeshaper(). Works with both sklearn (.pkl) and GNN (.pt)
+    models.
 
     For GNN models, set ``gnn_model_class_name`` (e.g. 'GCN') and point
     ``model_path`` to the .pt checkpoint. The tool will predict from SMILES
