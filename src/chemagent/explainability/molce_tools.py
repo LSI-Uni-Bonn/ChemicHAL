@@ -53,7 +53,7 @@ def _show_mol_as_pil(
     alt_dummy: bool = False,
     highlight_subs: bool = False,
     ref_mol: Optional["Chem.Mol"] = None,
-    size: tuple = (400, 350),
+    size: tuple = (1200, 1100),
 ) -> Optional["PIL.Image.Image"]:
     """Render *mol* to a PIL Image using RDKit Cairo drawing with optional atom highlighting.
 
@@ -126,9 +126,12 @@ def _show_mol_as_pil(
         dopts.dummiesAreAttachments = alt_dummy
         dopts.rotate = rotate
         dopts.clearBackground = True
+        # Thicker bonds + larger legend font to track the ~3x canvas upscale
+        # (300-dpi-equivalent rendering); RDKit's 2 px default reads as hairline at 1200 px.
+        dopts.bondLineWidth = 3
         if legend:
             n_lines = legend.count("\n") + 1
-            dopts.legendFontSize = 14
+            dopts.legendFontSize = 28
             dopts.legendFraction = min(0.05 * n_lines + 0.12, 0.40)
 
         d2d.DrawMolecule(mol, legend=legend, highlightAtoms=atoms_to_highlight)

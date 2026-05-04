@@ -469,7 +469,7 @@ class MolecularAnchor:
             mol_to_show,
             highlightAtomLists=[atoms_to_highlight],
             molsPerRow=len(mol_to_show),
-            subImgSize=(500, 500),
+            subImgSize=(1200, 1200),
             drawOptions=draw_options,
         )
 

@@ -92,7 +92,7 @@ def _collect_unique_smiles(split_data: dict) -> List[str]:
 
 def _mol_to_pil(
     mol: "Chem.Mol",
-    size: tuple[int, int] = (350, 300),
+    size: tuple[int, int] = (1200, 1100),
     original_cpd=None,
     ref_mol=None,
 ):
@@ -157,6 +157,8 @@ def _mol_to_pil(
         dopts.useBWAtomPalette()
         dopts.prepareMolsBeforeDrawing = False
         dopts.clearBackground = True
+        # Thicker bonds to match ~3x canvas upscale used for 300-dpi-equivalent output.
+        dopts.bondLineWidth = 3
 
         d2d.DrawMolecule(mol, highlightAtoms=atoms_to_highlight)
         d2d.FinishDrawing()
@@ -445,7 +447,7 @@ def generate_counterfactuals(
 def get_most_confident_counterfactual(
     cf_result: dict[str, Any],
     output_path: Optional[str] = None,
-    mol_size: tuple[int, int] = (350, 300),
+    mol_size: tuple[int, int] = (1200, 1100),
     top_n: int = 3,
 ) -> list:
     """Return the top most-confident counterfactuals with a visualisation.
@@ -625,7 +627,7 @@ def get_most_confident_counterfactual(
         out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    fig.savefig(str(out), dpi=150, bbox_inches="tight", facecolor="white")
+    fig.savefig(str(out), dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
     metadata = {
@@ -639,7 +641,7 @@ def get_most_confident_counterfactual(
 def visualize_counterfactuals(
     cf_result: dict[str, Any],
     output_path: Optional[str] = None,
-    mol_size: tuple[int, int] = (350, 300),
+    mol_size: tuple[int, int] = (1500, 1400),
     top_n: int = 3,
 ) -> list:
     """Visualize the query compound and its top counterfactuals.
@@ -656,7 +658,7 @@ def visualize_counterfactuals(
     output_path : str, optional
         Path to save the PNG.  Defaults to session plots directory.
     mol_size : tuple[int, int], optional
-        Pixel size used to render each molecule (default (350, 300)).
+        Pixel size used to render each molecule (default (1500, 1400)).
     top_n : int, optional
         Number of counterfactuals to display (default 3).
 
@@ -772,7 +774,7 @@ def visualize_counterfactuals(
         out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    fig.savefig(str(out), dpi=150, bbox_inches="tight", facecolor="white")
+    fig.savefig(str(out), dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
     metadata = {
