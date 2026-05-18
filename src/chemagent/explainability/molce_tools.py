@@ -267,18 +267,86 @@ class _MolContrastWrapper:
             predict_func=predict_func,
             predict_func_proba=predict_func_proba,
         )
+        # Foils built by the most recent get_contrastive_cores() call, so
+        # build_core_foil() is an O(1) lookup rather than a full (seconds-long)
+        # scaffold re-enumeration per call. See _enumerate_core_foils().
+        self._core_foil_cache: Optional[dict] = None
 
     def get_contrastive_rgroups(self, mol, foil_class: int, random_order: bool = False):
         return self._mc.get_contrastive_rgroups(mol, foil_class, random_order)
+
+    def _enumerate_core_foils(
+        self, mol: "Chem.Mol", scaffold_similarity_threshold: Optional[float]
+    ) -> "tuple[list, list, list]":
+        """Enumerate every scaffold-swap foil for *mol* exactly once.
+
+        Returns ``(prods, core_smiles, annotated_cores)`` where ``prods[i]`` is
+        the rebuilt foil molecule, ``core_smiles[i]`` its scaffold SMILES, and
+        ``annotated_cores[i]`` the scaffold mol carrying ``[*:N]`` dummy atoms.
+
+        Mirrors ``MolContrast.generate_ext_core_foils`` (same product-SMILES
+        dedup) but also retains the annotated core mols, so callers never have
+        to re-run this enumeration to recover a single foil.
+        """
+        mc = self._mc
+        original_core, original_rgroups = mc.decompose_molecule(mol, original=True)
+        cores_to_use = mc.get_scaffolds(original_core, scaffold_similarity_threshold)
+        gen = mc.ext_core_rgroup_enumeration(original_rgroups, cores_to_use)
+
+        prods: list = []
+        annotated: list = []
+        seen: set = set()
+        for prod, core in zip(gen, cores_to_use):
+            if prod is None:
+                continue
+            smi = Chem.MolToSmiles(prod)
+            if smi in seen:
+                continue
+            seen.add(smi)
+            prods.append(prod)
+            annotated.append(core)
+
+        core_smiles = [Chem.MolToSmiles(c) for c in annotated]
+        return prods, core_smiles, annotated
 
     def get_contrastive_cores(
         self, mol, foil_class: int, scaffold_similarity_threshold: Optional[float] = None
     ):
         from rdkit.Chem import AllChem
 
-        df = self._mc.get_contrastive_cores(
-            mol, foil_class, similarity_threshold=scaffold_similarity_threshold
+        mc = self._mc
+
+        # Enumerate the scaffold foils ONCE and cache them keyed by query +
+        # threshold.  build_core_foil() then serves picks from this map instead
+        # of re-enumerating all foils per call (previously O(N) per pick → an
+        # O(N^2) blow-up when many foils tie on contrast score).
+        prods, core_smiles, annotated = self._enumerate_core_foils(
+            mol, scaffold_similarity_threshold
         )
+        self._core_foil_cache = {
+            "query": Chem.MolToSmiles(mol),
+            "threshold": scaffold_similarity_threshold,
+            "map": {
+                cs: (p, ac)
+                for cs, p, ac in zip(core_smiles, prods, annotated)
+            },
+        }
+
+        # Contrastive scoring — mirrors MolContrast.get_contrastive_cores.
+        og_pred = mc.predict_func_proba(model=mc.model, mol=mol, singular=True)
+        preds_proba = (
+            mc.predict_func_proba(model=mc.model, mol=prods) if prods else []
+        )
+        fact_class = mc.predict_func(mc.model, mol, singular=True)
+        core_attribution: dict = {}
+        for cs, pred in zip(core_smiles, preds_proba):
+            contr = mc.calculate_contrastive_behaviour(
+                fact_class, foil_class, og_pred, pred
+            )
+            core_attribution[cs] = core_attribution.get(cs, 0.0) + contr
+        df = pd.DataFrame.from_dict(
+            core_attribution, orient="index", columns=["contrast"]
+        ).sort_values(by="contrast", ascending=False)
 
         # Remove any row whose scaffold is identical to the original core so
         # the original core is never returned as a contrastive explanation.
@@ -314,35 +382,34 @@ class _MolContrastWrapper:
         core_smiles: str,
         scaffold_similarity_threshold: Optional[float] = None,
     ) -> "tuple[Optional[Chem.Mol], Optional[Chem.Mol]]":
-        """Build a foil by attaching the original R-groups onto a new core scaffold.
+        """Return the scaffold-swap foil for *core_smiles* as (foil, annotated_core).
 
-        Mirrors the approach used in the MolCE notebook:
+        The annotated core carries ``[*:N]`` dummy atoms and is fed directly to
+        ``_show_mol_as_pil`` as ``corestructure``.  Returns (None, None) on
+        failure / no match.
 
-            scaffolds = CE.get_scaffolds(original_core, scaffold_similarity_threshold)
-            gen = CE.ext_core_rgroup_enumeration(original_r, scaffolds)
-            for prod, core in zip(gen, scaffolds):
-                if Chem.MolToSmiles(core) == target_core_smiles:
-                    visualise(prod, corestructure=core, highlight_subs=True)
-
-        Returns (foil_mol, annotated_core) so the caller can pass the
-        annotated core (which carries ``[*:N]`` dummy atoms) directly to
-        ``_show_mol_as_pil`` as ``corestructure``, matching the notebook style.
-        Returns (None, None) on failure.
+        Fast path: when the most recent ``get_contrastive_cores`` call was for
+        the same query molecule and threshold, the foil is served from the
+        cached enumeration in O(1).  This is the common case (callers always
+        score cores before building foils) and avoids re-enumerating every
+        scaffold foil — seconds of work — on each pick.
         """
+        cache = self._core_foil_cache
+        if (
+            cache is not None
+            and cache["query"] == Chem.MolToSmiles(mol)
+            and cache["threshold"] == scaffold_similarity_threshold
+        ):
+            return cache["map"].get(core_smiles, (None, None))
+
+        # Slow path (cache miss): enumerate once, then serve from that result.
         try:
-            original_core, rgroups = self._mc.decompose_molecule(mol, original=True)
-            if not rgroups:
-                return None, None
-
-            scaffolds = self._mc.get_scaffolds(original_core, scaffold_similarity_threshold)
-            if not scaffolds:
-                return None, None
-
-            gen = self._mc.ext_core_rgroup_enumeration(rgroups, scaffolds)
-            for prod, core in zip(gen, scaffolds):
-                if Chem.MolToSmiles(core) == core_smiles:
+            prods, core_smis, annotated = self._enumerate_core_foils(
+                mol, scaffold_similarity_threshold
+            )
+            for cs, prod, core in zip(core_smis, prods, annotated):
+                if cs == core_smiles:
                     return prod, core
-
             return None, None
         except Exception:
             return None, None
