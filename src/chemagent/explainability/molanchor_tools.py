@@ -361,6 +361,8 @@ def _explain_with_molanchor(
     anchor_smiles_list: list[str] = []
     precision = 0.0
     multiple_used = False
+    status = "completed"
+    message: Optional[str] = None
 
     if not anchors_df.empty:
         first_row = anchors_df.iloc[0]
@@ -369,16 +371,22 @@ def _explain_with_molanchor(
         precision = float(first_row.get("precision", 0.0))
         multiple_used = bool(first_row.get("plural_rule", False))
 
-        if first_row["anchor_mol"] not in ("no_anchor", "all_frags"):
-            anchor_mols = (
-                [first_row["anchor_mol"]]
-                if not isinstance(first_row["anchor_mol"], list)
-                else first_row["anchor_mol"]
+        anchor_mol_val = first_row["anchor_mol"]
+        if anchor_mol_val == "all_frags":
+            status = "all_fragments_anchor"
+            message = (
+                "Every BRICS fragment individually meets the precision cutoff, "
+                "so the model's prediction does not localize to any specific "
+                "substructure."
             )
-            anchor_indices = [
-                i for i, frag_mol in enumerate(mol_anchor.mol_frags)
-                if any(frag_mol.GetNumAtoms() == am.GetNumAtoms() for am in anchor_mols)
-            ]
+        elif anchor_mol_val == "no_anchor":
+            status = "no_anchor"
+            message = (
+                "No fragment or fragment combination meets the precision cutoff. "
+                "Consider lowering `cutoff` or verifying the model's prediction."
+            )
+        else:
+            anchor_indices = list(first_row.get("frag_indices", []))
 
     fragment_smiles_all = [
         delete_numbers_next_to_asterisk(Chem.MolToSmiles(f))
@@ -387,9 +395,6 @@ def _explain_with_molanchor(
 
     result = {
         "smiles": smiles,
-        "fragment_combinations": df_combinations.drop(
-            columns=["Predictions"] if "Predictions" in df_combinations.columns else []
-        ).to_dict("records")[:10],
         "identified_anchors": anchors_df.drop(
             columns=["mol", "anchor_mol"] if "mol" in anchors_df.columns else []
         ).to_dict("records"),
@@ -399,8 +404,10 @@ def _explain_with_molanchor(
         "anchor_smiles": anchor_smiles_list,
         "precision": precision,
         "multiple_anchors_used": multiple_used,
-        "status": "completed",
+        "status": status,
     }
+    if message is not None:
+        result["message"] = message
     return result, mol_anchor
 
 
@@ -524,9 +531,17 @@ def explain_with_molanchor(
 
     anchor_indices = result["anchor_indices"]
 
+    # Internal callers (batch + recurrent paths) read num_fragments and
+    # fragment_smiles, but they add noise for the LLM agent — strip them
+    # from the user-facing JSON only.
+    user_result = {
+        k: v for k, v in result.items()
+        if k not in ("num_fragments", "fragment_smiles")
+    }
+
     if not anchor_indices:
         # No anchors found — return just the metadata as text
-        return [json.dumps(result, indent=2)]
+        return [json.dumps(user_result, indent=2)]
 
     img = mol_anchor.map_anchor_to_cpd(anchor_indices)
 
@@ -544,9 +559,9 @@ def explain_with_molanchor(
     img_path.parent.mkdir(parents=True, exist_ok=True)
     _persist_image_output(img, img_path)
 
-    result["image_path"] = str(img_path)
+    user_result["image_path"] = str(img_path)
     mcp_image = MCPImage(path=img_path)
-    return [mcp_image, json.dumps(result, indent=2)]
+    return [mcp_image, json.dumps(user_result, indent=2)]
 
 
 def select_compound_for_xai(

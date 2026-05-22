@@ -41,6 +41,8 @@ class MolecularAnchor:
         self.acc_for_radius = acc_for_radius
         self.mol_frags, self.mol_atom_ids = self.get_fragments()  # Get fragments and their atom IDs
 
+        if len(self.mol_frags) < 2:
+            raise ValueError("Molecule cannot be decomposed")
 
         if representation == "ECFP":
             self.bit_inf = bit_inf
@@ -360,7 +362,8 @@ class MolecularAnchor:
                                                   "anchor_smile": "all_frags",
                                                   "precision": 0,
                                                   "coverage": 0,
-                                                  "plural_rule": multiple_used}])
+                                                  "plural_rule": multiple_used,
+                                                  "frag_indices": []}])
 
         # if no single fragments can anchor the prediction an iterative search can explore fragments in combination
         if len(anchors) == 0 and allow_frag_combinations is True:
@@ -404,7 +407,8 @@ class MolecularAnchor:
                                            "anchor_smile": "no_anchor",
                                            "precision": 0,
                                            "coverage": 0,
-                                           "plural_rule": multiple_used}])
+                                           "plural_rule": multiple_used,
+                                           "frag_indices": []}])
 
         elif len(anchors) == 1:
             anchor_df_cpd = pd.DataFrame({"smile": Chem.MolToSmiles(self.mol),
@@ -413,12 +417,13 @@ class MolecularAnchor:
                                           "anchor_smile": anchor_smiles,
                                           "precision": precision_dict[next(iter(anchors))],
                                           "coverage": coverage_dict[next(iter(anchors))],
-                                          "plural_rule": multiple_used})
+                                          "plural_rule": multiple_used,
+                                          "frag_indices": [always_present_indices]})
 
         elif len(anchors) > 1:
             if multiple_used is False:
                 anchor_df_cpd = pd.DataFrame()
-                for anc_i, anc_mol, anc_smile in zip(anchors, anchor_frags_mol, anchor_smiles):
+                for anc_i, anc_idx, anc_mol, anc_smile in zip(anchors, always_present_indices, anchor_frags_mol, anchor_smiles):
                     anchor_df_cpd = pd.concat([anchor_df_cpd,
                                                pd.DataFrame([{"smile": Chem.MolToSmiles(self.mol),
                                                               "mol": self.mol,
@@ -426,7 +431,8 @@ class MolecularAnchor:
                                                               "anchor_smile": anc_smile,
                                                               "precision": precision_dict[anc_i],
                                                               "coverage": coverage_dict[anc_i],
-                                                              "plural_rule": multiple_used}])])
+                                                              "plural_rule": multiple_used,
+                                                              "frag_indices": [anc_idx]}])])
 
             elif multiple_used is True:
                 anchor_df_cpd = pd.DataFrame([{"smile": Chem.MolToSmiles(self.mol),
@@ -435,7 +441,8 @@ class MolecularAnchor:
                                                "anchor_smile": anchor_smiles,
                                                "precision": precision_dict[tuple(anchors)],
                                                "coverage": coverage_dict[tuple(anchors)],
-                                               "plural_rule": multiple_used}])
+                                               "plural_rule": multiple_used,
+                                               "frag_indices": list(always_present_indices)}])
 
         return anchor_df_cpd
 

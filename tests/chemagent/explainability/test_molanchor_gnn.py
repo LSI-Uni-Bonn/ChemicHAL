@@ -212,8 +212,67 @@ def test_identify_anchors_schema_when_found(molanchor):
     if anchors_df.empty:
         pytest.skip("No anchors found with random weights — schema check skipped")
 
-    for col in ("anchor_smile", "precision", "anchor_mol"):
+    for col in ("anchor_smile", "precision", "anchor_mol", "frag_indices"):
         assert col in anchors_df.columns, f"Missing column '{col}' in anchors DataFrame"
+
+    n_frags = len(molanchor.mol_frags)
+    for row_idx, frag_ids in enumerate(anchors_df["frag_indices"]):
+        assert isinstance(frag_ids, list), (
+            f"Row {row_idx}: frag_indices must be a list, got {type(frag_ids).__name__}"
+        )
+        for fid in frag_ids:
+            assert isinstance(fid, int), (
+                f"Row {row_idx}: frag_indices entries must be ints, got {type(fid).__name__}"
+            )
+            assert 0 <= fid < n_frags, (
+                f"Row {row_idx}: frag_indices entry {fid} out of range [0, {n_frags})"
+            )
+
+
+def test_frag_indices_match_anchor_structure(molanchor):
+    """frag_indices must point at the exact fragments MolAnchor identified.
+
+    Regression for a bug where the caller re-matched anchors back to mol_frags
+    by atom count, so any unrelated fragment with the same heavy-atom count
+    would be flagged as an anchor. This asserts the structural contract:
+    canonical SMILES of mol_frags[i] for each i in frag_indices must equal
+    the row's anchor SMILES (modulo BRICS dummy-atom number stripping).
+    """
+    from chemagent.explainability.MolAnchor.utils_anchor import (
+        delete_numbers_next_to_asterisk,
+    )
+
+    df_combinations = molanchor.predict_frag_combinations()
+    anchors_df = molanchor.identify_anchors(
+        df_anchors=df_combinations,
+        cutoff=0.0,
+        allow_frag_combinations=True,
+        return_multiple_anchors=True,
+    )
+    if anchors_df.empty:
+        pytest.skip("No anchors found with random weights")
+
+    for row_idx, row in anchors_df.iterrows():
+        if row["anchor_mol"] in ("no_anchor", "all_frags"):
+            assert row["frag_indices"] == [], (
+                f"Row {row_idx}: sentinel rows must have empty frag_indices"
+            )
+            continue
+
+        frag_ids = row["frag_indices"]
+        assert frag_ids, f"Row {row_idx}: non-sentinel row has empty frag_indices"
+
+        recovered = sorted(
+            delete_numbers_next_to_asterisk(Chem.MolToSmiles(molanchor.mol_frags[i]))
+            for i in frag_ids
+        )
+        anchor_smile = row["anchor_smile"]
+        expected = sorted([anchor_smile] if isinstance(anchor_smile, str) else list(anchor_smile))
+
+        assert recovered == expected, (
+            f"Row {row_idx}: frag_indices {frag_ids} resolve to {recovered}, "
+            f"but anchor_smile says {expected}"
+        )
 
 
 def test_full_pipeline_no_exception(gnn_model):
