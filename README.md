@@ -3,7 +3,7 @@
   <img src="docs/assets/chemichal_logo.svg" alt="ChemicHAL logo" width=30%>
 </p>
 
-# ChemicHAL: an XAI-enhanced agent for chemoinformatics
+# ChemicHAL: an XAI-enhanced agent for cheminformatics
 
 
 ## Overview
