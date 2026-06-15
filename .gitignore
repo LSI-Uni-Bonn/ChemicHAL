@@ -1,5 +1,6 @@
 # Session & runtime data
 data/logs/
+src/chemagent/servers/data/logs/
 
 # Machine-specific MCP config (contains hardcoded absolute paths)
 lm_studio_mcp_config.json
