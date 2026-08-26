@@ -1,3 +1,6 @@
+# This file is part of ChemicHAL
+# Copyright (C) 2026 Tiago Janela, Alec Lamens, Andrea Mastropietro
+# You should have received a copy of the GNU General Public License along with this program.  If not, see <https://www.gnu.org/licenses/>
 """Tests for explain_batch_with_molanchor and identify_recurrent_anchor_rules."""
 import sys
 import json

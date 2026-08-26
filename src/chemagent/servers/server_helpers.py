@@ -1,3 +1,6 @@
+# This file is part of ChemicHAL
+# Copyright (C) 2026 Tiago Janela, Alec Lamens, Andrea Mastropietro
+# You should have received a copy of the GNU General Public License along with this program.  If not, see <https://www.gnu.org/licenses/>
 """server_helpers.py — pure internal helpers for chemagent_mcp.py.
 
 Contains functions that have **no dependency** on mcp, session_logger, the

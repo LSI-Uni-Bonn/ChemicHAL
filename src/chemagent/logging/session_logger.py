@@ -1,3 +1,6 @@
+# This file is part of ChemicHAL
+# Copyright (C) 2026 Tiago Janela, Alec Lamens, Andrea Mastropietro
+# You should have received a copy of the GNU General Public License along with this program.  If not, see <https://www.gnu.org/licenses/>
 """session_logger.py — thread-safe logger for MCP tool calls.
 
 One session = one server process lifetime = one subdirectory:

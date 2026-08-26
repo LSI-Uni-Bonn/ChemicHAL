@@ -1,3 +1,6 @@
+# This file is part of ChemicHAL
+# Copyright (C) 2026 Tiago Janela, Alec Lamens, Andrea Mastropietro
+# You should have received a copy of the GNU General Public License along with this program.  If not, see <https://www.gnu.org/licenses/>
 """Test that build_core_foil generates scaffold foils with all original R-groups attached.
 
 Run from the repo root:
