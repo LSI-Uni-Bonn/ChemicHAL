@@ -40,7 +40,7 @@ Download **LM Studio** from [lmstudio.ai](https://lmstudio.ai) and install it on
 2. Add a new MCP server with the following configuration:
     ```json
     {
-      "name": "chemagent",
+      "name": "ChemicHAL",
       "command": "uv",
       "args": [
          "--directory",
