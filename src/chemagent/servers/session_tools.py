@@ -73,6 +73,7 @@ def _register(fn):
             duration_ms = (time.perf_counter() - t_start) * 1000
             session_logger.end_call(call_id, error=exc, duration_ms=duration_ms)
             raise
+    logged_fn.__doc__ = None
     mcp.add_tool(logged_fn)
     return logged_fn
 
