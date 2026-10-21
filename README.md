@@ -24,7 +24,7 @@ ChemicHAL is an **LLM-driven agent** for chemoinformatics tasks, powered by the 
 
 ```bash
 git clone <repository-url>
-cd AI-Agent-for-Compound-Prediction-and-Explainability
+cd ChemicHAL
 uv sync
 ```
 
@@ -36,20 +36,25 @@ Download **LM Studio** from [lmstudio.ai](https://lmstudio.ai) and install it on
 
 ### 3. Import MCP Server
 
-1. Open LM Studio and navigate to **Settings** → **MCP Servers**
+1. Open LM Studio and navigate to **Settings** → **Model Server**
 2. Add a new MCP server with the following configuration:
     ```json
-    {
-      "name": "ChemicHAL",
+    "mcpServers": {
+    "ChemicHAL": {
       "command": "uv",
       "args": [
-         "--directory",
-         "<workspace-root>/src/chemagent/servers",
-         "run",
-         "chemagent_mcp.py"
-      ]
+        "--directory",
+        "your/cloned/repository/location/src/chemagent/servers",
+        "run",
+        "chemagent_mcp.py"
+      ],
+      "env": {},
+      "timeout": 600000
     }
-    ```
+     ```
+
+ChemicHAL was tested using [Qwen3.6-35b-a3b](https://lmstudio.ai/models/qwen/qwen3.6-35b-a3b). If you use this LLM, we suggest toggling the ```preserve_thinking``` flag ON, that is OFF by default.
+
 3. Update the `--directory` path to match your workspace root
 4. Save and restart LM Studio
 
