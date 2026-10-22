@@ -203,7 +203,7 @@ def _build_dataset_cache_name(prefix: str, smiles: list[str], labels: list[int])
 def load_and_prepare_gnn_dataset(
     split_file_path: str,
     smiles_list: Optional[list[str]] = None,
-    test_size: float = 0.2,
+    val_size: float = 0.2,
     seed: int = 42,
 ) -> tuple[SmilesGraphDataset, SmilesGraphDataset, SmilesGraphDataset]:
     """Load split file and create train/val/test GNN datasets.
@@ -214,7 +214,7 @@ def load_and_prepare_gnn_dataset(
     smiles_list :
         Optional full list of SMILES strings (parallel to split indices).
         Required only for index-based split files.
-    test_size :
+    val_size :
         Fraction for validation split from training data (default 0.2).
     seed :
         Random seed for reproducibility (default 42).
@@ -253,17 +253,20 @@ def load_and_prepare_gnn_dataset(
 
     train_labels = list(train_labels)
     test_labels = list(test_labels)
-
-    # Normalize labels to contiguous class IDs (e.g. {1,2} -> {0,1}).
-    unique_labels = sorted(set(train_labels) | set(test_labels))
-    label_to_id = {label: idx for idx, label in enumerate(unique_labels)}
-    train_labels = [label_to_id[label] for label in train_labels]
-    test_labels = [label_to_id[label] for label in test_labels]
+    saved_val_labels = split.get("val_labels")
+    val_labels = list(saved_val_labels) if saved_val_labels is not None else []
 
     # Preferred schema: split file already includes split SMILES arrays.
     if "train_smiles" in split and "test_smiles" in split:
         train_smiles = list(split["train_smiles"])
         test_smiles = list(split["test_smiles"])
+        saved_val_smiles = split.get("val_smiles")
+        if saved_val_smiles is not None:
+            val_smiles = list(saved_val_smiles)
+        elif val_labels and split.get("val_idx") is not None and smiles_list is not None:
+            val_smiles = [smiles_list[i] for i in split["val_idx"]]
+        else:
+            val_smiles = []
     else:
         # Fallback schema: split file includes indices only.
         train_idx = split.get("train_idx")
@@ -278,15 +281,35 @@ def load_and_prepare_gnn_dataset(
             )
         train_smiles = [smiles_list[i] for i in train_idx]
         test_smiles = [smiles_list[i] for i in test_idx]
+        val_idx = split.get("val_idx")
+        val_smiles = (
+            [smiles_list[i] for i in val_idx]
+            if val_idx is not None
+            else []
+        )
 
-    # Split training into train/val
-    train_smiles, val_smiles, train_labels, val_labels = train_test_split(
-        train_smiles,
-        train_labels,
-        test_size=test_size,
-        random_state=seed,
-        stratify=train_labels,
-    )
+    if len(train_smiles) != len(train_labels) or len(test_smiles) != len(test_labels):
+        raise ValueError("Split SMILES and label counts do not match.")
+    if len(val_smiles) != len(val_labels):
+        if val_smiles or val_labels:
+            raise ValueError("Saved validation SMILES and label counts do not match.")
+
+    # Normalize labels to contiguous class IDs (e.g. {1,2} -> {0,1}).
+    unique_labels = sorted(set(train_labels) | set(val_labels) | set(test_labels))
+    label_to_id = {label: idx for idx, label in enumerate(unique_labels)}
+    train_labels = [label_to_id[label] for label in train_labels]
+    val_labels = [label_to_id[label] for label in val_labels]
+    test_labels = [label_to_id[label] for label in test_labels]
+
+    # Split training into train/val only when the split file has no val data.
+    if not val_smiles:
+        train_smiles, val_smiles, train_labels, val_labels = train_test_split(
+            train_smiles,
+            train_labels,
+            test_size=val_size,
+            random_state=seed,
+            stratify=train_labels,
+        )
 
     # Create datasets with content-derived names so cache files are refreshed
     # when split/dataset content changes.
@@ -593,7 +616,7 @@ def load_gnn_model(
     Returns:
     Loaded GNN model instance with weights from the specified path.
     """
-    if device is None:
+    if device is None or device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Support both raw state_dict and checkpoint dictionaries with metadata.

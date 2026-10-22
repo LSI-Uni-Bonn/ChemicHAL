@@ -157,7 +157,7 @@ def prepare_gnn_dataset(
     split_file_path: str,
     smiles_csv_path: str,
     smiles_column: str = "smiles",
-    test_size: float = 0.2,
+    val_size: float = 0.2,
     seed: int = 42,
 ) -> dict[str, Any]:
     """Prepare train/val/test GNN datasets from a split file and SMILES CSV.
@@ -178,7 +178,7 @@ def prepare_gnn_dataset(
         Path to CSV file with SMILES strings.
     smiles_column :
         Column name in CSV containing SMILES (default "smiles").
-    test_size :
+    val_size :
         Validation split fraction (default 0.2).
     seed :
         Random seed (default 42).
@@ -213,7 +213,7 @@ def prepare_gnn_dataset(
         train_dataset, val_dataset, test_dataset = load_and_prepare_gnn_dataset(
             split_file_path,
             smiles_list,
-            test_size=test_size,
+            val_size=val_size,
             seed=seed,
         )
 

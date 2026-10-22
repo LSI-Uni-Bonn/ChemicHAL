@@ -26,6 +26,7 @@ Usage
 from __future__ import annotations
 
 import random
+import warnings
 from collections import defaultdict
 from typing import Dict, List, Optional
 
@@ -95,14 +96,27 @@ def scaffold_split(
     # Build scaffold → molecule-index groups
     scaffold_to_indices: Dict[str, List[int]] = defaultdict(list)
     for idx, smi in enumerate(smiles_list):
-        scaffold = generate_murcko_scaffold(smi)
-        if not scaffold:
-            raise ValueError(
-                f"Could not generate Murcko scaffold for SMILES at index {idx}: {smi!r}"
+        try:
+            scaffold = generate_murcko_scaffold(smi)
+        except Exception as exc:
+            warnings.warn(
+                f"Discarding SMILES at index {idx}: {smi!r}; Murcko scaffold generation failed: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
             )
+            continue
+        if not scaffold:
+            warnings.warn(
+                f"Discarding SMILES at index {idx}: {smi!r}; no Murcko scaffold was generated.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
         scaffold_to_indices[scaffold].append(idx)
 
     scaffold_groups = list(scaffold_to_indices.values())
+    valid_indices = [idx for group in scaffold_groups for idx in group]
+    n_samples = len(valid_indices)
 
     train_indices: List[int] = []
     val_indices:   List[int] = []
@@ -113,13 +127,14 @@ def scaffold_split(
     # Stratified scaffold split
     if stratified and labels is not None:
         labels_arr = np.array(labels, dtype=int)
-        classes    = np.unique(labels_arr)
+        valid_labels = labels_arr[valid_indices]
+        classes    = np.unique(valid_labels)
 
         class_train_target = {
-            c: int(np.sum(labels_arr == c) * train_size) for c in classes
+            c: int(np.sum(valid_labels == c) * train_size) for c in classes
         }
         class_val_target = {
-            c: int(np.sum(labels_arr == c) * val_size) for c in classes
+            c: int(np.sum(valid_labels == c) * val_size) for c in classes
         }
 
         # Sort largest groups first, shuffle within equal-size ties
