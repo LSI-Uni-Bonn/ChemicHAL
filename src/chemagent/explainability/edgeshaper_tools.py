@@ -42,7 +42,10 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from chemagent.explainability.edgeshaper import Edgeshaper
-from chemagent.session_utils import get_session_logger as _get_session_logger
+from chemagent.session_utils import (
+    get_session_logger as _get_session_logger,
+    resolve_path as _resolve_path,
+)
 from chemagent.ml.gnn_models import GCN, GraphSAGE, GAT, GC_GNN, GINE, GIN
 from chemagent.ml.gnn_training import smiles_to_nx_graph, nx_graph_to_pyg_data
 
@@ -322,7 +325,7 @@ def _load_edgeshaper_model(
     if model is None:
         if not model_path:
             raise ValueError("Provide either 'model' or 'model_path'.")
-        model_file = Path(model_path)
+        model_file = Path(_resolve_path(model_path))
         if not model_file.exists():
             raise FileNotFoundError(f"Model not found: {model_file}")
         loaded_obj = torch.load(model_file, map_location=device, weights_only=False)

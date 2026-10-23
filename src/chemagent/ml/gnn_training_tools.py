@@ -445,7 +445,10 @@ def load_gnn_model_mcp(
     custom_model_module: Optional[str] = None,
     custom_model_class_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Load a trained GNN model from disk and verify it loads correctly.
+    """Compatibility loader for a trained GNN model.
+
+    For LLM tool calls, prefer ``load_gnn_model``. Do not use
+    ``find_datasets`` or ``load_dataset``; those tools are for CSV datasets.
 
     Loads a GNN model from a saved state dict and performs a validation step
     to ensure the weights were loaded correctly.
@@ -557,10 +560,11 @@ def load_gnn_model(
     custom_model_module: Optional[str] = None,
     custom_model_class_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Alias for `load_gnn_model_mcp` to make LLM tool-calling robust.
+    """Load a trained GNN model. Use this tool for all GNN model loading.
 
-    Some MCP clients/LLMs may try the internal-style name `load_gnn_model`.
-    This public wrapper intentionally maps that call to the MCP-safe loader.
+    Do not use ``find_datasets`` or ``load_dataset`` to locate/load trained
+    models; those tools are for CSV datasets. This public tool delegates to the
+    MCP-safe loader and is the recommended GNN model-loading tool.
     """
     return load_gnn_model_mcp(
         model_class_name=model_class_name,

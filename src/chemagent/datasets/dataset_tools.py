@@ -38,9 +38,12 @@ _processed_datasets: dict[str, dict[str, Any]] = {}
 
 # Dataset tool functions (registered in chemagent_mcp.py via _register)
 def find_datasets(directory: str = "data/datasets") -> dict[str, Any]:
-    """List CSV files available for ML in a directory.
+    """List CSV dataset files available for ML in a directory.
 
     Workflow: THIS TOOL → load_dataset(file_path)
+
+    This tool only searches for CSV datasets. Do not use it to find or load
+    trained model files. To load a trained GNN model, use ``load_gnn_model``.
 
     Args:
         directory: Workspace-relative or absolute path to search (default: "data/datasets").

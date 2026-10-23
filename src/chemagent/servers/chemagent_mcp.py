@@ -43,8 +43,8 @@ GNN
   prepare_gnn_dataset     convert split .pkl + SMILES CSV to train/val/test graph datasets
   train_gnn_model_mcp     train a GNN (GCN, GraphSAGE, GAT, etc.) on graph datasets (non-blocking job)
   check_gnn_training      poll a background GNN training job
-    load_gnn_model          MCP-safe GNN loader alias (preferred when LLM calls this exact name)
-  load_gnn_model_mcp      load a trained GNN model from disk and validate
+  load_gnn_model          load a trained GNN model; use this tool for GNN model loading
+  load_gnn_model_mcp      compatibility loader; prefer load_gnn_model
 
 XAI
   explain_with_shap              compute per-compound SHAP values from tabular sklearn models (.pkl/.joblib)
