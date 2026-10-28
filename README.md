@@ -3,7 +3,7 @@
   <img src="docs/assets/chemichal_logo.svg" alt="ChemicHAL logo" width=30%>
 </p>
 
-# ChemicHAL: an XAI-enhanced agent for cheminformatics
+# ChemicHAL – agentic explainable artificial intelligence platform for medicinal chemistry
 
 
 ## Overview
@@ -53,10 +53,10 @@ Download **LM Studio** from [lmstudio.ai](https://lmstudio.ai) and install it on
     }
      ```
 
-ChemicHAL was tested using [Qwen3.6-35b-a3b](https://lmstudio.ai/models/qwen/qwen3.6-35b-a3b). If you use this LLM, we suggest toggling the ```preserve_thinking``` flag ON, that is OFF by default.
-
 3. Update the `--directory` path to match your workspace root
 4. Save and restart LM Studio
+
+ChemicHAL was tested using [Qwen3.6-35b-a3b](https://lmstudio.ai/models/qwen/qwen3.6-35b-a3b). If you use this LLM, we suggest toggling the ```Preserve Thinking``` flag ON, which is OFF by default.
 
 ### 4. Use a Repository-Managed System Prompt (LM Studio GUI)
 
@@ -76,9 +76,9 @@ Then in LM Studio GUI:
 
 🧪 **Dataset Management** – Discover, load, and preprocess ChEMBL datasets; compute molecular fingerprints (ECFP, MACCS, etc.)
 
-🤖 **ML Modeling** – Train classification and regression models (Random Forest, SVM, XGBoost, etc.) with hyperparameter tuning
+🤖 **ML Modeling** – Train classification and regression models (Random Forest, SVM, etc.) with hyperparameter tuning
 
-🧠 **Graph Neural Networks** – Prepare GNN datasets and train GCN/GAT models for end-to-end molecular learning with configurable depth (`num_layers`, default 4)
+🧠 **Graph Neural Networks** – Prepare GNN datasets and train GCN/GAT/other models for end-to-end molecular learning with configurable depth (`num_layers`, default 4)
 
 📊 **Visualization** – Generate classification/regression plots and model performance summaries
 
@@ -90,7 +90,7 @@ Then in LM Studio GUI:
 
 🌐 **GNN Explainability** – Explain graph predictions using EdgeSHAPer to highlight important bonds
 
-📝 **Reporting** – Export results as HTML reports and PDF documents
+📝 **Reporting** – Export results as PDF documents
 
 <!-- ## GNN MCP Quick Start
 
