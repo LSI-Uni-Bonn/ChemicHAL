@@ -64,3 +64,6 @@ tests/chemagent/explainability/test_multiclass_shap_explainer.py
 src/chemagent/explainability/simple_shap_explainer.py
 src/chemagent/explainability/multiclass_shap_explainer.py
 tests/chemagent/explainability/test_edgeshaper_tools.py
+
+.vscode/
+.claude/
