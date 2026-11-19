@@ -103,7 +103,7 @@ def load_dataset(
         directory: Directory prefix when file_path is a bare filename.
 
     Returns:
-        dataset_id, n_samples, label_col, label_stats, has_smiles, next_step.
+        dataset_id, n_samples, label_col, label_stats, has_smiles.
     """
     df, meta = load_csv(
         file_path=file_path,
@@ -153,7 +153,7 @@ def compute_features(
         label_col: Override label column from load_dataset().
 
     Returns:
-        dataset_id, method, n_samples, n_features, label_stats, prepared=True, next_step.
+        dataset_id, method, n_samples, n_features, label_stats, prepared=True.
     """
     import joblib
     from chemagent.session_utils import get_session_logger as _get_session_logger
@@ -199,10 +199,6 @@ def compute_features(
         "n_features": int(features.shape[1]),
         "prepared":   True,
         "bit_info_saved": bit_info is not None,
-        "next_step": (
-            f"Call split_dataset('{dataset_id}', train_size=0.7, "
-            "val_size=0.0, test_size=0.3, stratified=True) to create splits."
-        ),
     }
 
 
@@ -248,7 +244,7 @@ def split_dataset(
 
     Returns:
         split_file_path (alias: saved_to), train/val/test metadata,
-        statistics, and next_step hint.
+        and statistics.
     """
     def _split_save_dict_to_dataframe(save_dict: dict[str, Any]):
         import numpy as np
@@ -432,16 +428,6 @@ def split_dataset(
         "has_features": "features" in processed,
         "statistics": statistics,
         "seed":       seed,
-        "next_step": (
-            f"Call train_model(split_file_path='{saved_to}', "
-            "algorithm='RFC', task='classification', opt_metric='balanced_accuracy') "
-            "to train in the background (non-blocking). "
-            "Then poll with check_training(job_id) until status='completed'. "
-            "Features are on disk — not returned here."
-        ) if saved_to and "features" in processed else (
-            f"Call prepare_gnn_dataset(split_file_path='{saved_to}', smiles_csv_path='...') "
-            "for GNN workflows, or run compute_features() first for standard ML training."
-        ) if saved_to else "No file saved. Pass save_path.",
     }
     if warnings_list:
         result["warnings"] = warnings_list

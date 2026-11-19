@@ -201,24 +201,6 @@ def load_csv(
             has_precomputed = True
             n_features      = features_arr.shape[1]
 
-    # Build next-step hint
-    if has_smiles and not has_precomputed:
-        next_step = (
-            f"Call featurize_dataset(dataset_id={dataset_id!r}, method='ECFP', "
-            "radius=2, n_bits=2048) to compute fingerprints server-side, then "
-            "split_prepared_dataset()."
-        )
-    elif has_precomputed:
-        next_step = (
-            f"Dataset is ML-ready. Call split_prepared_dataset({dataset_id!r}) "
-            "to create train/test splits."
-        )
-    else:
-        next_step = (
-            "No SMILES or numeric features detected. Pass feature_cols explicitly "
-            "or ensure the CSV has a SMILES column."
-        )
-
     meta: Dict[str, Any] = {
         "dataset_id":              dataset_id,
         "n_samples":               len(df),
@@ -228,7 +210,6 @@ def load_csv(
         "has_smiles":              has_smiles,
         "has_precomputed_features": has_precomputed,
         "loaded":                  True,
-        "next_step":               next_step,
     }
     if has_smiles:
         meta["smiles_sample"] = df[smiles_col].head(3).tolist()

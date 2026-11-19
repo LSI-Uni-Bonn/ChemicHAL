@@ -565,10 +565,6 @@ def explain_with_shap(
         "expected_value_classes":    class_labels.tolist(),
         "expected_value_mode":       expected_value_mode,
         "has_smiles":                smiles_key in split_data,
-        "next_step": (
-            f"Call plot_shap_mol('{save_path}') to visualise "
-            "atom-level SHAP heatmaps for individual compounds."
-        ),
     }
 
     
@@ -711,11 +707,6 @@ def explain_smiles_with_shap(
         "method":                    method,
         "has_smiles":                True,
         "note":                      "Labels in output file are model predictions, not ground truth.",
-        "next_step": (
-            f"Call plot_shap_mol('{save_path}') to render "
-            "atom-level SHAP heatmaps. "
-            "Labels shown reflect the model's predicted class."
-        ),
     }
 
 
@@ -977,7 +968,6 @@ def plot_top_k_parent_molecule_environments_from_shap(
         "top_k": int(top_k),
         "ranking": ranking,
         "image_path": str(out_path),
-        "next_step": "Use show_plot(image_path) to display this artifact in chat.",
     }
     return summary
 

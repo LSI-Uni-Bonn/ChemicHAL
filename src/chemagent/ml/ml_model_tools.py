@@ -589,10 +589,6 @@ def compare_exported_predictions(
         }
         result["n_compounds_reported"] = 0
         result["compounds"] = []
-        result["next_step"] = (
-            "Lower min_models_per_compound, or verify that input CSV files refer "
-            "to the same split and matching key (cid/smiles/row index)."
-        )
         return _to_serialisable(result)
 
     if inferred_task == "classification":
@@ -724,10 +720,6 @@ def compare_exported_predictions(
 
         result["compounds"] = compound_rows
         result["n_compounds_reported"] = int(len(compound_rows))
-        result["next_step"] = (
-            "Inspect compounds with minority_models to identify systematic model disagreements; "
-            "set include_rows='all' to review full agreement context."
-        )
         return _to_serialisable(result)
 
     # Regression path
@@ -815,10 +807,6 @@ def compare_exported_predictions(
 
     result["compounds"] = compound_rows
     result["n_compounds_reported"] = int(len(compound_rows))
-    result["next_step"] = (
-        "Inspect compounds with large prediction_spread to identify unstable regions; "
-        "tune regression_tolerance to tighten or relax disagreement detection."
-    )
     return _to_serialisable(result)
 
 
