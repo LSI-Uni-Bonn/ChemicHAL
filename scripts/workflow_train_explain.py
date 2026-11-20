@@ -21,10 +21,10 @@ from chemagent.ml.gnn_training import train_gnn_model
 
 
 # Edit these values before running the script.
-SESSION_DIR = "data/logs/session_andmastro_20261023_111226_a049de"
-OUTPUT_DIR = "scripts/results_run_5"
-SMILES_1 = "CNC(=O)c1cccc(OCCCCN2CCN(c3cccc(Cl)c3Cl)CC2)c1C"
-SMILES_2 = "C#CCN(C)CC(=C)c1ccc(F)c(C)c1"
+SESSION_DIR = "data/logs/SESSION_NAME"
+OUTPUT_DIR = "scripts/results_run_N"
+SMILES_1 = "SMILES_1"
+SMILES_2 = "SMILES_2"
 MODEL_PATH = None
 TRAIN_MODEL = True  # True: train from SPLIT_PATH; False: load the saved GCN checkpoint.
 SPLIT_PATH = "splits/chembl_activity_data_P14416_binary_random.pkl"
